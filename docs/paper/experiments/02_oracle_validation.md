@@ -67,6 +67,25 @@ Findings, most to least significant:
 
 Net: the observed slowness is fully explained by *known, measured, mostly-controllable* factors — a MIG slice at ~40% of a full A100's SMs (2.8x) times an under-sized env batch relative to the published recipe (2.1x) — not by anything wrong with the simulator, the snapshot/restore code, or an unexplained hardware discrepancy. This is why the Give Way calibration run above uses the full A100 with the published env count: getting a clean comparison mattered more here than staying on Level 1's usual MIG default.
 
+## CEM planner components (M2, third bullet)
+
+Grounded in the reference implementation rather than invented: the planner LeWorldModel actually uses is `stable_worldmodel.planning.solver.CEMSolver` (MIT), not code in the `le-wm` repo itself (that holds only the model and thin entry points). Reading it corrected several assumptions in [centralized-cem-mpc.md](../centralized-cem-mpc.md): LeWM runs **30** CEM iterations (not 3–5), K=300, 10% elites, `horizon=5` with `action_block=5` frameskip, and `receding_horizon == horizon` — it executes the *whole* plan, not just the first action. Three implementation details that are easy to get wrong: `var_scale` is a **standard deviation** despite the name; plain CEM **never clamps** (it plans in `StandardScaler`-normalised action space; only its iCEM variant clamps); and the first candidate each iteration is forced to the incumbent mean.
+
+| Component | File | In → Out |
+|---|---|---|
+| State branching | `examples/world_model/snapshot_restore.py` | `broadcast_state(env, snapshot, env_index)` writes one snapshotted slot into all K slots of a scratch env, so K candidates branch from one evaluation state |
+| Dynamics | `examples/world_model/oracle_dynamics.py` | `oracle_rollout(scratch_env, snapshot, candidates (K,H,N·d_a)) → {reward (K,H), live (K,H)}` |
+| Objective | same | `NegativeTaskReward(rollout) → (K,)`; kept separate from the dynamics so "same planner, same cost, different world model" is structural rather than asserted |
+| Optimiser | `examples/world_model/cem.py` | `cem_plan(cost_fn, …) → CEMResult(plan (B,H,D), candidates (B,S,H,D), costs (B,S), elite_idx, elite_cost_history)` |
+
+Deliberate deviations from the reference, both recorded here: we plan in the environment's own action units and clamp to its bounds; and the joint action of N agents is flattened into the optimiser's `action_dim`, so the optimiser stays agent-agnostic and needs no multi-agent modification — all cross-agent structure lives in the dynamics it calls ("centralised CEM with factorised proposals": diagonal proposal, jointly coupled scoring and elite selection). Cost convention decided 2026-09-11: `J = −Σ_h r_h`, the true task reward for oracle *and* learned models, so the oracle gap compares planners rather than two different objectives; the learned model will therefore need a reward head, a deliberate departure from LeWM's two-term objective.
+
+**Checks passing** (`python examples/world_model/{snapshot_restore,cem,oracle_dynamics}.py`, 13 total):
+- *Optimiser, no env or model involved*: recovers a closed-form quadratic optimum (1.8e-4); respects bounds; **beats random shooting at an equal rollout budget** (the test that catches a reversed `topk`, a mis-gathered elite set, or a collapsed std — all of which still return a plausible-looking plan); elite cost decreases; reproducible under a fixed seed; single-elite update stays finite; constant cost doesn't crash.
+- *Oracle*: 64 candidates score distinctly; re-scoring is bit-identical; the objective is swappable without touching the dynamics; and **the oracle's cost equals what the live simulator actually produces** for the same plan from the same state — the property that makes it an oracle rather than an approximation.
+
+**Not yet built:** the receding-horizon MPC loop itself (execute → observe → replan, with warm start and `action_block`). So "centralised CEM-MPC" is currently optimiser + oracle dynamics without the closed loop. Also pending: `oracle_rollout` is implicitly single-state (B=1) while `cem_plan` supports B>1, and the plan-ranking metrics (Spearman ρ, elite agreement) are not implemented — when they are, validate them oracle-against-oracle first, where they must return exactly 1.0 by construction, before trusting them to judge a learned model.
+
 ## Next action
 
 1. Read the Give Way MAPPO result: does it reproduce the paper's failure (flat/near-zero return, IPPO/MAPPO with parameter sharing can't coordinate the corridor)? If yes, the pipeline is calibrated; add `share_policy_params=false` (and IPPO) to confirm the paper's fix also reproduces.

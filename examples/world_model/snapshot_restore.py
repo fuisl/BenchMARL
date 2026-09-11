@@ -84,6 +84,33 @@ def restore_state(env, snapshot) -> None:
         setattr(scenario, attr, value.clone())
 
 
+def broadcast_state(env, snapshot, env_index: int = 0) -> None:
+    """Write one snapshotted environment's state into *every* batch slot of `env`.
+
+    This is what branching needs: CEM scores K candidate plans from a single
+    evaluation state, so a scratch env with `num_envs=K` is filled with K copies
+    of that one state and then stepped with K different action sequences. `env`
+    may have a different batch size than the env the snapshot came from.
+    """
+    world = env._env.world
+    scenario = env._env.scenario
+    k = world.batch_dim
+    entities_by_name = {entity.name: entity for entity in world.entities}
+
+    def spread(value):
+        return value[env_index].unsqueeze(0).expand(k, *value.shape[1:]).clone()
+
+    for name, entity_snapshot in snapshot["entities"].items():
+        entity = entities_by_name[name]
+        for attr, value in entity_snapshot["state"].items():
+            setattr(entity.state, attr, spread(value))
+        for attr, value in entity_snapshot["entity"].items():
+            setattr(entity, attr, spread(value))
+
+    for attr, value in snapshot["scenario"].items():
+        setattr(scenario, attr, spread(value))
+
+
 def _rollout(env, td, action_sequence):
     """Step `env` through a fixed action sequence, recording the trajectory."""
     observations, rewards, dones = [], [], []
