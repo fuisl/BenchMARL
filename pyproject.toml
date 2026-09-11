@@ -39,3 +39,8 @@ constraint-dependencies = [
     "torchrl==0.11.0",
     "torchvision==0.22.1",
 ]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]

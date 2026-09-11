@@ -4,6 +4,40 @@ The packed launcher keeps the normal BenchMARL/Hydra multirun syntax. Hydra
 expands the Cartesian sweep first; the launcher then submits one or two Slurm
 jobs and runs several experiment processes inside each allocated GPU/MIG.
 
+## Three levels of compute (see coding_rules.md rule 13)
+
+- **Level 0 — interactive, direct GPU.** Smoke tests, reset/step checks, one
+  tiny training/eval iteration: run `benchmarl/run.py` directly, no Slurm.
+- **Level 1 — Slurm validation and small experiments on the local dev node
+  (`gpu-a240`).** `hydra/launcher=packed_local`, or
+  `scripts/slurm/packed_local.sbatch` directly. Targets the `3g.20gb` MIG
+  with a generous share of the node's 32 CPUs/~84GB RAM — this box isn't
+  resource-constrained for this project, so there's no need to under-use it;
+  still go through a MIG rather than the full A100 since that scheduling is
+  already set up. Tested end to end (both the automated launcher and the
+  manual sbatch script) against this node's real Slurm setup — see
+  `docs/paper/experiments/00_setup.md`.
+- **Level 2 — heavy/long compute, offloaded to the H100 cluster.**
+  `hydra/launcher=packed_mig`, or `scripts/slurm/packed_mig.sbatch`. Never
+  run Level-2-sized work on `gpu-a240`.
+
+Partition names, `gres` strings, and account/QoS are cluster-specific and not
+portable. Before trusting any launcher config on a machine it wasn't already
+validated on, run:
+
+```bash
+sinfo
+scontrol show partition
+scontrol show node
+cat /etc/slurm/gres.conf   # exact GRES Type strings, e.g. a100_2g.10gb
+```
+
+and adjust `partition`/`gres`/`account`/`qos` in the relevant
+`benchmarl/conf/hydra/launcher/*.yaml` (and the matching `.sbatch` script's
+`#SBATCH` lines) to match. `packed_mig.yaml` and `packed_mig.sbatch` target
+the separate H100 cluster and have not been validated from this session —
+there is no access to that cluster here.
+
 ## 1. Install
 
 ```bash
@@ -22,9 +56,26 @@ uv run python benchmarl/run.py \
   hydra/launcher=packed_local
 ```
 
-This submits a real, non-interactive Slurm batch job to the local partition.
-Use `squeue --me` to monitor it. Results and Submitit logs are under
-`multirun/YYYY-MM-DD/HH-MM-SS/`.
+This submits a real, non-interactive Slurm batch job to the local `gpu`
+partition, requesting the `3g.20gb` MIG. Use `squeue --me` to monitor it.
+Results and Submitit logs are under `multirun/YYYY-MM-DD/HH-MM-SS/`.
+
+### Manual alternative: plain `sbatch`
+
+If you would rather not wait on the Python process that drives Submitit (it
+blocks until the Slurm job finishes), submit the same kind of run directly:
+
+```bash
+sbatch scripts/slurm/packed_local.sbatch            # defaults to sweep/vmas_smoke
+sbatch scripts/slurm/packed_local.sbatch sweep/vmas_16
+```
+
+This runs one Slurm allocation with `hydra/launcher=joblib` fanning the sweep
+out across `--cpus-per-task` local worker processes inside it — the same
+one-allocation packing the automated launcher does, without Submitit holding
+the shell open. `scripts/slurm/packed_mig.sbatch` is the equivalent script
+for the H100 cluster (Level 2); its `#SBATCH` values are unverified from this
+session, see the note above.
 
 ## 3. Submit a lab sweep
 

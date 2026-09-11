@@ -1,13 +1,19 @@
 #!/usr/bin/env bash
+# Tuned for the local single-node dev cluster on gpu-a240 (partition `gpu`,
+# gres `gpu:a100_3g.20gb:1`; check `sinfo`/`scontrol show node` on a
+# different box and adjust --partition/--gres accordingly). This box isn't
+# resource-constrained for this project, so this uses a generous share of
+# its 32 CPUs / ~84GB RAM while still going through a MIG slice rather than
+# the full A100.
 #SBATCH --job-name=benchmarl-packed
-#SBATCH --partition=local
+#SBATCH --partition=gpu
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=4
-#SBATCH --mem=8G
-#SBATCH --gres=gpu:1
-#SBATCH --time=00:15:00
-#SBATCH --output=slurm-%A_%a.out
+#SBATCH --cpus-per-task=16
+#SBATCH --mem=48G
+#SBATCH --gres=gpu:a100_3g.20gb:1
+#SBATCH --time=02:00:00
+#SBATCH --output=slurm-%j.out
 
 set -euo pipefail
 
