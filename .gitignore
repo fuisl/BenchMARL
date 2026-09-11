@@ -5,6 +5,9 @@
 **/multirun/
 slurm-*.out
 
+# Wandb local run data (safety net; normal runs already land under outputs/multirun)
+**/wandb/
+
 # Docs
 docs/output/
 docs/source/generated/

@@ -102,13 +102,16 @@ evaluation_deterministic_actions: True
 evaluation_static: False
 
 # List of loggers to use, options are: wandb, csv, tensorboard, mflow
+# Real experiments log to both by default. Test/smoke configs (benchmarl/conf/sweep/*,
+# test/conftest.py) must explicitly override this to [csv] so they don't clutter wandb
+# -- see coding_rules.md rule 14.
 loggers: [csv,wandb]
 # Wandb project name (kept for backward compatibility)
-project_name: "benchmarl"
+project_name: "counterfactual-wm"
 # Wandb extra kwargs passed to the WandbLogger (~superset of wandb.init kwargs)
 # WandbLogger includes: offline, save_dir, project, video_fps
 # wandb.init includes: entity, tags, notes, etc.
-wandb_extra_kwargs: {}
+wandb_extra_kwargs: {entity: "cair-traffic"}
 # Create a json folder as part of the output in the format of marl-eval
 create_json: True
 

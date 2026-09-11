@@ -41,11 +41,14 @@ there is no access to that cluster here.
 ## 1. Install
 
 ```bash
-uv sync --frozen --extra vmas
+uv sync --frozen --all-extras
 ```
 
 Run this on the login node from the repository root. The repository and its
-`.venv` must be visible from the worker nodes.
+`.venv` must be visible from the worker nodes. This installs `wandb` too
+(see coding_rules.md rule 14) — make sure `wandb login` has been run (or
+`WANDB_MODE=offline` is set) on any machine before a real experiment runs
+there, or logging will fail at `Experiment` construction time.
 
 ## 2. Test locally
 

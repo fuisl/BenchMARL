@@ -27,13 +27,15 @@ No scientific hypothesis at this milestone — the goal is purely operational: c
 
 ## What was done
 
-1. **Install the VMAS extra.**
+1. **Install the VMAS extra**, later widened to **all extras**.
 
    ```bash
    uv sync --frozen --extra vmas
    ```
 
-   Result: `Checked 52 packages` — the extra was already present in `uv.lock` and installed in `.venv` (`vmas==1.5.2`), so this was a verification no-op rather than a fresh install. This contradicts the "VMAS is missing" note in [experiment_plan.md](../experiment_plan.md); the dependency was evidently installed between that scan and this session. Re-running the frozen sync is still the correct way to (re)produce the environment on a fresh machine.
+   Result: `Checked 52 packages` — the extra was already present in `uv.lock` and installed in `.venv` (`vmas==1.5.2`), so this was a verification no-op rather than a fresh install. This contradicts the "VMAS is missing" note in [experiment_plan.md](../experiment_plan.md); the dependency was evidently installed between that scan and this session.
+
+   Per follow-up direction, replaced this with `uv sync --frozen --all-extras` to install every optional extra (`vmas`, `pettingzoo`, `meltingpot`, `gnn`, `logging`) rather than picking them one at a time — this is now the standard install command for this checkout. Confirmed `torch_geometric`, `pettingzoo`, `wandb`, and `meltingpot` all import cleanly afterward, and `test/test_models.py` (GNN models, previously blocked — see "Known gaps") now **passes: 418 passed, 356 skipped, 0 failed**.
 
 2. **Reset/step smoke check** on three candidate tasks (navigation, transport, balance — the tasks named in the experiment plan) using `benchmarl.environments.VmasTask` directly, 4 vectorized envs, 10 random-action steps each, on CPU:
 
@@ -70,7 +72,7 @@ No scientific hypothesis at this milestone — the goal is purely operational: c
 
    - `test/test_task.py` + `test/test_algorithm.py` (Hydra config/registry loading, no env rollout): **112 passed**.
    - `test/test_vmas.py` (actual VMAS rollouts through `Experiment`): **fails** — every test in this file uses the shared `experiment_config` fixture in `test/conftest.py`, which hardcodes `render=True`. Evaluation with rendering on tries to import `pyglet.gl`, which needs a working OpenGL context; this machine has neither `Xvfb`/`xvfb-run` nor the Python `OpenGL` bindings installed, and I don't have sudo to install them (`sudo -n true` fails). This is an environment gap, not a code bug — it doesn't block M0 because M0 explicitly asks for rendering *disabled* runs (steps 3–4 above), which pass.
-   - `test/test_models.py` fails to collect — needs `torch_geometric`, a known-optional dependency (`gnn` extra) not required for the non-GNN baseline models planned for M1–M4.
+   - `test/test_models.py` failed to collect at the time (needed `torch_geometric`, the `gnn` extra, not yet installed) — resolved once all extras were installed, see step 1.
 
 6. **Slurm packed-launcher validation (Level 1, `gpu-a240`).** The checked-in `benchmarl/conf/hydra/launcher/packed_local.yaml` and `scripts/slurm/packed_local.sbatch` targeted a `local` partition and bare `gpu:1` gres that do not exist on this node (confirmed with `sinfo`, `scontrol show partition`, `scontrol show node`, `/etc/slurm/gres.conf` — real values are partition `gpu` and typed gres `a100`/`a100_3g.20gb`/`a100_2g.10gb`/`a100_2g.10gb_mps`). `sbatch scripts/slurm/packed_local.sbatch` failed immediately with `invalid partition specified: local`, confirming the config had never been exercised against a real allocation. Fixed both files to request `partition=gpu` and a MIG gres. First pass used the small exclusive `gpu:a100_2g.10gb:1` slice (8 CPUs, 16 GB); per follow-up direction that this box isn't resource-constrained for this project, moved to the larger `gpu:a100_3g.20gb:1` slice (42 SMs/20GB vs. 28 SMs/10GB) with 16 CPUs, 48 GB, `timeout_min: 120` — still routed through a MIG (isolated, already schedulable) rather than the full A100. Re-tested both submission paths end to end after each change:
 
@@ -79,6 +81,12 @@ No scientific hypothesis at this milestone — the goal is purely operational: c
 
    `benchmarl/conf/hydra/launcher/packed_mig.yaml` and the new `scripts/slurm/packed_mig.sbatch` target the separate H100 cluster (Level 2) and were only checked for config-composition validity (`--cfg hydra`) — there is no access to that cluster from this session, so its `partition`/`gres`/`account`/`qos` values are unverified and should be re-checked with the same `sinfo`/`scontrol`/`gres.conf` commands before first use there.
 
+7. **Wandb logging.** `base_experiment.yaml`'s default was already `loggers: [csv, wandb]` (matches the README), so every un-overridden run already intended to log to wandb — it just crashed, since `wandb` wasn't installed and nothing was logged in. Installed it via the all-extras sync (step 1), then set `project_name: "counterfactual-wm"` and `wandb_extra_kwargs: {entity: "cair-traffic"}` (the user's wandb team) as the default in `base_experiment.yaml`. `benchmarl/conf/sweep/vmas_smoke.yaml`/`vmas_16.yaml` and `test/conftest.py` already explicitly pin `loggers: [csv]`, so those test/smoke paths stay out of wandb without further changes — codified as [coding_rules.md](../coding_rules.md) rule 14.
+
+   Validated end to end with a one-off tagged run (`wandb_extra_kwargs.tags=[infra-check]`, MAPPO/balance, 1 iteration, via a small Python script rather than the Hydra CLI — overriding a nested dict key through Hydra's CLI grammar with plain `experiment.wandb_extra_kwargs.tags=[...]` hit `Could not override 'experiment.wandb_extra_kwargs'` in struct mode; the fix, confirmed afterward, is the `+` prefix: `+experiment.wandb_extra_kwargs.tags=[infra-check]`, now documented in rule 14): confirmed login as `jv-fuisl (cair-traffic)`, both `CSVLogger` and `WandbLogger` attached, run synced to `https://wandb.ai/cair-traffic/counterfactual-wm/runs/...`. Deleted that run afterward via `wandb.Api().run(...).delete()` per rule 14, so it doesn't clutter real experiment tracking.
+
+   Also added `**/wandb/` to `.gitignore` as a safety net for any run that ends up saving locally outside `outputs/`/`multirun/` (both already ignored).
+
 ## Result
 
 **Done when** criteria met: a reproducible environment smoke check and one training/evaluation iteration pass, on CPU and on an allocated CUDA device. Both hold.
@@ -86,8 +94,9 @@ No scientific hypothesis at this milestone — the goal is purely operational: c
 ## Known gaps / uncertainty
 
 - **Rendering/OpenGL is unavailable** in this environment (no `Xvfb`, no Python `OpenGL` bindings, no sudo). Any future code path that needs `experiment.render=true` (including BenchMARL's own `test_vmas.py` suite as currently written) will fail here. Not needed for M0–M7 as scoped (planning/evaluation is numeric, not visual), but worth flagging before relying on the existing test suite for CI.
-- `torch-geometric` is still not installed; fine per the plan's note that "a small pairwise PyTorch predictor can avoid that dependency," so the relational world model (M4) should not require it.
 - `packed_mig.yaml`/`packed_mig.sbatch` (H100 cluster, Level 2 per [coding_rules.md](../coding_rules.md) rule 13) are unverified — no access to that cluster from this session. Re-run the `sinfo`/`scontrol`/`gres.conf` check there before the first real submission, the same way `packed_local` was corrected for `gpu-a240` here.
+- `uv sync --frozen --extra vmas --extra logging` once (and only once) rewrote `pyproject.toml`/`uv.lock` to add `wandb>=0.30.0` as a hard base dependency, duplicating the `logging` extra's own `wandb` entry — not reproduced on a second identical run. Reverted with `git checkout -- pyproject.toml uv.lock` before installing all extras instead; worth a second look if `uv sync --frozen` ever silently rewrites lock/project files again.
+- The H100 cluster's wandb reachability/credentials are unconfirmed; `base_experiment.yaml`'s wandb defaults (step 7) will need the same login there before a Level-2 sweep can log.
 
 ## Artifacts
 
@@ -97,6 +106,9 @@ No scientific hypothesis at this milestone — the goal is purely operational: c
 - `scripts/slurm/packed_mig.sbatch`: new manual H100-offload script mirroring `packed_mig.yaml` (unverified, see "Known gaps").
 - `docs/packed_slurm.md`, `docs/paper/coding_rules.md` (rule 13): document the Level 0/1/2 compute policy.
 - Test Slurm job artifacts (`multirun/2026-09-11/08-14-45/`, `slurm-1159.out`/`slurm-1160.out`) were deleted after verification; not needed as evidence beyond this note.
+- `benchmarl/conf/experiment/base_experiment.yaml`: `project_name`/`wandb_extra_kwargs.entity` set to `counterfactual-wm`/`cair-traffic`.
+- `.gitignore`: added `**/wandb/`.
+- The one-off `infra-check`-tagged wandb validation run was deleted from `cair-traffic/counterfactual-wm` after confirming it logged correctly.
 
 ## Next decision
 
