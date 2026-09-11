@@ -1,0 +1,24 @@
+# @package _global_
+defaults:
+  - vmas_smoke
+  - _self_
+
+hydra:
+  launcher:
+    # At most four experiment processes run concurrently. The 16 configurations
+    # execute in batches as workers become free.
+    n_jobs: 4
+  sweeper:
+    params:
+      algorithm: mappo,ippo,masac,isac
+      task: vmas/balance
+      seed: 0,1,2,3
+
+# vmas_smoke already defines the on-policy test size. These values make the
+# MASAC/ISAC off-policy runs equally small.
+experiment:
+  off_policy_collected_frames_per_batch: 100
+  off_policy_n_envs_per_worker: 2
+  off_policy_n_optimizer_steps: 1
+  off_policy_train_batch_size: 20
+  off_policy_memory_size: 100

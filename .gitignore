@@ -3,6 +3,7 @@
 # Hydra
 **/outputs/
 **/multirun/
+slurm-*.out
 
 # Docs
 docs/output/

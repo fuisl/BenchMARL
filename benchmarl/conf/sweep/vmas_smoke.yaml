@@ -1,0 +1,38 @@
+# @package _global_
+defaults:
+  - /experiment: base_experiment
+  - /algorithm: mappo
+  - /task: vmas/balance
+  - /model: layers/mlp
+  - /model@critic_model: layers/mlp
+  - override /hydra/launcher: joblib
+  - _self_
+
+seed: 0
+
+hydra:
+  launcher:
+    # Parallel experiment processes sharing the GPU allocated by Slurm.
+    n_jobs: 2
+  sweeper:
+    params:
+      algorithm: mappo
+      task: vmas/balance
+      seed: 0,1
+
+# Small end-to-end sweep for validating the packed Slurm workflow.
+experiment:
+  max_n_iters: 1
+  max_n_frames: null
+  on_policy_collected_frames_per_batch: 100
+  on_policy_n_envs_per_worker: 2
+  on_policy_n_minibatch_iters: 1
+  on_policy_minibatch_size: 20
+  sampling_device: cuda
+  train_device: cuda
+  buffer_device: cpu
+  evaluation: true
+  evaluation_episodes: 1
+  evaluation_interval: 100
+  render: false
+  loggers: [csv]
