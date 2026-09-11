@@ -5,15 +5,11 @@ defaults:
   - /task: vmas/balance
   - /model: layers/mlp
   - /model@critic_model: layers/mlp
-  - override /hydra/launcher: joblib
   - _self_
 
 seed: 0
 
 hydra:
-  launcher:
-    # Parallel experiment processes sharing the GPU allocated by Slurm.
-    n_jobs: 2
   sweeper:
     params:
       algorithm: mappo

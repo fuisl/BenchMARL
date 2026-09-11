@@ -7,7 +7,7 @@ import os
 import pathlib
 from pathlib import Path
 
-from setuptools import find_packages, setup
+from setuptools import find_namespace_packages, setup
 
 
 def package_files(directory):
@@ -61,7 +61,7 @@ setup(
         "gnn": ["torch_geometric"],
         "logging": ["moviepy", "wandb"],
     },
-    packages=find_packages(),
+    packages=find_namespace_packages(include=["benchmarl*", "hydra_plugins*"]),
     include_package_data=True,
     package_data={"": extra_files},
 )

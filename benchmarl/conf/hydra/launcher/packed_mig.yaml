@@ -1,0 +1,23 @@
+# @package hydra.launcher
+_target_: hydra_plugins.benchmarl_packed_launcher.PackedSlurmLauncher
+
+submitit_folder: ${hydra.sweep.dir}/.submitit/%j
+partition: mig
+gres: gpu:nvidia_h100_80gb_hbm3_3g.40gb:1
+account: normal
+qos: normal
+timeout_min: 240
+
+# The current QoS allows 16 CPUs and two MIG devices in aggregate.
+total_cpus: 16
+mem_gb: 128
+max_migs: 2
+one_mig_threshold: 16
+max_workers_per_mig: 16
+policy: balanced
+
+name: ${hydra.job.name}
+array_parallelism: 2
+signal_delay_s: 120
+additional_parameters: {}
+setup: null

@@ -4,10 +4,6 @@ defaults:
   - _self_
 
 hydra:
-  launcher:
-    # At most four experiment processes run concurrently. The 16 configurations
-    # execute in batches as workers become free.
-    n_jobs: 4
   sweeper:
     params:
       algorithm: mappo,ippo,masac,isac

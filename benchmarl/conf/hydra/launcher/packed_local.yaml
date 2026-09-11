@@ -1,0 +1,23 @@
+# @package hydra.launcher
+_target_: hydra_plugins.benchmarl_packed_launcher.PackedSlurmLauncher
+
+submitit_folder: ${hydra.sweep.dir}/.submitit/%j
+partition: local
+gres: gpu:1
+account: null
+qos: null
+timeout_min: 15
+
+# This machine has one GPU and four CPUs available to the test allocation.
+total_cpus: 4
+mem_gb: 8
+max_migs: 1
+one_mig_threshold: 16
+max_workers_per_mig: 4
+policy: balanced
+
+name: ${hydra.job.name}
+array_parallelism: 1
+signal_delay_s: 120
+additional_parameters: {}
+setup: null
