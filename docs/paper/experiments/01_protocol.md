@@ -1,0 +1,78 @@
+# M1 — Design the evidence needed to answer the research question
+
+Status: **evidence matrix and candidate-task rationale complete** (M1's stated "Done when"). Task selection is a recommendation for the first pilot, not a freeze — see [experiment_plan.md](../experiment_plan.md)'s design principle and [coding_rules.md](../coding_rules.md) rule 15. Nothing below blocks revision after M2/M3 pilot evidence.
+
+**Main question** (from experiment_plan.md): Does explicit interaction modelling improve prediction of unseen joint-action combinations, plan ranking, and closed-loop multi-agent MPC?
+
+## Question-to-evidence matrix, developed
+
+Each row of experiment_plan.md's matrix, expanded with the intervention/control/task-rationale it asked for.
+
+### Row 1 — Does logged prediction hide counterfactual failure?
+
+- **Intervention:** from a held-out real simulator state, resample one agent's action independently of the logged joint action (holding the other agent's action fixed), producing a joint-action combination that may be rare or absent in the training data.
+- **Control:** the same computation on the *original* logged joint action at the same state (in-distribution) — isolates what changes purely because of the counterfactual substitution.
+- **Metric:** logged (in-distribution) prediction error, counterfactual prediction error, and their gap `G_CF` ([impact notes](../multi_agent_world_model_impact_notes.md)).
+- **Task rationale:** best answered where a joint-action swap produces a *measurable* per-step effect. Buzz Wire (near-binary wall-collision outcome) and Give Way (collision-triggered deflection) give the sharpest signal; Transport/Wheel give a smoother but still real signal; Dropout is the designed near-zero case (see Row 4).
+
+### Row 2 — Does interaction structure help beyond access to joint information?
+
+- **Intervention:** train independent, joint-concatenated, and relational predictors on the *same* dataset built with deliberately restricted joint-action coverage (e.g. correlated action pairs, per the impact notes' "Correlated Dataset" design), then evaluate counterfactual prediction on combinations outside that coverage.
+- **Control:** the same three models trained on a full/diverse-coverage dataset (impact notes' "Full-Coverage Dataset", where independent ≈ central ≈ relational is the expected sanity-check result). The contrast between restricted- and full-coverage results isolates whether *relational structure* — not just more data — is what helps.
+- **Metric:** counterfactual gap and plan-ranking differences (Row 3's `ρ_plan`), especially under restricted coverage.
+- **Task rationale:** needs a joint-action space small enough to sample densely *and* sparsely without combinatorial blowup. Buzz Wire and Give Way (2 agents, one continuous 2D force each) keep this tractable; Passage's 5-agent joint space is a bigger, later target (M5), not the first pilot.
+
+### Row 3 — Do better counterfactual predictions improve decisions?
+
+- **Intervention:** sample K candidate joint-action plans (CEM) from a fixed state; score each with every model; execute the model-selected plan closed-loop.
+- **Control:** simulator-dynamics oracle MPC (M2, upper reference) and a random-action policy (M2's "improves over a random-action reference", lower reference).
+- **Metric:** Spearman rank correlation `ρ_plan` between predicted and true plan cost, selected-plan regret, success/return, oracle gap `Δ_oracle`.
+- **Task rationale:** needs a legible success/return signal. Buzz Wire's binary success/failure (goal reached vs. wall collision) is the cleanest possible closed-loop metric; Transport/Wheel give continuous return; Dropout doesn't need heavy exercise here (weak-interaction control, all models expected near ceiling).
+
+### Row 4 — Is the benefit associated with cross-agent dynamics?
+
+- **Intervention:** from an identical restored simulator state (M2 snapshot/restore), replay with agent *j*'s action changed and agent *i*'s held fixed; measure the actual simulator-level change in agent *i*'s next state/reward — the ground-truth cross-agent effect size.
+- **Control:** **Dropout**, repeated with the same restore-and-perturb procedure. A well-behaved result shows near-zero measured effect *and* near-zero relational-model advantage there — confirming the metric doesn't manufacture a spurious "interaction benefit" out of nothing.
+- **Metric:** whether measured benefit tracks measured cross-agent effect size across tasks.
+- **Task rationale:** this row is explicitly about *spanning mechanisms*, not just strengths — Dropout (reward-only coupling), Give Way/Passage (collision-only), Transport/Wheel (force/torque superposition on a shared object), Buzz Wire (rigid joint constraint) are five mechanistically distinct ways agents can be coupled, per the [task survey](../vmas_task_survey.md).
+
+## Task literature review
+
+Per experiment_plan.md's request: interaction mechanism, a concrete joint-action intervention, the resulting observable effect, and how each discriminates between the independent/joint/relational models. All details verified against the installed `vmas==1.5.2` source and, for Buzz Wire, CoDreamer (arXiv:2406.13600v1) — see the [task survey](../vmas_task_survey.md) for the full per-task table this is drawn from.
+
+**Dropout** — *interaction mechanism:* none in the dynamics (agents don't observe each other; `collide=False`); coupling exists only in the shared/global reward and termination (any agent reaching the goal ends the episode and grants the team's `+1`; energy cost is summed across the team). *Intervention:* from a state where agent A is closest to the goal, substitute a joint action where agent B moves toward the goal instead. *Observable effect:* each agent's own next-state is invariant to other agents' actions (`∂z_i'/∂a_j ≈ 0` for `j≠i`); only the team-level reward/termination depends on the joint action. *Discriminates:* the paper's needed weak-interaction control (Row 4) — an independent model should predict each agent's own transition correctly regardless of others' actions here; a relational model showing an advantage on Dropout would flag a confound, not genuine interaction modelling.
+
+**Give Way** — *interaction mechanism:* purely physical (collision in the narrow corridor gap); invisible to the default observation (`observe_rel_pos=False`) — real in the dynamics, absent from what either agent can see. *Intervention:* from a state where both agents approach the gap, replace one agent's logged "yield" action with "proceed" — the VMAS paper's own result is that only centralized (CPPO) or explicitly heterogeneous (HetIPPO, `share_policy_params=False`) policies resolve this coordination, so this combination is plausibly under-represented by a shared-parameter behaviour policy. *Observable effect:* a discontinuous change in the *other* agent's trajectory (collision-induced deflection/stall) not explainable from that agent's own action alone. *Discriminates:* strong counterfactual-sensitivity test, but carries a real data-collection risk (see below) — the default MAPPO/IPPO behaviour policy this repo's README quickstart uses may not solve the task at all, so M3 would need `share_policy_params: False` or a centralized critic specifically for this task.
+
+**Passage** — *interaction mechanism:* collision avoidance among 5 agents funnelling through `n_passages` (default 1) gaps; reward individual or pooled (`shared_reward=True` default). *Intervention:* from a formation-preserving logged trajectory, swap which two agents attempt the single passage simultaneously versus sequentially. *Observable effect:* collision (both enter at once) versus clean pass-through — a discontinuous outcome from a continuous action change, similar in kind to Give Way but over a much larger (5-agent) joint-action space. *Discriminates:* useful for a later "does the benefit scale with agent count / joint-action space size" check (M6); higher engineering cost than a 2-agent task makes it a weaker first-pilot choice.
+
+**Transport** — *interaction mechanism:* direct force superposition on a shared heavy package (`package_mass=50` vs. single-agent `u_multiplier=0.6` — physically requires ≥2 agents pushing together); reward already one shared scalar. *Intervention:* from a coordinated push trajectory, replace one agent's action with a push in an orthogonal or opposing direction — the package's resulting acceleration is the nonlinear (collision/friction-mediated) sum of all agents' contact forces, so this tests genuine force-composition understanding versus memorizing the observed pattern. *Observable effect:* continuous, smoothly-varying change in package trajectory (partial force cancellation) — no episode-ending failure mode, so effect sizes are gradual rather than sharp. *Discriminates:* this is the paper's own running worked example ([proposal](../multi_agent_latent_mpc_proposal.md)); a strong, literature-anchored candidate for the main experiment (M5) precisely because it's well understood, even if its smoother reward surface makes it a less sharp first-pilot discriminator than Buzz Wire.
+
+**Wheel** — *interaction mechanism:* the same force-superposition idea as Transport but rotational — correct behaviour needs agents on *opposite* sides applying torque in a coordinated sense (not simply "all push the same way"), on a line too heavy (`line_mass=30`) for one agent. *Intervention:* flip the sign of one agent's force (from increasing to decreasing angular velocity). *Observable effect:* a sign-flipped torque contribution, directly changing angular acceleration. *Discriminates:* mechanistically informative, but the original VMAS paper reports *every* PPO baseline performed worse than the hand-designed heuristic here — a real risk that a competent cooperative behaviour policy (needed by M3) doesn't yet exist for this task, better suited as an M6 stress-test than the first pilot.
+
+**Buzz Wire** — *interaction mechanism:* a rigid physics `Joint` ties both agents to a shared ball — not an additive force sum on a free body but a hard kinematic constraint; failure (wall/floor collision) ends the episode rather than merely costing reward. *Intervention:* from a logged successful pass-through, substitute one agent's action with a plausible-looking but unsynchronized alternative — CoDreamer's own framing: "a lack of synchronised movement can result in one agent pulling the other into the borders." *Observable effect:* a sharp, near-binary outcome (episode-ending failure vs. continuing safely) — the cleanest possible "did the world model predict the right qualitative outcome" signal among all six candidates, since neither agent observes the other's state *or* the ball's state, an independent model has no informational path to this failure mode at all. *Discriminates:* the strongest, most literature-anchored (CoDreamer) case for Row 1's claim, with the most legible Row-3 success metric; fixed 2 agents and a single ball/joint make it comparatively light to implement (no variable package/passage counts). Caveat: not in the original VMAS PPO benchmark and CoDreamer only tested it with discrete actions — whether a continuous-action cooperative policy solves it at all is unverified (see below).
+
+## Planning-cost risk specific to this task set
+
+experiment_plan.md's "What to do about planning cost" already requires validating latent goal-distance scoring on *true* simulator futures before blaming learned dynamics. Two tasks make this validation non-trivial in a way worth flagging now:
+
+- **Buzz Wire**: the reward-relevant quantity (the ball's position, and its collisions) is not part of *either* agent's observation. A "central"/"relational" world model's latent state — built by concatenating agents' own observations — would not contain the ball's state either, unless the dataset/encoder explicitly includes it. M2's oracle MPC works around this by scoring on the live simulator (full access to `ball.state`), but a *learned* latent planner will need the ball's state added as an explicit target/input, not assumed to be recoverable from agent observations alone.
+- **Give Way**: the goal position is fixed across episodes and never observed directly (only own `pos`/`vel`); this works for shaping reward (the fixed offset is learnable) but means a latent planner also has to have implicitly learned "where home is," not read it off a per-step observation.
+
+Wheel is the one exception worth noting explicitly: its reward-relevant quantity (the line's angular velocity) *is* directly in every agent's observation (`self.line.state.ang_vel.abs()`), so latent goal-scoring is comparatively straightforward there — this is a point in Wheel's favor for a later pilot despite the behaviour-policy risk above.
+
+## Recommendation for the first pilot
+
+**Primary candidate: Buzz Wire, with Dropout as the paired weak-interaction control** (the literal control Row 4 asks for).
+
+Reasoning: Buzz Wire has the sharpest, most legible counterfactual signal (episode-ending failure vs. success) of any candidate, the strongest literature anchor for exactly this paper's claim (CoDreamer's "one agent pulling the other into the borders" is a textbook description of "actions have cross-agent consequences"), zero cross-agent *or* ball observability (so an independent model is maximally handicapped by construction, not by a tunable knob), and the lightest engineering footprint among the strongly-coupled candidates (2 fixed agents, one ball, one joint pair — no variable package/passage counts to plumb through data collection). Dropout is the natural pairing because it's the one task where coupling is provably absent from the dynamics, giving Row 4 a clean near-zero baseline to contrast against.
+
+**Before committing M3 data-collection effort to Buzz Wire**, run the cheap check note 5 in the task survey calls for: does a straightforward continuous-action MAPPO/IPPO policy actually reach the goal on `task=vmas/buzz_wire` at all? This is a Level-0/1 check (a handful of training iterations, existing baseline algorithm, no new code) — if it doesn't, that's itself informative (matches the pattern already seen on Wheel) and would point to either a different/heterogeneous behaviour policy or Give Way as the fallback first pilot (same "physics-only, invisible-to-observation" coupling family, but continuous positional reward instead of a hard failure mode — softer, but a well-behaved cooperative policy may be easier to obtain once `share_policy_params: False` is set, per the survey's note 5).
+
+Transport remains the recommended main-experiment task for M5 (least ambiguous physics, literature-anchored as this paper's own worked example); Wheel and Passage are better suited to M5/M6 once the pipeline is validated, for the reasons in their cards above.
+
+## What is intentionally not decided here
+
+Per experiment_plan.md's design principle and coding_rules.md rule 15, the following are deferred to pilot evidence rather than fixed now: exact CEM horizon/population size, training/data budgets, number of seeds beyond M6's staged plan (1 debug → 3 pilot → 5–10 headline), and any interaction-strength parameter changes (`n_passages`, `mirror_passage`, `observe_rel_pos`). None of these block M2.
+
+**Done when:** every row above has a question, intervention, control, metric, and task rationale — met. **Next action:** the Buzz-Wire behaviour-policy check above, then M2 (simulator snapshot/restore + oracle CEM-MPC) on whichever task passes that check.

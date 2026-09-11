@@ -4,7 +4,9 @@ Build on [direction.md](direction.md), the [proposal](multi_agent_latent_mpc_pro
 
 **Main question:** Does explicit interaction modelling improve prediction of unseen joint-action combinations, plan ranking, and closed-loop multi-agent MPC?
 
-**First target:** one VMAS task, two agents, three learned models, and simulator-based oracle MPC working end to end. Then expand to 2–3 tasks and 2–4 agents. Select tasks that support these team sizes.
+**First target:** one suitable VMAS task with its default configuration, three learned models, and simulator-based oracle MPC working end to end. Choose the eventual task suite by the evidence needed for the research question. Team size follows the task default; it is not a required sweep.
+
+**Design principle:** organize experiments around **interaction structure → counterfactual generalisation → plan ranking → control**. Keep baseline defaults and revise this plan as pilot evidence reveals what is needed. Numerical settings are recorded for reproducibility, not fixed permanently per task.
 
 ## Current repository and environment
 
@@ -13,7 +15,7 @@ Snapshot: 2026-09-11, commit `41774c5` (`slurm update`). The working tree was cl
 | Area | What exists | How we build on it |
 |---|---|---|
 | Environment integration | `benchmarl/environments/vmas/` and task YAMLs under `benchmarl/conf/task/vmas/` | Reuse task creation, continuous actions, vectorization, and TensorDict observations. |
-| Candidate tasks | Navigation, transport, balance, and other VMAS scenarios | Pilot navigation with interaction settings varied, then a cooperative task such as transport. Verify interaction strength and observability before choosing the final suite. |
+| Candidate tasks | Existing VMAS scenarios and the [task survey](vmas_task_survey.md) | Select complementary interaction mechanisms through M1. Task names alone do not establish an ordering of interaction strength. |
 | Model components | MLP, GNN, DeepSets, CNN, GRU, LSTM; model/config interfaces | Reuse suitable components and conventions for encoders and predictors. Existing policy/critic models are not yet world models. |
 | Baseline training | `Experiment`, MAPPO/IPPO and other algorithms, collectors, replay buffers, callbacks | Use for cooperative behaviour-policy training and collection. |
 | Experiment support | Hydra YAMLs, seeds, CSV logging, evaluation, checkpointing, plotting examples | Reuse configuration and reporting conventions. Existing online RL training is not an offline world-model trainer. |
@@ -22,6 +24,8 @@ Snapshot: 2026-09-11, commit `41774c5` (`slurm update`). The working tree was cl
 
 Local checks:
 
+The following records the initial scan, not a continuously updated environment inventory.
+
 - `.venv` uses Python **3.11.15**; BenchMARL **1.5.2** imports from this checkout.
 - Installed: PyTorch **2.7.1**, TorchRL **0.11.0**, TensorDict **0.11.0**, NumPy **1.26.4**, Hydra **1.3.6**, Hydra Submitit launcher **1.2.0**.
 - CUDA is available; two NVIDIA A100 GPUs with 40 GB each are visible. This is device visibility, not a scheduling allocation.
@@ -29,6 +33,8 @@ Local checks:
 - **VMAS is missing.** Attempting to construct the navigation environment failed with `ImportError: vmas python package was not found`. No environment rollout or training run was validated.
 - `torch-geometric`, `wandb`, and `pytest` are missing. PyTorch Geometric is needed only if using the existing GNN implementation; a small pairwise PyTorch predictor can avoid that dependency. CSV logging needs no W&B setup.
 - `pyproject.toml`, `.python-version`, and `uv.lock` already define the dependency setup. No dependencies were changed during this scan.
+
+**Revision check (2026-09-11):** VMAS **1.5.2**, PyTorch Geometric **2.8.0.post1**, W&B **0.30.0**, and pytest **9.1.1** are now installed. This supersedes the missing-package entries above. This revision checked package metadata only; it did not rerun environment or training validation.
 
 **Not implemented in the scanned project code:** offline world-model datasets/training, the three latent dynamics variants, the shared anti-collapse loss, CEM-MPC, simulator snapshot/restore for counterfactual evaluation, and plan-ranking/oracle-gap metrics.
 
@@ -44,20 +50,49 @@ The VMAS task adapter currently returns `None` for `state_spec`. Agent observati
 
 **Done when:** a reproducible environment smoke check and one training/evaluation iteration pass. Record commands and versions in `experiments/00_setup.md`.
 
-### M1 — Freeze the experimental protocol
+### M1 — Design the evidence needed to answer the research question
 
-- Choose the initial task, observations, action bounds, goal representation, and task success criterion.
-- Define how predicted latents produce planning costs; a known simulator reward cannot automatically be evaluated on a latent vector. Validate the goal-distance objective before expanding tasks.
-- Fix data sizes, episode splits, training budgets, candidate plans, planning horizons, seed policy, and primary metrics.
-- Check which other-agent information is already present in each observation; describe the independent baseline's actual information access.
+Use BenchMARL's existing task and baseline algorithm defaults. Keep task parameters in task YAMLs and training settings in experiment profiles. The new world models and CEM planner need one shared starting configuration; there are no existing defaults for those components in this repo. Override a setting only for an explicit experimental comparison or a demonstrated implementation need.
 
-**Done when:** `experiments/01_protocol.md` specifies one complete comparison without unresolved input or objective choices.
+The immediate deliverable is this question-to-evidence matrix, developed in `experiments/01_protocol.md`:
+
+| Part of the main question | Experiment | Evidence |
+|---|---|---|
+| Does logged prediction hide counterfactual failure? | Evaluate each model on behaviour-like and recombined joint actions from the same held-out simulator states. | Logged error, counterfactual error, and their gap. |
+| Does interaction structure help beyond access to joint information? | Compare joint-concatenated and relational predictors on identical datasets, alongside the independent reference. Vary joint-action coverage. | Counterfactual gap and plan-ranking differences, especially under restricted coverage. |
+| Do better counterfactual predictions improve decisions? | Score shared candidate plans using each model and the simulator, then run closed-loop MPC. | Rank correlation, selected-plan regret, success/return, and oracle gap. |
+| Is the benefit associated with cross-agent dynamics? | Repeat the same comparisons across complementary interaction mechanisms; measure the effect of changing another agent's action from a restored state. | Whether benefits track measured cross-agent effects; a weak physical-interaction control. |
+
+These are parts of one research question. One-step versus multi-step training remains supporting analysis.
+
+**Task literature review:** do a focused selection review, starting with the [VMAS paper](https://arxiv.org/abs/2207.03530), the existing task survey, and related world-model evaluations. For each candidate, record its interaction mechanism, a concrete joint-action intervention, the resulting observable effect, and how it helps discriminate between the models. Prefer existing supported tasks; add a new domain only if it supplies missing evidence.
+
+Initial candidates, with proposed roles rather than a final ranking:
+
+| Candidate | Proposed role in this paper |
+|---|---|
+| Dropout | Control with uncoupled agent motion. Shared goal flags, reward, and termination still introduce dependencies, so do not label its entire observation transition independent. |
+| Give Way or Passage | Test interactions through collision and shared space. Select one if its intervention outcomes provide evidence beyond object manipulation. |
+| Transport | Test how recombining agents' pushes changes a shared object's motion. A strong candidate for the main counterfactual experiment. |
+| Wheel | Test coordinated angular-velocity control as a possible complement to positional goals; check whether it fits the simple latent planning objective. |
+| Buzz Wire | Literature-motivated alternative with direct mechanical linkage between agents. |
+
+The physical task descriptions are supported by the [official VMAS scenario catalogue](https://github.com/proroklab/VectorizedMultiAgentSimulator#list-of-environments). CoDreamer evaluates Flocking, Discovery, and Buzz Wire; its description of Buzz Wire gives a concrete case where one agent can pull another into a boundary. Its VMAS experiments use discrete actions, so use them as task-selection evidence rather than an identical continuous-MPC protocol. [CoDreamer, evaluation environments](https://arxiv.org/html/2406.13600v1#A4.SS7)
+
+The proposed roles above are our experimental interpretation, to be checked in pilots. Do not assume that a heavier object guarantees stronger useful coupling or that cooperation alone demonstrates coupled dynamics. Keep task defaults for the baseline suite; any interaction-strength modification is a separate, motivated ablation.
+
+**What to do about planning cost:** in M2, test the proposal's latent goal-distance score on simulator-generated futures first. Encode actual future observations and goal observations, score candidate plans, and compare that ordering with actual task success/return. If this fails with true futures, fix the objective or reconsider task fit before attributing failure to learned dynamics. A shared reward does not by itself make that reward computable from latent states. This is a small implementation validation, not a new per-task reward-design project.
+
+**What to do about settings and observations:** inherit defaults, record actual model inputs, and use shared data/evaluation states and matched budgets within each model comparison. Joint and relational models receive the same joint information. The independent model uses its default per-agent observations and own action; no task-observation redesign is required. Choose pilot budgets from measured runtime and vary budgets or horizons only when they answer a question. Keep held-out evaluation separate from design decisions.
+
+**Done when:** every proposed comparison has a question, intervention, control, metric, and candidate task rationale. No exhaustive task grid or permanently frozen per-task settings are required. The next action is a small intervention pilot on the most informative candidate.
 
 ### M2 — Validate the simulator oracle and planner
 
 - Implement minimal snapshot/restore for the selected task, including relevant scenario variables and random state.
 - Check that restoring the same state and replaying the same actions reproduces the trajectory, without changing the live evaluation environment.
 - Implement centralized CEM-MPC with simulator dynamics first; verify that its objective produces useful control.
+- Validate latent goal scoring on true simulator futures before using learned futures. For an oracle dynamics comparison, hold the scoring rule constant; label a task-reward oracle separately if it uses a different objective.
 - Use fixed evaluation states and candidate plans for comparable ranking measurements.
 
 **Done when:** deterministic replay checks pass and oracle MPC improves over a random-action reference. Record evidence in `experiments/02_oracle_validation.md`.
@@ -66,6 +101,7 @@ The VMAS task adapter currently returns `None` for `state_spec`. Agent observati
 
 - Collect diverse independent actions, correlated actions, and cooperative-policy trajectories; start with the first two.
 - Hold out joint-action combinations while retaining coverage of individual actions. For continuous actions, define held-out regions or correlation changes explicitly.
+- Retain useful variation in cross-agent effects. If the data never identifies an interaction, record that limitation rather than expecting architecture alone to recover it.
 - Match data budgets and control state-distribution differences where possible, so action coverage is the intended comparison.
 - Split by episode; store observations, actions, next observations, termination flags, episode IDs, and simulator snapshots needed for evaluation.
 
@@ -85,13 +121,13 @@ The VMAS task adapter currently returns `None` for `state_spec`. Agent observati
 - Measure logged versus counterfactual prediction error and their gap.
 - Measure plan-ranking correlation and the true cost of each model's selected plan on shared candidate sets.
 - Evaluate closed-loop success/return and the gap to simulator-based MPC using matched CEM horizons and search budgets.
-- Expand the working pilot to weak/strong interaction tasks and the three data regimes.
+- Expand only to the task mechanisms and data regimes needed by the M1 evidence matrix. Keep task defaults for the baseline suite.
 
 **Done when:** `experiments/05_main_results.md` connects prediction, ranking, and control for all models, including negative findings. Oracle MPC is a dynamics reference, not a guaranteed globally optimal controller.
 
 ### M6 — Explain the results and establish repeatability
 
-- Vary action coverage and interaction strength, then one-step versus multi-step training. Change one factor at a time.
+- Use M5 to establish the role of action coverage and interaction mechanisms. Add a controlled interaction-strength change only if needed to support that explanation, then test one-step versus multi-step training. Change one factor at a time.
 - Use a capacity-matched check if model size could explain the result; vary planning horizon if rollout error appears limiting.
 - Start with one seed for debugging, three for pilots, and target 5–10 independent seeds for headline comparisons. Report uncertainty across seeds and separate training/data seeds from evaluation episodes.
 - Record training cost, planning latency, and peak memory before scaling the Slurm sweep.
@@ -116,3 +152,5 @@ The VMAS task adapter currently returns `None` for `state_spec`. Agent observati
 Every experiment note records: **hypothesis → exact command/config and commit → dataset/splits/seeds → artifact links → result and uncertainty → next decision**.
 
 Complete each milestone's validation before expanding its scope. A failed hypothesis is a result; an unvalidated evaluation pipeline is unfinished work.
+
+Revisit M1 after each pilot: keep, revise, or remove experiments according to whether they answer the research question. Record the reason and protocol version; retain negative results and distinguish exploratory changes from subsequent held-out evaluation. This plan supersedes earlier instructions to freeze per-task settings, including that wording in the background task survey.
