@@ -116,8 +116,18 @@ def model_costs(model, observation, candidates, action_block, device):
     latent = model.encode(start)
     rolled = model.rollout(latent, plans)
     sequence = torch.cat([latent, rolled], dim=1)
-    reward, _ = model.readout(sequence[:, :-1], sequence[:, 1:])
-    cost = -reward.sum(dim=(1, 2, 3))
+    reward, terminated = model.readout(sequence[:, :-1], sequence[:, 1:])
+
+    # The oracle stops accumulating reward once an episode ends, so a model cost
+    # that summed every block would over-count exactly the plans that terminate
+    # early. Weight each block by the predicted probability of still being alive
+    # when it starts -- the probabilistic form of the oracle's `live` mask, which
+    # collapses to it when the head is confident. Where termination never occurs
+    # the probabilities are ~0 and survival stays ~1, so this is a no-op on a
+    # task like Transport whose bank contains no terminations at all.
+    ends = torch.sigmoid(terminated)
+    survival = torch.cumprod(1 - ends, dim=1) / (1 - ends).clamp_min(1e-6)
+    cost = -(reward.squeeze(-1) * survival.unsqueeze(-1)).sum(dim=(1, 2))
     return cost.view(batch, n_candidates).cpu()
 
 

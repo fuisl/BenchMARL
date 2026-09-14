@@ -209,6 +209,29 @@ rollout advantage there is real, reproducible and **not** interaction modelling;
 the interaction claim needs a task whose data identifies the interaction, which
 was M3's stated condition all along.
 
+## Held-out confirmation (job 1201)
+
+The numbers above come from a development bank whose test split was inspected
+repeatedly while the evaluators were built. A fresh bank was therefore collected
+with different state, split, action and branch seeds, trained on disjoint seeds,
+and measured **once**, with nothing tuned against it.
+
+| Regime | Baseline | development | **held-out** |
+|---|---|---:|---:|
+| correlated | joint | 0.813x | 0.675x |
+| correlated | relational | 0.736x | **0.474x** |
+| independent | joint | 0.889x | 0.503x |
+| independent | relational | 0.743x | **0.495x** |
+
+Paired against `independent`, all 8/8 seeds with intervals clear of zero
+(relational, correlated: -0.179 [-0.195, -0.158]). The effect **confirms and
+strengthens**: relational captures roughly half the cross-agent effect on data
+nothing was fitted to, against a quarter on the development bank.
+
+One seed base was rejected by the collector's replay check before a valid bank
+was obtained, and that count is reported in the run log for the reason given
+below.
+
 ## Limitation: replay is not universally bit-exact on Buzz Wire
 
 Recorded because it bounds C1 on this task. The M3 collector verifies that

@@ -129,6 +129,61 @@ reward readout rather than the dynamics. Scoring candidates with the *simulator'
 rewards applied to *predicted* latents would separate them, and costs nothing
 beyond a variant of the existing evaluator.
 
+## Why ranking fails — two different causes (job 1203)
+
+A model plan cost passes through two learned stages, so the same flat Spearman
+could come from either. Scoring the candidates a third way separates them: the
+learned readout applied to the **simulator's own** latents, obtained by rolling
+the simulator and keeping its observations at each block boundary.
+
+    J_true     simulator states,  simulator rewards   (ground truth)
+    J_readout  simulator states,  learned readout     (readout error only)
+    J_model    predicted latents, learned readout     (both errors)
+
+96 states, 48 candidates, 8 seeds, Spearman against J_true:
+
+| Task | Baseline | J_model | J_readout | recovered |
+|---|---|---:|---:|---:|
+| Transport | independent | 0.051 | **+0.672** | +0.554 |
+| Transport | relational | 0.135 | **+0.663** | +0.528 |
+| Buzz Wire | independent | 0.051 | **-0.238** | -0.289 |
+| Buzz Wire | relational | 0.051 | **-0.267** | -0.317 |
+
+**The two tasks fail for opposite reasons.**
+
+On **Transport** the readout ranks plans well from true latents (rho ~ 0.67), so
+the readout is adequate and the **autoregressive rollout** is what destroys the
+ordering. Part of that is a train/serve mismatch we introduced: the readout is
+fitted on teacher-forced one-step predictions but applied to latents compounded
+over five rollout steps.
+
+On **Buzz Wire** the readout is *anti-correlated* (rho ~ -0.25) even given
+perfect latents, so no improvement in dynamics could rescue ranking there. The
+cause was predicted in advance by [01_protocol.md](01_protocol.md): Buzz Wire's
+reward depends on the **ball**, and no agent observes the ball. "The
+reward-relevant quantity (the ball's position, and its collisions) is not part of
+either agent's observation." A readout over agent observations therefore cannot
+represent the quantity it is asked to predict. This is partial observability, not
+a model deficiency, and it means Buzz Wire cannot support reward-based planning
+until the ball state is added to the observation or the latent.
+
+So Buzz Wire is the right task for the **dynamics** claim (C7) and the wrong one
+for the **planning** claim, while Transport is the reverse. That is a task-design
+conclusion, and it is sharper than "ranking does not work".
+
+### A defect in the model plan cost, found by this audit
+
+`model_costs` originally discarded the termination head and summed predicted
+reward over every block, while the true cost stops accumulating at termination.
+Transport contains no terminations so it was harmless there, but 27.8% of Buzz
+Wire snippets terminate, so the model over-counted exactly the plans that end
+early. The cost now weights each block by the predicted probability of still
+being alive at its start, which is the probabilistic form of the oracle's mask.
+
+Corrected numbers are materially unchanged -- Buzz Wire relational 0.0588 against
+0.0594, Transport unchanged to three decimals -- so the defect did not produce
+the negative result. It is recorded because it was real, not because it mattered.
+
 ## What this implies for the task choice
 
 Three separate measurements now point at the same underlying property of
