@@ -36,7 +36,9 @@ The following records the initial scan, not a continuously updated environment i
 
 **Revision check (2026-09-11):** VMAS **1.5.2**, PyTorch Geometric **2.8.0.post1**, W&B **0.30.0**, and pytest **9.1.1** are now installed. This supersedes the missing-package entries above. This revision checked package metadata only; it did not rerun environment or training validation.
 
-**Not implemented in the scanned project code:** offline world-model datasets/training, the three latent dynamics variants, the shared anti-collapse loss, CEM-MPC, simulator snapshot/restore for counterfactual evaluation, and plan-ranking/oracle-gap metrics.
+**Current M2 revision (2026-09-11):** simulator snapshots (including episode clocks), batched oracle costs, CEM, and a configurable closed-loop Buzz Wire evaluator are implemented under `examples/world_model/`. The first 20-episode Buzz Wire pilot passes M2's return gate and reaches 11 goals at R=30; R=10 reaches 4 goals with higher mean return and fewer collisions. See [oracle validation](experiments/02_oracle_validation.md) for tests, the budget tradeoff, and pending H100 ablations. Offline datasets/training, learned dynamics, anti-collapse losses, and learned-model ranking/oracle-gap comparisons remain unimplemented.
+
+**Current task selection (2026-09-14):** Buzz Wire experiments are paused at the user's request. Transport replay and outcome semantics are validated, and an 18-run, one-GPU comparison batch is prepared. Submission awaits the cluster choice; no Transport comparison results exist yet. See [Transport comparisons](experiments/02_transport_comparisons.md) for the exact matrix and submission script.
 
 The VMAS task adapter currently returns `None` for `state_spec`. Agent observations must not be assumed to contain the full simulator state. Exact counterfactual replay needs explicit handling of relevant simulator and scenario state.
 
@@ -81,7 +83,7 @@ The physical task descriptions are supported by the [official VMAS scenario cata
 
 The proposed roles above are our experimental interpretation, to be checked in pilots. Do not assume that a heavier object guarantees stronger useful coupling or that cooperation alone demonstrates coupled dynamics. Keep task defaults for the baseline suite; any interaction-strength modification is a separate, motivated ablation.
 
-**What to do about planning cost:** in M2, test the proposal's latent goal-distance score on simulator-generated futures first. Encode actual future observations and goal observations, score candidate plans, and compare that ordering with actual task success/return. If this fails with true futures, fix the objective or reconsider task fit before attributing failure to learned dynamics. A shared reward does not by itself make that reward computable from latent states. This is a small implementation validation, not a new per-task reward-design project.
+**What to do about planning cost:** the agreed M2 pilot uses `J = −Σ_t Σ_i r_i,t`, undiscounted task reward through first termination, held fixed for oracle and future learned-model comparisons. This deliberately replaces LeWM's latent goal objective and will require reward prediction in learned models. Check actual collision-free goals alongside return before accepting the objective. A finite-horizon reward improvement without goals leaves the objective/planning setup unvalidated; investigate horizon and optimizer selection as well as reward alignment. Latent goal scoring is deferred, and any future comparison using it must be labeled separately.
 
 **What to do about settings and observations:** inherit defaults, record actual model inputs, and use shared data/evaluation states and matched budgets within each model comparison. Joint and relational models receive the same joint information. The independent model uses its default per-agent observations and own action; no task-observation redesign is required. Choose pilot budgets from measured runtime and vary budgets or horizons only when they answer a question. Keep held-out evaluation separate from design decisions.
 
@@ -92,10 +94,10 @@ The proposed roles above are our experimental interpretation, to be checked in p
 - Implement minimal snapshot/restore for the selected task, including relevant scenario variables and random state.
 - Check that restoring the same state and replaying the same actions reproduces the trajectory, without changing the live evaluation environment.
 - Implement centralized CEM-MPC with simulator dynamics first; verify that its objective produces useful control.
-- Validate latent goal scoring on true simulator futures before using learned futures. For an oracle dynamics comparison, hold the scoring rule constant; label a task-reward oracle separately if it uses a different objective.
+- Validate the agreed task-reward objective using goal/collision/timeout outcomes and return. Keep scoring fixed in later oracle-versus-learned comparisons; a latent goal objective would be a separate comparison.
 - Use fixed evaluation states and candidate plans for comparable ranking measurements.
 
-**Done when:** deterministic replay checks pass and oracle MPC improves over a random-action reference. Record evidence in `experiments/02_oracle_validation.md`.
+**Done when:** deterministic replay checks pass and oracle MPC return exceeds random with non-overlapping 95% episode-bootstrap CIs on fixed evaluation states. Also report collision-free goal success with Wilson intervals: the pilot estimates this rate before choosing a numerical gate for held-out confirmation. Check H=1 versus H=5 at fixed execution cadence and measure search-budget sensitivity; episode return is not guaranteed monotone in CEM budget. Record evidence in `experiments/02_oracle_validation.md`.
 
 ### M3 — Build controlled offline datasets
 
