@@ -1,0 +1,12 @@
+# @package _global_
+# The three M4 baselines on one fixed M3 dataset. Only model.kind varies, so a
+# difference between runs is attributable to the conditioning structure alone.
+defaults:
+  - /world_model
+  - _self_
+
+hydra:
+  sweeper:
+    params:
+      model.kind: independent,joint,relational
+      seed: 4100,4101,4102

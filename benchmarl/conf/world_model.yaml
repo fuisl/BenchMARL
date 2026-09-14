@@ -1,0 +1,46 @@
+# M4 latent world-model baselines. One shared starting configuration for all
+# three predictors: only `model.kind` changes between them, so any difference is
+# attributable to the conditioning structure rather than to capacity or budget.
+seed: 4100
+device: cuda
+loggers: [csv, wandb]
+
+wandb:
+  project: counterfactual-wm
+  entity: cair-traffic
+  group: m4-transport-baselines
+
+data:
+  root: outputs/transport_data_1190
+  regime: correlated
+  action_block: 5
+
+model:
+  kind: relational  # independent | joint | relational
+  dim: 192          # LeWM embed_dim
+  hidden_dim: 512
+  # Shared conditioner capacity budget, so `independent`, `joint` and
+  # `relational` have equal dynamics parameter counts and a difference between
+  # them cannot be attributed to one model simply being larger. null = use
+  # hidden_dim for all three (unmatched).
+  conditioner_budget: 1083072
+  depth: 4
+  heads: 8
+  dim_head: 32
+  mlp_dim: 512
+  dropout: 0.0
+
+train:
+  batch_size: 128       # LeWM loader.batch_size
+  dynamics_epochs: 100  # LeWM trainer.max_epochs
+  readout_epochs: 50
+  learning_rate: 5.0e-5 # LeWM optimizer.lr
+  weight_decay: 1.0e-3  # LeWM optimizer.weight_decay
+  gradient_clip: 1.0    # LeWM trainer.gradient_clip_val
+  sigreg_weight: 0.09   # LeWM loss.sigreg.weight
+  sigreg_knots: 17
+  sigreg_projections: 1024
+
+hydra:
+  run:
+    dir: outputs/m4_${model.kind}_${data.regime}
