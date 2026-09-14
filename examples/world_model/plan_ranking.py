@@ -42,19 +42,28 @@ from examples.world_model.train import load_model
 BASELINES = ("independent", "joint", "relational")
 
 
-def select_anchor_states(anchors, indices):
-    """Slice a batched snapshot down to the chosen anchor rows."""
+def select_anchor_states(anchors, indices, device="cpu"):
+    """Slice a batched snapshot down to the chosen anchor rows.
+
+    Banks are loaded on CPU but the scratch environment may live on CUDA, and
+    `broadcast_state` writes these tensors straight into the world, so the
+    snapshot has to be moved with the slice rather than left behind.
+    """
+
+    def take(value):
+        return value[indices].clone().to(device)
+
     snapshot = anchors["snapshot"]
     return {
         "entities": {
             name: {
-                group: {k: v[indices].clone() for k, v in fields.items()}
+                group: {k: take(v) for k, v in fields.items()}
                 for group, fields in entity.items()
             }
             for name, entity in snapshot["entities"].items()
         },
-        "scenario": {k: v[indices].clone() for k, v in snapshot["scenario"].items()},
-        "steps": snapshot["steps"][indices].clone(),
+        "scenario": {k: take(v) for k, v in snapshot["scenario"].items()},
+        "steps": take(snapshot["steps"]),
     }
 
 
@@ -68,7 +77,7 @@ def true_costs(data_root: Path, indices, candidates, device):
         data_root / "anchors.pt", map_location="cpu", weights_only=True
     )
     manifest = json.loads((data_root / "manifest.json").read_text())
-    snapshot = select_anchor_states(anchors, indices)
+    snapshot = select_anchor_states(anchors, indices, device)
     batch, n_candidates = candidates.shape[:2]
     task = VmasTask[manifest["task_name"].split("/")[-1].upper()].get_from_yaml()
     scratch = task.get_env_fun(batch * n_candidates, True, 0, device)()
