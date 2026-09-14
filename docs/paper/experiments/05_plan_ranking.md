@@ -88,6 +88,47 @@ it should be reported as such rather than buried.
    nonzero cost; the rest tie at zero, so much of each ranking is decided among
    tied plans.
 
+## Buzz Wire — where the measurement is well posed (job 1200, stage 1)
+
+Transport's ranking result could be dismissed as an artefact of its degenerate
+cost landscape. Buzz Wire removes that excuse: **117/117 states are rankable**,
+with median per-state cost standard deviation 7.39 against Transport's exactly
+0.000000, and the same models there capture 26% of the cross-agent effect
+(see [counterfactual prediction](05_counterfactual_prediction.md)).
+
+117 states, 64 candidates, 8 seeds.
+
+| Regime | Baseline | Spearman | Selected-plan regret |
+|---|---|---:|---:|
+| correlated | independent | 0.0574 | 4.557 |
+| correlated | joint | 0.0473 | 5.391 |
+| correlated | relational | 0.0594 | 4.151 |
+| independent | independent | 0.0452 | 5.069 |
+| independent | joint | 0.0430 | 4.856 |
+| independent | relational | 0.0519 | 4.855 |
+
+Paired against `independent`, every interval contains zero:
+
+| Regime | Baseline | Metric | mean | 95% CI | seeds better |
+|---|---|---|---:|---:|---:|
+| correlated | relational | Spearman | +0.0020 | [-0.0246, +0.0279] | 5/8 |
+| correlated | relational | regret | -0.4055 | [-1.3248, +0.5989] | 5/8 |
+| independent | relational | Spearman | +0.0067 | [-0.0228, +0.0342] | 5/8 |
+| independent | relational | regret | -0.2144 | [-0.8339, +0.4029] | 4/8 |
+
+**Ranking fails here too**, and this time it cannot be blamed on the task.
+Spearman is 0.043-0.059 for every baseline on a fully non-degenerate landscape,
+with models that measurably capture part of the interaction. So the break is
+between counterfactual prediction and plan ranking, not upstream of it.
+
+That is a more informative negative than Transport's. Capturing 26% of a
+cross-agent effect in latent space evidently does not order 25-step plan costs
+correctly, and two plausible reasons are separable by experiment: the remaining
+74% of the effect may dominate the cost, or the error may enter through the
+reward readout rather than the dynamics. Scoring candidates with the *simulator's*
+rewards applied to *predicted* latents would separate them, and costs nothing
+beyond a variant of the existing evaluator.
+
 ## What this implies for the task choice
 
 Three separate measurements now point at the same underlying property of

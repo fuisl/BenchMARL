@@ -209,6 +209,28 @@ rollout advantage there is real, reproducible and **not** interaction modelling;
 the interaction claim needs a task whose data identifies the interaction, which
 was M3's stated condition all along.
 
+## Limitation: replay is not universally bit-exact on Buzz Wire
+
+Recorded because it bounds C1 on this task. The M3 collector verifies that
+replaying the reference actions from the stored snapshots reproduces the stored
+trajectory bit-exactly, and refuses to emit a bank that fails. The job-1196
+development bank **passed** over 256 anchors, so every number above rests on
+verified data.
+
+A fresh collection at a different state seed **failed** that check (job 1200).
+It is not a seed quirk: three separate seed sets pass at a 5-step smoke length
+and fail at the full 25-step snippet length, which is the signature of numerical
+divergence amplifying with rollout length. Buzz Wire integrates 15 physics
+substeps under rigid joint constraints, and M3 had already noted that VMAS
+carries width-dependent numerics.
+
+The consequence is not that the measurement is wrong, but that a valid Buzz Wire
+bank cannot be assumed -- it has to be checked, and some seeds will be rejected.
+The held-out confirmation therefore tries several seed sets and keeps the first
+bank passing the check, reporting how many were rejected. Rejecting on a
+*validity* check cannot bias the C7 outcome, since nothing about the result is
+consulted when choosing, but the count belongs in the record.
+
 ## Reproduce
 
 ```bash

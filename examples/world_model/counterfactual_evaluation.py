@@ -165,6 +165,11 @@ def main():
         ("interaction-active", active),
         ("inactive", (~active) & live),
     ):
+        # Buzz Wire's rigid joint couples every transition, so it has no
+        # inactive anchors at all and the stratum is legitimately empty.
+        if int(mask.sum()) == 0:
+            print(f"\n=== {stratum} anchors: none (every live anchor is coupled) ===")
+            continue
         print(f"\n=== {stratum} anchors (n={int(mask.sum())}) ===")
         header = (
             f"{'regime':12s} {'kind':12s} {'E_ID':>10s} {'E_CF':>10s} "
