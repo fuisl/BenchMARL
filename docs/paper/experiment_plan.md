@@ -149,6 +149,22 @@ explicit interface to validate; two-term latent training alone does not supply i
 
 **Done when:** all three models train and reload reproducibly on the same pilot dataset. Record results in `experiments/04_model_baselines.md`.
 
+**M4 pilot result (2026-09-14, job 1192):** gate met. Three baselines x two action
+regimes x three seeds, conditioner widths solved so dynamics parameter counts match
+to within 0.02% (3.815M each); checkpoint reload is bit-exact for all 18 runs; no
+latent collapse. One-step teacher-forced prediction does **not** separate the
+baselines; multi-step rollout does, with relational 13.0%/13.8% below independent
+under correlated/independent actions. Two cautions carried forward: the relational
+gain is the same size in both regimes, so the coverage contrast the impact notes
+predict does not appear; and sum pooling being better conditioned is a live
+non-interaction explanation, so M1 Row 4's **Dropout control must run before any
+interaction claim**. The reward readout works (R^2 ~ 0.74 on frozen dynamics); the
+termination head has **zero positive examples in this dataset** and is explicitly
+unvalidated, which remains an open blocker for `J = -sum r` under learned MPC. The
+SIGReg objective sits near an unreachable floor set by latent rank deficiency
+(~330:1 against the prediction term); candidate fixes are recorded but unrun. See
+[M4 baselines](experiments/04_model_baselines.md).
+
 ### M5 — Run the central experiment
 
 - Measure logged versus counterfactual prediction error and their gap.
