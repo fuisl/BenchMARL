@@ -8,6 +8,16 @@ The goal is deliberately small:
 
 > **Show that explicitly modelling how agents affect one another improves counterfactual plan ranking and closed-loop multi-agent control.**
 
+**Implementation protocol revision (2026-09-14).** The active task is Transport;
+Buzz Wire is paused. M2 established a reproducible finite-budget oracle controller,
+but Transport has no observed goals in the development comparisons. M3 therefore
+tests data coverage and measured interaction effects before M4 trains models.
+The agreed control objective is `J = -sum_t sum_i r_i,t`, including terminal-step
+reward. Latent-goal scoring below remains background, not the implemented objective.
+Beating the present CEM controller is a testable possibility, not an assumption or
+evidence that learned dynamics are more accurate than the simulator. The initial
+paper still targets the three matched learned baselines, not the entire VMAS suite.
+
 ## Motivation
 
 Single-agent latent planning is conceptually simple:
@@ -315,6 +325,15 @@ No need initially for:
 - communication loss,
 - role-specific loss,
 - foundation initialization.
+
+The list above applies to the initial representation/prediction experiment.
+Under the later task-reward planning decision, a decoder-free latent model cannot
+directly evaluate the simulator reward function. Before learned MPC, we must
+validate a common reward/termination readout or another explicit task-cost interface
+for all three models. A learned readout requires supervised targets and additional
+losses, which must be reported as a departure from LeWM's two-term training setup.
+M3 saves primitive per-agent rewards and separate task/timeout flags for this purpose;
+it does not implement or validate that readout.
 
 The experiment should isolate **interaction modelling**.
 

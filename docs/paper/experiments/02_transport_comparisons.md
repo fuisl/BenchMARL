@@ -8,19 +8,25 @@ the usual H100/MIG routing for this batch. Slurm job **1181** was submitted but
 stayed pending for the full A100 the whole window (held by another user's job 1180)
 and was cancelled. The batch was resubmitted as **job 1182** on the 20 GB MIG slice
 (`gpu:a100_3g.20gb:1`) with `TRANSPORT_WORKERS=4`, `--mem=32G`. Job 1182 **completed**
-in 10m41s (06:33:03–06:43:44 UTC), all 18 comparisons produced, no OOM, peak sampled
-GPU memory 1331 MiB. Results and their status are below. A follow-up escalation
+in 10m41s (06:33:03–06:43:44 UTC), all 18 comparisons produced, with no reported
+OOM. The recorded 1331 MiB memory peak is invalid for MIG: the monitor sampled
+device `0` with 40960 MiB capacity, rather than the allocated 20 GB slice.
+Results and their status are below. A follow-up escalation
 (job **1183**, same MIG allocation, longer horizon/budget/episode length) ran
 afterward and is recorded in its own section below; the matrix, semantics, and
 submission mechanics that follow this section are otherwise unchanged.
 
 ## Result (job 1182)
 
-Every comparison timed out on every episode — **0/18 configurations reached any
-collision-free package success** (`success_rate = 0.0`, `timeout_rate = 1.0` for all
-60 seed-runs). `collision_rate = 0.0` throughout, as expected (Transport has no
-collision-ending failure mode). Only `replan1` seed 0 clears the return-vs-random-CI
-comparison; no configuration clears it consistently across seeds.
+Every comparison timed out on every episode: **0 successes in 360 MPC episode
+evaluations**, comprising six settings × three planner seeds × the same 20
+development states. Each setting has 0/60 successes across its three runs; these
+are repeated evaluations of 20 states, not 60 independent initial states.
+`collision_rate = 0.0` throughout, as expected (Transport has no collision-ending
+failure mode). Only `replan1` seed 0 clears the return-vs-random-CI comparison;
+no setting clears it consistently across seeds. Random return is exactly zero
+on all 20 states, with zero successes. Each run's zero-success Wilson interval
+is [0%, 16.1%]; no interval is pooled across the repeated state bank.
 
 | Comparison | mean return (3 seeds) | success | mean seconds (3 seeds) |
 |---|---:|---:|---:|
@@ -31,54 +37,62 @@ comparison; no configuration clears it consistently across seeds.
 | samples100 | 0.132 | 0/60 | 76.0 |
 | samples100_iterations10 | 0.123 | 0/60 | 29.4 |
 
-Per-episode detail (e.g. `comparisons/6/episodes.csv`) shows most `final_goal_distance`
-values sitting at 0.3–1.8 at episode end (package starts far from goal and is pushed
-partway, sometimes not at all — several episodes are byte-identical to the random
-baseline, meaning agents never made contact with the package inside 100 steps).
-**This fails M2's "Done when" gate for Transport** (return exceeds random with
-non-overlapping CIs *and* a reportable collision-free success rate) even though it
-passed for Buzz Wire. Whether this is genuine task difficulty at these budgets or a
-pipeline/objective problem is not yet determined — the same "task hard vs. pipeline
-wrong" ambiguity already flagged for Buzz Wire in
-[01_protocol.md](01_protocol.md) applies here and should be resolved before treating
-Transport oracle MPC as validated or before spending more compute on this grid.
+Per-episode detail (e.g. `comparisons/6/episodes.csv`) shows final goal distances
+of approximately 0.28–1.81. Many episodes have exactly zero primitive rewards and
+the same final goal distance as random. These artifacts establish absent
+reward-relevant progress; they do not record every package position or contact,
+so they do not by themselves prove that no contact or movement occurred.
+**The return gate passes for only one run; task-success objective validity remains
+unvalidated.** M2's written return gate and its separate success-rate reporting
+requirement must remain distinct. No numerical success gate has yet been chosen,
+and the lack of goals must not be hidden by changing the success definition.
+Task difficulty, finite-horizon search, objective limitations, and untested
+pipeline defects remain possible explanations; existing replay tests narrow the
+last possibility without resolving the others.
 
 **Runtime check.** The ~15x spread in per-run wall time (29s to 465s) was checked
 against a bug — every run's wandb-logged `_runtime` was pulled and compared to the
 `seconds` field in `comparison.csv` and to the per-decision breakdown in each run's
 `timing.json`; all three agree (wandb runtime consistently ~0–11% above the CSV
 figure, the gap being init/logging overhead) and every episode ran the full 100
-steps (`length = 100`). The spread is fully explained by the grid's own settings:
+steps (`length = 100`). The grid's settings explain the main work difference:
 `lewm`/`iterations10`/`samples100`/`samples100_iterations10` replan every 5 blocks
 (4 replans across 100 steps), `replan1`/`horizon1` replan every block (20 replans);
 `replan1` additionally simulates the full H=5-block horizon per replan while
-`horizon1` simulates only H=1, so `replan1` costs ≈5× `horizon1` and ≈5× the lewm
-family — matching the observed 461.6s vs. 75.9s vs. 88.7s almost exactly. No run
-silently skipped work or returned early; the fast runs (~30s, `samples100_iterations10`,
+`horizon1` simulates only H=1. The observed 461.6s vs. 75.9s vs. 88.7s is
+consistent with that work difference, although concurrent-worker contention and
+fixed overhead prevent interpreting wall time as an isolated scaling law. Every
+recorded episode ran its full budget; the fast runs (~30s, `samples100_iterations10`,
 `iterations10`) are simply the cheapest corner of the K/R budget grid by design.
 
 ## Coverage analysis and budget escalation (job 1183, 2026-09-14)
 
-**Diagnosis before spending more compute.** Cross-referencing every job-1182
-episode's return against the 20 development states' initial geometry (extracted
-from `initial_states.pt`) shows package *contact* inside the CEM lookahead, not
-search quality, is the dominant bottleneck: across every one of the 18 original
-configurations, only states {0, 6, 12, 18} — the states where an agent starts
-within ~0.3 units of the package — ever produced nonzero return; the other 16
-states showed exactly zero package movement for the full 100 steps, every
-config, every seed. Mean agent-to-package distance across the 20 states is 0.61,
-roughly 2× that contact radius, so at horizon=5 (25-step lookahead) most states
-never reach the package before the rollout ends and CEM has no cost gradient to
-climb (all candidates score identically until contact happens).
+**Coverage evidence and working hypothesis.** Across all 18 job-1182 runs, only
+states {0, 6, 12, 18} ever produced nonzero return. The stored primitive rewards
+are exactly zero at every step for the other 16 states. The mean distance from
+the package center to its nearest agent center is 0.613; the four responsive
+states have distances 0.303, 0.277, 0.289, and 0.334. Distance alone does not
+explain the result: state 5 starts at distance 0.291 but has zero reward in every
+1182 run. These distances are not physical contact thresholds.
+
+This supports investigating poor coverage of useful contact and approach
+behaviors. It does not prove a dominant cause: trajectories do not store contact
+history, and the saved candidate bank covers the initial solve, not every later
+decision. CEM uses sampled cost comparisons, not gradients; flat candidate costs
+can impede its search, but the claim that all candidates tie at every unproductive
+state has not been established. M3 should measure actual cross-agent effects and
+contact-related coverage instead of assuming diverse actions provide it.
 
 This motivated a follow-up escalation, run as Slurm job **1183** (same MIG
-allocation, `--time=03:00:00`, completed in 1h43m, no OOM) as two sweeps, both
+allocation, `--time=03:00:00`, completed in 1h43m15s with exit code 0 and no
+reported OOM) as two sweeps, both
 reusing state-seed 0 so all 20 initial positions are identical to job 1182's:
 
 - **`horizon_budget`** (100-step episode, reuses job 1182's exact state-bank
-  file): `horizon10` (H=10 blocks, i.e. double the lookahead, same K=300/R=30),
-  `bigbudget` (K=600, R=45, same H=5), `horizon10_bigbudget` (both combined).
-- **`longepisode`** (300-step episode, 3×, matching VMAS's own Passage default;
+  file): `horizon10` (H=10 blocks, same K=300/R=30), `bigbudget` (K=600,
+  R=45, H=5), `horizon10_bigbudget` (both combined). **All execute one block
+  between replans**, so `replan1`, not `lewm`, is their controlled H=5 reference.
+- **`longepisode`** (300-step episode, 3× Transport's configured default;
   each run regenerates its own state bank from state-seed 0, since a 300-step
   bank cannot equal a 100-step one under `evaluate.py`'s task-config check —
   verified bit-identical positions, different `state_bank_sha256` as expected):
@@ -92,54 +106,55 @@ reusing state-seed 0 so all 20 initial positions are identical to job 1182's:
 | longepisode (300 steps) | replan1 | 2.791 | 3/3 | 0/60 | 1555 |
 | longepisode (300 steps) | horizon10 | 3.661 | 3/3 | 0/60 | 2339 |
 
-**Horizon dominates raw budget, exactly as the contact diagnosis predicted:**
-`horizon10` (2× lookahead) roughly triples `lewm`'s original return (0.259→0.722)
-and clears the return-vs-random gate on 2/3 seeds; `bigbudget` (2× samples, 1.5×
-iterations, same horizon) barely beats `lewm` and clears the gate on 0/3 —
-confirming more search *within the same 25-step lookahead* has little to offer
-when most states can't reach the package inside that lookahead regardless of how
-well it's searched. Combining both (`horizon10_bigbudget`) tracks `horizon10`
-alone, not a multiplicative gain — budget is not the limiting factor.
+At fixed execution cadence, `horizon10` raises mean return from `replan1`'s
+0.515 to 0.722 (about 1.40×), with the return gate passing for 2/3 seeds instead
+of 1/3. Comparing 0.722 to `lewm`'s 0.259 also changes execution cadence and
+cannot isolate lookahead. `bigbudget` averages 0.464, below `replan1`'s 0.515;
+`horizon10_bigbudget` averages 0.698, near `horizon10`'s 0.722. These are descriptive
+development-bank results, not proof that horizon dominates search budget.
+Final-elite-mean selection and closed-loop return have no monotonicity guarantee,
+and no uncertainty estimate for the across-seed configuration difference is
+reported here. The contact-coverage hypothesis remains to be tested directly.
 
-**Episode length matters even more.** At 300 steps, `replan1` and `horizon10`
-both clear the return gate on **all 3 seeds**, with mean returns 5–14× job
-1182's original numbers. Episode-level detail also shows the fix is partly
-generalizing, not just deepening progress on the same 4 states: `horizon10` at
+At 300 steps, `replan1` and `horizon10` both clear the return gate on **all three
+seeds**. Their means increase from 0.515 to 2.791 (5.42×) and from 0.722 to
+3.661 (5.07×), respectively, compared with the same solver at 100 steps.
+The longer episode also grants three times as many control steps and replans;
+these are not equal-budget performance comparisons. The 300-step random
+reference averages 0.0165, with episode-bootstrap CI [0, 0.0419] and no goals.
+Episode-level detail shows progress on additional development states: `horizon10` at
 300 steps shows nonzero return on 6–8/20 states per seed (planner-seed
 dependent), a union of **10/20** states across its 3 seeds — {0, 1, 5, 6, 9, 11,
 12, 16, 18, 19} — versus the fixed {0, 6, 12, 18} that was the *only* nonzero
 set anywhere in job 1182.
 
-**Success is still 0/60 across every run in this escalation, at every budget and
-episode length tested.** Even the best configuration (`horizon10` at 300 steps)
-never gets one package fully onto its goal. Inspecting states that remain stuck
-despite short agent-package distance (e.g. state 7, min distance 0.43, `return`
-still 0 in *every* run across both jobs) points to a second-order cause beyond
-raw distance: the shaping reward only rewards package-to-goal distance, not
-agent positioning, so an agent that starts on the *wrong side* of the package
-relative to the goal gets zero cost signal for the "circle around to the far
-side, then push" maneuver VMAS's own shipped `HeuristicPolicy` for Transport
-implements explicitly (a hermite-spline "dribble" controller) — flat-signal CEM
-has no gradient to discover that maneuver by chance. This is also consistent
-with the original VMAS paper (arXiv:2207.03530): only fully-decentralized IPPO
-learns Transport, requiring ~24M environment interactions (400 iterations ×
-60,000 interactions/iteration); centralized methods (CPPO, MAPPO) fail outright,
-attributed explicitly to the task's need for extensive exploration under high
-joint-state variance. Oracle CEM-MPC is architecturally centralized and
-zero-shot per episode (no learning carried across episodes), so it sits in
-exactly the category the source paper reports failing here — the difficulty is
-better explained by task/architecture mismatch than by a pipeline defect.
+**The escalation records 0 successes in 300 MPC episode evaluations:** nine
+100-step runs (180 episodes) and six 300-step runs (120 episodes). Each of its
+five settings has 0/60 successes on three repetitions of the same 20 initial
+states. Together, jobs 1182 and 1183 contain 0/660 successful MPC episode
+evaluations; they do not provide 660 independent evaluation states.
 
-**Implication for using this method.** The return-based signal (not binary
-success) is now a working oracle-vs-random reference for Transport — `horizon10`
-at either episode length clears the statistical gate reliably. Two paths forward,
-not yet chosen: (a) accept return/goal-distance-reduction, not binary success, as
-the operative Transport metric for M2/M5 (Buzz Wire keeps its binary gate; the
-two tasks would use different success definitions, which needs to be stated
-explicitly rather than silently), or (b) push horizon/episode length further
-still (500–1000 steps, H=15–20) to chase literal success, understanding the
-wrong-side-approach failure mode identified above is a search-blindness problem
-that more budget alone has not fixed at any scale tested so far.
+Approach geometry is another plausible explanation: state 7 starts at nearest
+agent distance 0.428 yet has zero return across both jobs, and the task's shaping
+reward rewards package-to-goal progress rather than preparatory agent positioning.
+The installed VMAS heuristic explicitly approaches and pushes the package, which
+suggests a useful coverage control. Neither this observation nor published PPO
+results establishes the cause of CEM failure. A centralized critic/policy in PPO
+and centralized action search are different algorithms; grouping them together
+does not diagnose an architectural failure.
+
+**Implication for M3/M4.** Transport provides a finite-budget oracle reference
+with measurable progress and no demonstrated goal attainment. Keep its return,
+goal-overlap success, and objective status separate; every saved summary correctly
+marks the objective `unvalidated: no task successes`. Preserve the objective
+`J = -sum_t sum_i r_i,t` and the actual success definition for learned-model
+comparisons. M3 can proceed with controlled data and explicit interaction-coverage
+diagnostics; a learned model cannot be assumed to infer missing interactions or
+beat the true dynamics at matched search solely through better understanding.
+Any improvement over this finite-budget CEM implementation needs attribution to
+search, horizon, objective, or approximation effects, followed by simulator replay
+and held-out confirmation. M2's development states must remain outside M3's
+training and held-out datasets.
 
 ## Question and controlled comparisons
 
@@ -217,17 +232,21 @@ Outputs are `outputs/transport_oracle_JOBID/`, including `batch.log`, `smoke/`,
 retains resolved config, source copies/hashes, package versions, per-episode
 CSV, return/success intervals, timing, candidate bank and executed trajectories.
 Real runs log to CSV and wandb group `m2-transport-oracle`; preflight runs use CSV
-only. GPU memory and utilization are sampled every five seconds in
-`gpu_memory.csv`; worker errors, including CUDA OOMs, remain in `batch.log` and
-Slurm output. No runtime/OOM conclusion is possible until the allocation starts.
+only. GPU memory sampling was attempted every five seconds in `gpu_memory.csv`;
+the historical 1182 and 1183 files contain numeric device `0` with 40960 MiB total
+memory throughout, so neither establishes memory usage of the allocated MIG
+slice. Resolve the actual allocated device UUID before using this monitor for a
+future capacity decision. Worker errors, including CUDA OOMs, remain in
+`batch.log` and Slurm output; both jobs completed with exit code 0 and no logged OOM.
 Review individual seeds as well as the consolidated table; no pooled-seed
 confidence interval is manufactured from duplicated initial states.
 
 First submission: `sbatch --parsable scripts/slurm/transport_oracle.sbatch` →
-**1181**, requesting the full A100 (18 workers). It stayed pending the whole
-two-hour window behind another user's job 1180 and was cancelled by the user at
-2026-09-14T06:32 UTC; `outputs/transport_oracle_1181/` holds only the watcher and
-an empty `monitor_status.json` (0/18 completed) — no comparison data.
+**1181**, requesting the full A100 (18 workers). It stayed pending behind another
+user's job 1180 from submission at 06:28:20 to cancellation at 06:31:59 UTC
+on 2026-09-14 (`sacct`); its requested wall-time limit was two hours, not its
+queue duration. `outputs/transport_oracle_1181/` holds the watcher and a
+`monitor_status.json` reporting cancellation and 0/18 completed — no comparison data.
 
 Resubmission: same command, now targeting the MIG slice → **1182**. Output root
 `outputs/transport_oracle_1182/`; Slurm log `slurm-1182.out`. Job 1182
@@ -239,5 +258,14 @@ A detached, read-only watcher ran from `outputs/transport_oracle_1182/watch_job.
 It polls Slurm and logs every 15 s, records transitions in `monitor.log`, and
 updates `monitor_status.json` with completed-run count, peak sampled GPU memory,
 and OOM detection — final state for 1182: `COMPLETED`, `oom_detected: false`,
-`peak_sampled_gpu_memory_mib: 1331.0`, `completed_summaries: 18/18`. The watcher
-exits after Slurm reports a terminal job state; it has already exited for 1182.
+`peak_sampled_gpu_memory_mib: 1331.0`, `completed_summaries: 18/18`. The peak field
+inherits the invalid device selection described above and is retained only as
+historical output. The watcher exits after Slurm reports a terminal job state;
+it has already exited for 1182.
+
+Audit for M3 (2026-09-14): counts, returns, gates, episode outcomes, and coverage
+sets above were checked against all 33 real-run `summary.json`/`episodes.csv`
+artifacts and both jobs' `comparison.csv` files. Primitive reward coverage was
+checked against all 18 job-1182 `mpc_trajectory.pt` files. All entity and scenario
+snapshot tensors in the 100-step bank and the first 300-step bank are bitwise
+identical; the manifests differ because their task episode limits differ.

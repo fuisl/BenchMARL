@@ -198,10 +198,10 @@ for 8 Oct.
 | # | Claim | § | Evidence needed | Status | Source |
 |---|---|---|---|---|---|
 | C1 | Exact counterfactual replay is possible in VMAS | 6.3 | Snapshot/restore reproduces trajectories; different actions give different outcomes | **HAVE** | `02_oracle_validation.md` — replay bit-exact on 6,000 candidates; selected-mean agrees to 1.91e-6 |
-| C2 | Oracle CEM-MPC is a valid dynamics reference | 6.3, 7.4 | Oracle beats random with non-overlapping CIs; solves the task, not just shaping reward | **HAVE (Buzz Wire) · PARTIAL (Transport)** | Buzz Wire R=30: return −1.306 [−3.318, 0.285] vs random; 11/20 collision-free goals [34.2%, 74.2%]. Transport (job 1182→1183, 2026-09-14): return-vs-random gate now clears reliably at H=10/300-step episodes (3/3 seeds), but literal success is 0/60 runs across every setting tested — gate defensible only if Transport uses a return-based, not binary-success, criterion |
-| C3 | The planner's budget/horizon settings are justified | 5.4, 6.4 | H=1 vs H=5; K/R budget sensitivity | **IN FLIGHT** | Buzz Wire H100 ablations queued; R=10 vs R=30 contrast exists (4/20 vs 11/20 goals). Transport's K/R/H/episode-length grid (jobs 1182+1183) shows horizon and episode length dominate over raw K/R budget — a coverage analysis traced the original 0/18 result to a package-contact bottleneck, not search quality |
-| C4 | Transport exhibits the cross-agent coupling the RQ needs | 6.1 | Intervention on one agent's push measurably changes shared-object motion from a restored state | **IN FLIGHT · RISK** | Replay + outcome semantics validated; oracle now shows real (non-zero, statistically distinguishable) progress at H=10/300 steps, but never reaches full success at any tested budget — consistent with the source VMAS paper's own finding that only fully-decentralized IPPO (~24M interactions) solves Transport, not centralized/zero-shot methods like CEM-MPC |
-| C5 | Controlled-coverage datasets isolate action coverage | 6.2 | Manifests, coverage summaries, leakage checks | **NOT STARTED** · **RISK** | M3 |
+| C2 | Oracle CEM-MPC is a valid dynamics reference | 6.3, 7.4 | Oracle beats random with non-overlapping CIs; solves the task, not just shaping reward | **HAVE (Buzz Wire) · PARTIAL (Transport)** | Buzz Wire R=30: 11/20 goals. Transport: zero goals in 660 episode evaluations across 33 runs, reusing 20 development states. At 300 steps both H5/H10 pass the return gate on 3/3 seeds; success remains unvalidated. Keep reward and success distinct. |
+| C3 | The planner's budget/horizon settings are justified | 5.4, 6.4 | H=1 vs H=5; K/R budget sensitivity | **PARTIAL** | Controlled Transport H5→H10 at C=1 raises mean return .515→.722 at 100 steps. Larger-budget effects vary. Comparisons against C=5 also change cadence. Contact/search explanations remain hypotheses; see audited M2 notes. Buzz Wire further ablations are paused. |
+| C4 | Transport exhibits the cross-agent coupling the RQ needs | 6.1 | Intervention on one agent's push measurably changes shared-object motion from a restored state | **HAVE (pilot)** | Controlled contact fixture plus M3 job1190: package effects in 32/239 test anchors over 25 steps, 21/239 within five. Coverage remains source-dependent; see `03_datasets.md`. |
+| C5 | Controlled-coverage datasets isolate action coverage | 6.2 | Manifests, coverage summaries, leakage checks | **HAVE (pilot)** | M3 job1190: 1,919 paired anchors, 96/16/16 root episode split, validated manifests/replay/reader. First transition/block has matched input states; later states depend on actions. |
 | C6 | Three world models train reproducibly under matched budgets | 5.1–5.3, 7.1 | Matched capacity/latent/loss/data; latent variance healthy | **NOT STARTED** · **RISK** | M4 |
 | C7 | Models are comparable in-distribution but differ counterfactually | **7.1–7.2** | $E_{\mathrm{ID}}$ parity + $G_{\mathrm{CF}}$ separation | **NOT STARTED** · **RISK** | M5 — *this is the paper's headline* |
 | C8 | Counterfactual gap predicts plan-ranking quality | 7.3 | $\rho_{\text{plan}}$, selected-plan regret on shared candidate sets | **NOT STARTED** · **RISK** | M5 |
@@ -212,28 +212,21 @@ for 8 Oct.
 
 ### What this map says plainly
 
-C1–C3 are real and defensible today for Buzz Wire only. **C7, C8, and C9 — the
+C1 has replay evidence on both tasks; C2–C3 retain the limitations above. **C7, C8, and C9 — the
 entire empirical core — do not exist.** Sections 7.1 through 7.4 are currently
 unwritable, and they are ~1,650 words, four of the paper's six figures/tables, and
 the whole reason the paper is interesting. The work between here and there is M3
 (datasets) → M4 (three trained models + reward head) → M5 (main results) → M6
 (seeds).
 
-**Updated risk (2026-09-14, jobs 1182→1183):** oracle MPC — the dynamics reference
-every downstream claim (C4, C7–C9) is measured against — still never reaches
-literal success on Transport (0/60 runs across the full escalation: 2x horizon,
-2x samples, 3x episode length, alone and combined). A coverage analysis explains
-why: most development states never bring an agent within reach of the package
-inside the tested lookahead, and states that are close but on the wrong side of
-the package relative to the goal get no cost signal for the "circle around, then
-push" maneuver VMAS's own shipped heuristic uses — consistent with the original
-VMAS paper's finding that only fully-decentralized IPPO (~24M interactions)
-solves Transport, not centralized/zero-shot methods. The return-vs-random gate
-does now clear reliably at H=10/300 steps, so the open decision is whether §6.4's
-success metric should be return/goal-distance progress for Transport specifically
-rather than binary success (Buzz Wire keeps binary), or whether the primary task
-should be reconsidered (Give Way / Passage are the M1 alternates). This sits
-upstream of M3 and should be resolved before, not during, dataset collection.
+**Updated risk (2026-09-14, jobs 1182→1183):** Transport oracle MPC improves
+return under longer horizons/episodes but has no observed goals. Sparse rewarding
+contact and limited search are candidate explanations; PPO architecture results
+do not diagnose CEM. Do not relabel progress as task success. M3 proceeds with the
+user's Transport choice to measure data support and physical intervention effects;
+this can support M4 prediction experiments while the closed-loop success claim
+remains open. Learned models cannot recover interactions absent from their data,
+and beating a finite-budget oracle controller would require a separate explanation.
 
 That is the schedule risk, stated without softening: **17 days to the abstract
 deadline, 24 to the paper**, with the reward-head dependency in §5.3 not yet

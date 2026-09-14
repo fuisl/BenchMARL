@@ -36,9 +36,9 @@ The following records the initial scan, not a continuously updated environment i
 
 **Revision check (2026-09-11):** VMAS **1.5.2**, PyTorch Geometric **2.8.0.post1**, W&B **0.30.0**, and pytest **9.1.1** are now installed. This supersedes the missing-package entries above. This revision checked package metadata only; it did not rerun environment or training validation.
 
-**Current M2 revision (2026-09-11):** simulator snapshots (including episode clocks), batched oracle costs, CEM, and a configurable closed-loop Buzz Wire evaluator are implemented under `examples/world_model/`. The first 20-episode Buzz Wire pilot passes M2's return gate and reaches 11 goals at R=30; R=10 reaches 4 goals with higher mean return and fewer collisions. See [oracle validation](experiments/02_oracle_validation.md) for tests, the budget tradeoff, and pending H100 ablations. Offline datasets/training, learned dynamics, anti-collapse losses, and learned-model ranking/oracle-gap comparisons remain unimplemented.
+**Current M2 revision (2026-09-11):** simulator snapshots (including episode clocks), batched oracle costs, CEM, and a configurable closed-loop Buzz Wire evaluator are implemented under `examples/world_model/`. The first 20-episode Buzz Wire pilot passes M2's return gate and reaches 11 goals at R=30; R=10 reaches 4 goals with higher mean return and fewer collisions. See [oracle validation](experiments/02_oracle_validation.md) for tests, the budget tradeoff, and deferred H100 ablations. Learned-model training, anti-collapse losses, and learned ranking/oracle-gap comparisons remain unimplemented; offline datasets are now available through M3 below.
 
-**Current task selection (2026-09-14):** Buzz Wire experiments are paused at the user's request. Transport replay and outcome semantics are validated. Job 1182 (18-run comparison batch, 20 GB MIG slice, 4 workers) completed cleanly with 0/18 configurations reaching collision-free success (100% timeout throughout). A coverage analysis traced this to a contact bottleneck (most development states never bring an agent within reach of the package inside the tested lookahead), which motivated a follow-up escalation, job 1183 (longer horizon, larger search budget, and a 300-step episode length). Job 1183's `horizon10` config at 300 steps now clears the return-vs-random gate on all 3 seeds with 5–14x job 1182's returns, and package movement now shows up on up to 10/20 states (vs. a fixed 4/20 before) — but **literal success is still 0/60 runs across the entire escalation**, at every budget and episode length tested so far. See [Transport comparisons](experiments/02_transport_comparisons.md) for both result tables, the coverage analysis, and the open question of whether Transport's M2 gate should use return/goal-distance progress rather than binary success.
+**Current task selection (2026-09-14):** Buzz Wire experiments are paused at the user's request. Transport replay and outcome semantics are validated. Jobs 1182 and 1183 completed 18 and 15 real runs, respectively, with **0 successes in 660 MPC episode evaluations on repeated versions of the same 20 development states**. The 300-step `replan1` and `horizon10` settings clear the return-vs-random gate on all three planner seeds (mean returns 2.791 and 3.661), but task-success objective validity remains unvalidated. At fixed one-block execution cadence and 100 steps, increasing H=5 to H=10 raises mean return from 0.515 to 0.722; comparison with `lewm`'s 0.259 also changes cadence. Nonzero reward occurs on four development states across job 1182 and ten across the 300-step `horizon10` runs. Poor useful-contact coverage is a working hypothesis, not an established cause. M3 will preserve the task reward and success definitions, measure interaction coverage explicitly, and keep these development states out of its datasets. See [Transport comparisons](experiments/02_transport_comparisons.md) for audited counts, results, confounds, and the invalid historical MIG memory measurements.
 
 The VMAS task adapter currently returns `None` for `state_spec`. Agent observations must not be assumed to contain the full simulator state. Exact counterfactual replay needs explicit handling of relevant simulator and scenario state.
 
@@ -109,12 +109,43 @@ The proposed roles above are our experimental interpretation, to be checked in p
 
 **Done when:** fixed datasets have manifests, coverage summaries, and leakage checks in `experiments/03_datasets.md`.
 
+**M3 protocol revision (2026-09-14):** the first two action regimes are implemented
+for Transport under `examples/world_model/collect.py`. Their per-agent action
+marginals are uniform; the correlated regime restricts signs across agents, and
+test interventions break that correlation. Independent/correlated source
+trajectories supply a shared anchor bank. Both regimes branch from each exact
+anchor, and every child inherits its root episode's split. Only the initial
+transition/block is an exact state-distribution-controlled comparison; later
+branch states depend on the sampled actions. Physical interaction diagnostics
+must distinguish absolute state changes from relative-observation changes.
+The M4 reader preserves action blocks, primitive rewards, terminal masks, and
+episode identity. See [M3 datasets](experiments/03_datasets.md) for artifacts,
+measured coverage, validation, and the remaining cooperative-policy extension.
+
+**M3 pilot result:** the random-only bank (job 1187) had physical package effects
+in only 1/160 test anchors. Adding VMAS's shipped Transport heuristic as a third
+source of shared states produced the completed **job 1190** bank: 128 root
+episodes, 1,919 paired anchors, 46,060 primitive transitions per regime, and
+32/239 test anchors with package intervention effects over 25 steps (21/239
+within five). The source heuristic reached 3/128 goals; it supplies useful contact
+states but is not a high-success expert. All manifests, episode/snapshot leakage
+checks, replay checks and M4 reader checks pass. This satisfies the initial M3
+dataset gate; trained cooperative-policy data and independent confirmation remain
+later extensions. Proceed to M4 using `outputs/transport_data_1190/`.
+
 ### M4 — Establish three world-model baselines
 
 - Implement independent, joint-concatenated, and relational latent predictors.
 - Keep encoder design, latent size, loss, data, and optimization budgets consistent; match parameter counts where practical and report them.
 - Use the same prediction plus anti-collapse objective. Check latent variance and one-step/multi-step prediction before connecting MPC.
 - Treat raw MSE across separately learned latent spaces cautiously; use common task-level metrics for headline comparisons.
+
+Use the official LeWM reference revision recorded in the M3 note for encoder,
+predictor and SIGReg semantics. Preserve our episode splits and explicit masks;
+do not copy upstream window-level random splitting or fit normalization on
+validation/test samples. Establish the controlled first-block baseline before a
+multi-step ablation. The task-reward/termination readout needed for M5 is a separate
+explicit interface to validate; two-term latent training alone does not supply it.
 
 **Done when:** all three models train and reload reproducibly on the same pilot dataset. Record results in `experiments/04_model_baselines.md`.
 
