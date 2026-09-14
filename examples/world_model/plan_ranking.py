@@ -59,13 +59,18 @@ def select_anchor_states(anchors, indices):
 
 
 def true_costs(data_root: Path, indices, candidates, device):
-    """Exact simulator cost per candidate: (B, K)."""
+    """Exact simulator cost per candidate: (B, K).
+
+    The task comes from the bank's own manifest rather than being hard-coded, so
+    the same protocol runs on whichever task produced the data.
+    """
     anchors = torch.load(
         data_root / "anchors.pt", map_location="cpu", weights_only=True
     )
+    manifest = json.loads((data_root / "manifest.json").read_text())
     snapshot = select_anchor_states(anchors, indices)
     batch, n_candidates = candidates.shape[:2]
-    task = VmasTask.TRANSPORT.get_from_yaml()
+    task = VmasTask[manifest["task_name"].split("/")[-1].upper()].get_from_yaml()
     scratch = task.get_env_fun(batch * n_candidates, True, 0, device)()
     scratch.reset()
     try:
@@ -158,8 +163,14 @@ def main():
         )
         print(f"loaded cached truth for {chosen.numel()} states")
     else:
+        manifest = json.loads((args.data / "manifest.json").read_text())
+        steps = manifest["sequence_steps"]
+        joint_dim = torch.as_tensor(manifest["action_low"]).numel()
         candidates = (
-            torch.rand(chosen.numel(), args.candidates, 25, 8, generator=generator) * 2
+            torch.rand(
+                chosen.numel(), args.candidates, steps, joint_dim, generator=generator
+            )
+            * 2
             - 1
         )
         truth = true_costs(args.data, chosen, candidates, args.device)
