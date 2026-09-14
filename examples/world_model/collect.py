@@ -8,6 +8,7 @@ replay and physical-effect diagnostics, never silently added to model inputs.
 """
 
 import hashlib
+import importlib
 import json
 import platform
 import subprocess
@@ -29,6 +30,19 @@ from tensordict import TensorDict
 from torchrl.record.loggers import get_logger
 from torchrl.record.loggers.wandb import WandbLogger
 from vmas.scenarios import transport as transport_scenario
+
+
+def tracked_entities(env):
+    """Landmarks whose physics we record as an interaction diagnostic.
+
+    Transport exposes ``scenario.packages`` (the shared object agents push);
+    tasks without one fall back to the world's landmarks, so the stored schema
+    is identical across tasks. These states are diagnostics only and are never
+    model inputs, so the stored key keeps its ``package_state`` name rather than
+    breaking the schema that the existing Transport bank was written with.
+    """
+    scenario = env._env.scenario
+    return getattr(scenario, "packages", None) or env._env.world.landmarks
 
 
 REGIMES = ("independent", "correlated")
@@ -119,7 +133,7 @@ def rollout_actions(env, snapshot, actions, anchor_stride=None, policy=None):
             [env._env.scenario.observation(agent) for agent in env._env.world.agents], 1
         )
         agent_state = physical_state(env._env.world.agents)
-        package_state = physical_state(env._env.scenario.packages)
+        package_state = physical_state(tracked_entities(env))
         action = actions[:, step].to(env.device).clone()
         if policy is not None and live.any():
             action[live] = policy(observation[live])
@@ -142,7 +156,7 @@ def rollout_actions(env, snapshot, actions, anchor_stride=None, policy=None):
             "agent_state": agent_state,
             "next_agent_state": physical_state(env._env.world.agents),
             "package_state": package_state,
-            "next_package_state": physical_state(env._env.scenario.packages),
+            "next_package_state": physical_state(tracked_entities(env)),
         }
         records.append(
             {
@@ -293,8 +307,11 @@ def effect_summary(reference, counterfactual):
 
 
 def run_collection(cfg, output, task_name):
-    if task_name != "vmas/transport":
-        raise ValueError("M3 collection currently validates Transport only")
+    # Dropout is M1 Row 4's weak-interaction control: its agents have no
+    # cross-agent dynamics, so a relational advantage there would show the
+    # benefit is not interaction modelling.
+    if task_name not in ("vmas/transport", "vmas/dropout"):
+        raise ValueError("M3 collection validates Transport and Dropout only")
     settings = cfg.dataset
     if (
         min(
@@ -313,6 +330,8 @@ def run_collection(cfg, output, task_name):
         raise ValueError("The joint-action intervention requires at least two agents")
     if cfg.experiment.render:
         raise ValueError("Offline data collection does not render")
+    if settings.include_heuristic and task_name != "vmas/transport":
+        raise ValueError("The shipped heuristic source policy is Transport-specific")
     if settings.include_heuristic and (
         cfg.task.n_packages != 1
         or cfg.task.package_width != 0.15
@@ -322,6 +341,11 @@ def run_collection(cfg, output, task_name):
     if (output / "manifest.json").exists():
         raise FileExistsError("Refusing to overwrite an existing fixed dataset")
     started = time.perf_counter()
+    # VMAS loads Scenario dynamically, so inspect.getfile on the instance fails;
+    # import the installed module explicitly to hash it for provenance.
+    scenario_module = importlib.import_module(
+        f"vmas.scenarios.{task_name.split('/')[-1]}"
+    )
     task = load_task_config_from_hydra(cfg.task, task_name)
     device = cfg.experiment.sampling_device
     if torch.device(device).type == "cuda":
@@ -335,7 +359,7 @@ def run_collection(cfg, output, task_name):
             experiment_name="offline_data",
             wandb_kwargs={
                 "project": cfg.experiment.project_name,
-                "group": "m3-transport-data",
+                "group": f"m3-{task_name.split('/')[-1]}-data",
                 **OmegaConf.to_container(
                     cfg.experiment.wandb_extra_kwargs, resolve=True
                 ),
@@ -547,8 +571,8 @@ def run_collection(cfg, output, task_name):
             },
             "python": platform.python_version(),
             "torch_cuda": torch.version.cuda,
-            "vmas_transport_source_sha256": hashlib.sha256(
-                Path(transport_scenario.__file__).read_bytes()
+            "vmas_scenario_source_sha256": hashlib.sha256(
+                Path(scenario_module.__file__).read_bytes()
             ).hexdigest(),
             "device": str(device),
             "device_name": torch.cuda.get_device_name(device)
