@@ -157,8 +157,13 @@ baselines; multi-step rollout does, with relational 13.0%/13.8% below independen
 under correlated/independent actions. Two cautions carried forward: the relational
 gain is the same size in both regimes, so the coverage contrast the impact notes
 predict does not appear; and sum pooling being better conditioned is a live
-non-interaction explanation, so M1 Row 4's **Dropout control must run before any
-interaction claim**. The reward readout works (R^2 ~ 0.74 on frozen dynamics); the
+non-interaction explanation, so M1 Row 4's Dropout control was run (job 1194,
+eight seeds, both tasks): the relational advantage holds on Transport for 8/8
+seeds in both regimes with bootstrap intervals clear of zero, and does **not**
+transfer to Dropout (3/8 seeds, intervals containing zero). That is Row 4's
+well-behaved outcome, bounded by two caveats recorded in the M4 note -- Dropout's
+correlated interval still contains the Transport-sized effect, and Dropout
+differs from Transport in more than interaction. The reward readout works (R^2 ~ 0.74 on frozen dynamics); the
 termination head has **zero positive examples in this dataset** and is explicitly
 unvalidated, which remains an open blocker for `J = -sum r` under learned MPC. The
 SIGReg objective sits near an unreachable floor set by latent rank deficiency

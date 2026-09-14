@@ -107,15 +107,70 @@ Three observations that limit what this supports:
    this horizon, or both regimes are effectively restricted — consistent with
    M3's finding that only 32/239 test anchors show any cross-agent physical
    effect over 25 steps.
-3. **A non-interaction explanation is live.** Sum pooling may simply be a
-   better-conditioned or more smoothly regularised map than a 1870-wide MLP on
-   `[a_i, z_i]`, improving rollout stability without modelling interaction at
-   all. Distinguishing these requires M1 Row 4's control: repeat on **Dropout**,
-   where cross-agent dynamics are absent by construction. A relational advantage
-   there would show the effect is not interaction modelling. This is the single
-   most informative next experiment and should precede any interaction claim.
+3. **A non-interaction explanation was live.** Sum pooling may simply be a
+   better-conditioned map than a 1870-wide MLP on `[a_i, z_i]`, improving
+   rollout stability without modelling interaction at all. The Dropout control
+   below tests exactly this.
 
-Three seeds is a pilot count; M6 targets 5–10 for headline comparisons.
+Three seeds is a pilot count; M6 targets 5–10 for headline comparisons, and the
+control below supersedes these three-seed numbers with eight.
+
+## M1 Row 4 — weak-interaction control (job 1194)
+
+Dropout has no cross-agent dynamics: agents do not collide, share no object and
+never observe each other, so coupling exists only in the shared reward and
+termination. If the relational rollout advantage is interaction modelling it
+should not appear there; if it is a conditioning effect it should transfer.
+
+The **quantity and its reading were fixed before the data existed**: the
+within-task paired relational-vs-independent rollout change. Absolute errors are
+not comparable across tasks (7 observation features against 11, in separately
+learned latent spaces), so only the within-task ratio is. Seeds are shared
+across baselines and fix both initialisation and batch order, so differences are
+paired per seed rather than compared as group means.
+
+A first three-seed attempt (job 1193) was **inconclusive and is not reported as
+a result**: one seed of three found a much worse optimum on Dropout for every
+baseline, enough to set both the mean and the spread, and the mean and median
+pointed in opposite directions. Job 1194 reran both tasks over eight seeds at
+identical budgets — 96 runs, all completed.
+
+| Task | Regime | mean | median | 95% CI (bootstrap) | seeds better |
+|---|---|---:|---:|---:|---:|
+| Transport | correlated | -12.0% | -10.6% | **[-14.8, -9.7]** | **8/8** |
+| Transport | independent | -12.8% | -12.4% | **[-15.9, -10.1]** | **8/8** |
+| Dropout | correlated | +9.4% | +4.2% | [-15.2, +35.1] | 3/8 |
+| Dropout | independent | +27.9% | +7.8% | [-7.8, +68.1] | 3/8 |
+
+On Transport the advantage holds for **every seed in both regimes** with
+intervals clear of zero (sign test p ~ 0.008 per regime). On Dropout the point
+estimates are positive — relational slightly worse — and both intervals contain
+zero. The effect does not transfer to a task without cross-agent dynamics,
+which is the well-behaved outcome Row 4 asks for.
+
+Two limits on how far that carries:
+
+1. **The Dropout correlated interval [-15.2, +35.1] still contains -13%**, so
+   that regime cannot reject an effect of the Transport size; the independent
+   regime's [-7.8, +68.1] does exclude it. The defensible claim is the 8/8
+   versus 3/8 contrast, not a demonstrated null on Dropout.
+2. **Dropout differs from Transport in more than interaction** — 7 observation
+   features rather than 11, sparse reward, different dynamics, and markedly less
+   stable optimisation (per-seed rollout spread 5.5x against 1.2x on Transport,
+   affecting all three baselines about equally). The absence could owe to any of
+   these. A same-task interaction ablation would be a tighter control; VMAS does
+   not offer one for Transport directly.
+
+Two facts carry over unchanged and both bear on M5. `terminated_rate` is 0.0000
+on Dropout as well, because random actions do not reach the goal inside a
+25-step snippet, so the termination head is unvalidated on either task. And
+Dropout's **reward readout fails** — relative error ~2.5, worse than predicting
+the mean, against 0.25 on Transport — so Dropout cannot support a planning claim
+without separate diagnosis, even though it serves as a prediction control.
+
+Reproduce with `python -m examples.world_model.compare_baselines
+outputs/interaction_control_1194`. The summariser is version controlled rather
+than left in a run directory, because M5 needs the same comparison.
 
 ### Latent health
 

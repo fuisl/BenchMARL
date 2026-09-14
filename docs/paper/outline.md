@@ -206,7 +206,7 @@ for 8 Oct.
 | C7 | Models are comparable in-distribution but differ counterfactually | **7.1–7.2** | $E_{\mathrm{ID}}$ parity + $G_{\mathrm{CF}}$ separation | **NOT STARTED** · **RISK** | M5 — *this is the paper's headline* |
 | C8 | Counterfactual gap predicts plan-ranking quality | 7.3 | $\rho_{\text{plan}}$, selected-plan regret on shared candidate sets | **NOT STARTED** · **RISK** | M5 |
 | C9 | Ranking quality predicts closed-loop control | 7.4 | Success/return + oracle gap at matched budgets | **NOT STARTED** · **RISK** | M5 |
-| C10 | Benefit tracks measured cross-agent effect, not task identity | 7.5, 8 | Same comparison across ≥2 interaction mechanisms + weak-coupling control | **NOT STARTED** | M6 |
+| C10 | Benefit tracks measured cross-agent effect, not task identity | 7.5, 8 | Same comparison across ≥2 interaction mechanisms + weak-coupling control | **PARTIAL** | M4 job 1194: relational rollout advantage is 8/8 seeds on Transport (CI clear of zero) and absent on the Dropout weak-interaction control (3/8, CI spans zero). Bounded -- Dropout's correlated CI still contains the Transport-sized effect, and Dropout differs in more than interaction. Prediction only; no ranking or control yet |
 | C11 | Multi-step training matters more as interaction increases (RQ2) | 7.5 | One-step vs multi-step × interaction strength | **NOT STARTED** | M6 |
 | C12 | Results are not single-seed artefacts | 7.1–7.4 | 5–10 seeds, uncertainty reported | **NOT STARTED** · **RISK** | M6 |
 
