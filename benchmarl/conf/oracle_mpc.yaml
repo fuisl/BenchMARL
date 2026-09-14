@@ -1,0 +1,26 @@
+defaults:
+  - experiment: base_experiment
+  - task: vmas/buzz_wire
+  - _self_
+
+# Planner sampling seed; evaluation states and random actions have separate seeds.
+seed: 0
+cem:
+  horizon: 5
+  num_samples: 300
+  num_elites: 30
+  num_iters: 30
+  init_std: 1.0
+mpc:
+  receding_horizon: 5
+  action_block: 5
+  warm_start: true
+evaluation:
+  state_seed: 0
+  random_seed: 1
+  statistics_seed: 2
+  states_file: null
+experiment:
+  evaluation_episodes: 20
+  sampling_device: cuda
+  render: false

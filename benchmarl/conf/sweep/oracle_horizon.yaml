@@ -1,0 +1,12 @@
+# @package _global_
+defaults:
+  - /oracle_mpc
+  - _self_
+
+# Hold execution cadence fixed: five primitive steps between decisions.
+mpc:
+  receding_horizon: 1
+hydra:
+  sweeper:
+    params:
+      cem.horizon: 1,5

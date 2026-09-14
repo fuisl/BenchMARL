@@ -1,0 +1,19 @@
+# @package _global_
+defaults:
+  - /oracle_mpc
+  - _self_
+
+cem:
+  horizon: 2
+  num_samples: 4
+  num_elites: 2
+  num_iters: 2
+mpc:
+  receding_horizon: 1
+  action_block: 2
+task:
+  max_steps: 5
+experiment:
+  evaluation_episodes: 2
+  sampling_device: cpu
+  loggers: [csv]

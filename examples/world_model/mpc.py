@@ -1,0 +1,277 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+# Licensed under the license in the LICENSE file in the root directory.
+"""Batched VMAS oracle MPC, in primitive action units."""
+
+from dataclasses import dataclass
+from pathlib import Path
+from time import perf_counter
+
+import torch
+
+from examples.world_model.cem import cem_plan, CEMConfig
+from examples.world_model.oracle_dynamics import oracle_plan_costs
+from examples.world_model.snapshot_restore import restore_state, snapshot_state
+from tensordict import TensorDict
+
+
+@dataclass
+class MPCConfig:
+    receding_horizon: int = 5
+    action_block: int = 5
+    warm_start: bool = True
+
+    def validate(self, horizon):
+        if self.action_block < 1 or not 1 <= self.receding_horizon <= horizon:
+            raise ValueError(
+                "Require action_block >= 1 and 1 <= receding_horizon <= horizon"
+            )
+
+
+def unpack_actions(blocks, action_block):
+    """(...,H,block*N*d_a) -> (...,H*block,N*d_a), preserving time order."""
+    if action_block < 1 or blocks.shape[-1] % action_block:
+        raise ValueError("Blocked action dimension must be divisible by action_block")
+    return blocks.reshape(
+        *blocks.shape[:-2],
+        blocks.shape[-2] * action_block,
+        blocks.shape[-1] // action_block,
+    )
+
+
+def shift_plan(plan, executed_blocks):
+    """Retain unused blocks and append zeros, as in LeWM's warm start."""
+    shifted = torch.zeros_like(plan)
+    remaining = plan.shape[1] - executed_blocks
+    if remaining > 0:
+        shifted[:, :remaining] = plan[:, executed_blocks:]
+    return shifted
+
+
+def action_bounds(env):
+    spec = env.full_action_spec_unbatched["agents", "action"]
+    low, high = spec.space.low, spec.space.high
+    if not (low == low.flatten()[0]).all() or not (high == high.flatten()[0]).all():
+        raise ValueError("This pilot requires uniform joint-action bounds")
+    return float(low.flatten()[0]), float(high.flatten()[0])
+
+
+def buzz_wire_outcome(env):
+    scenario = env._env.scenario
+    distance = torch.linalg.vector_norm(
+        scenario.ball.state.pos - scenario.goal.state.pos, dim=-1
+    )
+    collided = scenario.collided.bool()
+    return (distance <= 0.01) & ~collided, collided, distance
+
+
+def transport_outcome(env):
+    """All packages must overlap their goal; contacts are not terminal failures."""
+    scenario = env._env.scenario
+    goal = scenario.done()
+    distance = (
+        torch.stack(
+            [
+                torch.linalg.vector_norm(
+                    package.state.pos - package.goal.state.pos, dim=-1
+                )
+                for package in scenario.packages
+            ],
+            dim=-1,
+        )
+        .max(dim=-1)
+        .values
+    )
+    return goal, torch.zeros_like(goal), distance
+
+
+class EpisodeStats:
+    """Latch first terminal outcomes; never count post-terminal rewards or goals."""
+
+    def __init__(self, env, outcome_fn=buzz_wire_outcome):
+        self.outcome_fn = outcome_fn
+        self.alive = ~env._env.done()
+        if not self.alive.all():
+            raise ValueError("Evaluation states must be nonterminal")
+        self.team_return = torch.zeros_like(env._env.steps)
+        self.length = torch.zeros_like(env._env.steps, dtype=torch.long)
+        self.success = torch.zeros_like(self.alive)
+        self.collision = torch.zeros_like(self.alive)
+        self.timeout = torch.zeros_like(self.alive)
+        self.final_distance = torch.zeros_like(env._env.steps)
+
+    def update(self, env, td):
+        reward = td["agents", "reward"].sum(dim=1).squeeze(-1)
+        if not torch.isfinite(reward[self.alive]).all():
+            raise ValueError("Non-finite live episode reward")
+        self.team_return += reward.masked_fill(~self.alive, 0)
+        self.length += self.alive.long()
+        ended = self.alive & td["done"].squeeze(-1)
+        goal, collided, distance = self.outcome_fn(env)
+        timed_out = env._env.steps >= env._env.max_steps
+        if (ended & ~(collided | goal | timed_out)).any():
+            raise ValueError("Unclassified task termination")
+        self.success |= ended & goal
+        self.collision |= ended & collided
+        self.timeout |= ended & ~collided & ~goal & timed_out
+        self.final_distance = torch.where(ended, distance, self.final_distance)
+        self.alive &= ~ended
+
+    def rows(self, policy, n_agents):
+        return [
+            {
+                "policy": policy,
+                "episode": i,
+                "return": float(self.team_return[i]) / n_agents,
+                "team_return": float(self.team_return[i]),
+                "success": bool(self.success[i]),
+                "collision": bool(self.collision[i]),
+                "timeout": bool(self.timeout[i]),
+                "length": int(self.length[i]),
+                "final_goal_distance": float(self.final_distance[i]),
+            }
+            for i in range(len(self.alive))
+        ]
+
+
+def synchronize(device):
+    if torch.device(device).type == "cuda":
+        torch.cuda.synchronize(device)
+
+
+@torch.no_grad()
+def evaluate_policy(
+    env,
+    initial_state,
+    *,
+    policy: str,
+    generator: torch.Generator,
+    cem_config: CEMConfig,
+    mpc_config: MPCConfig,
+    scratch_env=None,
+    diagnostics_path: Path | None = None,
+    outcome_fn=buzz_wire_outcome,
+):
+    """Evaluate exactly one episode per slot; return episode rows and timing.
+
+    Finished slots receive zero actions and remain masked; there is no reset or
+    replacement episode. VMAS batch slots are independent. The horizon counts
+    blocks, while reward, timeout and termination always count primitive steps.
+    """
+    mpc_config.validate(cem_config.horizon)
+    if policy not in ("random", "mpc"):
+        raise ValueError(f"Unknown policy: {policy}")
+    if env._env.max_steps is None:
+        raise ValueError("Evaluation requires a finite task max_steps")
+    if policy == "mpc" and (scratch_env is None or scratch_env is env):
+        raise ValueError("MPC requires a separate scratch environment")
+    restore_state(env, initial_state)
+    stats = EpisodeStats(env, outcome_fn)
+    batch_size = env.batch_size[0]
+    n_agents = len(env._env.world.agents)
+    action_dim = env.full_action_spec_unbatched["agents", "action"].shape[-1]
+    joint_dim = n_agents * action_dim
+    low, high = action_bounds(env)
+    td = TensorDict({}, batch_size=[batch_size], device=env.device)
+    mean = None
+    decisions = []
+    trajectory = []
+    synchronize(env.device)
+    start = perf_counter()
+
+    while stats.alive.any():
+        if policy == "mpc":
+            snapshot = snapshot_state(env)
+
+            def cost_fn(candidates, snapshot=snapshot):
+                return oracle_plan_costs(
+                    scratch_env,
+                    snapshot,
+                    unpack_actions(candidates, mpc_config.action_block),
+                )
+
+            synchronize(env.device)
+            plan_start = perf_counter()
+            result = cem_plan(
+                cost_fn,
+                action_dim=joint_dim * mpc_config.action_block,
+                action_low=low,
+                action_high=high,
+                config=cem_config,
+                batch_size=batch_size,
+                init_mean=mean,
+                device=env.device,
+                generator=generator,
+            )
+            synchronize(env.device)
+            decisions.append(
+                {
+                    "primitive_step": len(trajectory),
+                    "active_episodes": int(stats.alive.sum()),
+                    "seconds": perf_counter() - plan_start,
+                    "best_seen_cost_mean": float(
+                        result.best_cost_history[-1, stats.alive].mean()
+                    ),
+                    "elite_cost_mean": float(
+                        result.elite_cost_history[-1, stats.alive].mean()
+                    ),
+                }
+            )
+            # Save a fixed-state candidate bank once, for subsequent rescoring.
+            if diagnostics_path is not None and len(decisions) == 1:
+                torch.save(
+                    {
+                        "snapshot": snapshot,
+                        "candidates": unpack_actions(
+                            result.candidates, mpc_config.action_block
+                        ),
+                        "costs": result.costs,
+                        "final_mean": unpack_actions(
+                            result.plan, mpc_config.action_block
+                        ),
+                        "elite_idx": result.elite_idx,
+                        "elite_cost_history": result.elite_cost_history,
+                        "best_cost_history": result.best_cost_history,
+                    },
+                    diagnostics_path / "candidate_bank.pt",
+                )
+            actions = unpack_actions(
+                result.plan[:, : mpc_config.receding_horizon], mpc_config.action_block
+            )
+            mean = (
+                shift_plan(result.plan, mpc_config.receding_horizon)
+                if mpc_config.warm_start
+                else None
+            )
+        else:
+            actions = (
+                torch.rand(
+                    batch_size, 1, joint_dim, device=env.device, generator=generator
+                )
+                * (high - low)
+                + low
+            )
+
+        for action in actions.unbind(dim=1):
+            alive = stats.alive.clone()
+            action = action.masked_fill(~alive[:, None], 0).reshape(
+                batch_size, n_agents, action_dim
+            )
+            td.set(("agents", "action"), action)
+            td = env.step(td)["next"]
+            stats.update(env, td)
+            trajectory.append(
+                {
+                    "action": action.cpu(),
+                    "live": alive.cpu(),
+                    "reward": td["agents", "reward"].cpu(),
+                    "done": td["done"].cpu(),
+                }
+            )
+            if not stats.alive.any():
+                break
+
+    synchronize(env.device)
+    timing = {"seconds": perf_counter() - start, "decisions": decisions}
+    if diagnostics_path is not None:
+        torch.save(trajectory, diagnostics_path / f"{policy}_trajectory.pt")
+    return stats.rows(policy, n_agents), timing
