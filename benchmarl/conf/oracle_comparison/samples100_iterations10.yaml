@@ -1,0 +1,6 @@
+# @package _global_
+comparison_name: samples100_iterations10
+cem:
+  num_samples: 100
+  num_elites: 10
+  num_iters: 10

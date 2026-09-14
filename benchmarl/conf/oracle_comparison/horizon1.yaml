@@ -1,0 +1,6 @@
+# @package _global_
+comparison_name: horizon1
+cem:
+  horizon: 1
+mpc:
+  receding_horizon: 1

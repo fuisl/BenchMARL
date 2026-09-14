@@ -1,0 +1,14 @@
+# @package _global_
+defaults:
+  - /oracle_mpc
+  - /oracle_comparison: lewm
+  - override /task: vmas/transport
+  - _self_
+
+# One development bank, three independent planner seeds. Held-out confirmation
+# follows selection of a protocol; these runs do not choose a success threshold.
+hydra:
+  sweeper:
+    params:
+      oracle_comparison: lewm,iterations10,replan1,horizon1,samples100,samples100_iterations10
+      seed: 0,1,2
