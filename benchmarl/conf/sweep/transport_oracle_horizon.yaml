@@ -1,0 +1,17 @@
+# @package _global_
+# Budget-escalation sweep at the original 100-step episode: isolates lookahead
+# horizon from raw search budget as candidate fixes for job 1182's 0/18
+# success result. Reuses job 1182's development state bank via
+# evaluation.states_file passed at the command line, so results are on
+# identical initial states.
+defaults:
+  - /oracle_mpc
+  - /oracle_comparison: horizon10
+  - override /task: vmas/transport
+  - _self_
+
+hydra:
+  sweeper:
+    params:
+      oracle_comparison: horizon10,bigbudget,horizon10_bigbudget
+      seed: 0,1,2

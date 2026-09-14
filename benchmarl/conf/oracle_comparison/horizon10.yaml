@@ -1,0 +1,10 @@
+# @package _global_
+# Doubles the lookahead to 10 blocks (50 primitive steps) at aggressive replan
+# cadence, to test whether most development states can make agent-package
+# contact within a single CEM rollout (job 1182 showed contact, not search
+# quality, is the dominant bottleneck at horizon=5).
+comparison_name: horizon10
+cem:
+  horizon: 10
+mpc:
+  receding_horizon: 1

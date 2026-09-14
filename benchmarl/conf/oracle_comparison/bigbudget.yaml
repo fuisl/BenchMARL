@@ -1,0 +1,12 @@
+# @package _global_
+# 2x samples, 1.5x iterations over lewm/replan1, elite fraction held at 10%.
+# Negative-control for the contact-bottleneck hypothesis: if reaching the
+# package (not search quality) is the limiter at horizon=5, this should not
+# meaningfully beat replan1 despite the much larger budget.
+comparison_name: bigbudget
+cem:
+  num_samples: 600
+  num_elites: 60
+  num_iters: 45
+mpc:
+  receding_horizon: 1

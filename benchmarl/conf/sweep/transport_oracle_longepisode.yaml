@@ -1,0 +1,18 @@
+# @package _global_
+# Decouples "episode too short" from "search too weak": same replan1/horizon10
+# CEM settings as the other escalation sweep, but max_steps raised 3x (300,
+# matching VMAS's own Passage default) on the identical development states.
+defaults:
+  - /oracle_mpc
+  - /oracle_comparison: replan1
+  - override /task: vmas/transport
+  - _self_
+
+task:
+  max_steps: 300
+
+hydra:
+  sweeper:
+    params:
+      oracle_comparison: replan1,horizon10
+      seed: 0,1,2
