@@ -32,6 +32,7 @@ Run directly for the self-contained correctness checks:
 ``python examples/world_model/cem.py``
 """
 
+import math
 from dataclasses import dataclass
 from typing import Callable
 
@@ -48,6 +49,18 @@ class CEMConfig:
     num_iters: int = 30
     init_std: float = 1.0
 
+    def __post_init__(self):
+        if min(self.horizon, self.num_samples, self.num_iters, self.num_elites) < 1:
+            raise ValueError(
+                "CEM horizon, samples, iterations and elites must be positive"
+            )
+        if self.num_elites > self.num_samples:
+            raise ValueError("CEM elites cannot exceed samples")
+        if not math.isfinite(self.init_std) or self.init_std <= 0:
+            raise ValueError(
+                "CEM initial standard deviation must be finite and positive"
+            )
+
 
 @dataclass
 class CEMResult:
@@ -63,8 +76,10 @@ class CEMResult:
     costs: torch.Tensor  # (B, S) their costs under the planning model
     elite_idx: torch.Tensor  # (B, num_elites) indices into candidates
     elite_cost_history: torch.Tensor  # (num_iters, B) mean elite cost per iteration
+    best_cost_history: torch.Tensor  # (num_iters, B) best cost seen so far
 
 
+@torch.no_grad()
 def cem_plan(
     cost_fn: Callable[[torch.Tensor], torch.Tensor],
     *,
@@ -94,6 +109,12 @@ def cem_plan(
     """
     horizon = config.horizon
     shape = (batch_size, horizon, action_dim)
+    if batch_size < 1 or action_dim < 1:
+        raise ValueError("Batch size and action dimension must be positive")
+    if not action_low < action_high:
+        raise ValueError("Action lower bound must be below upper bound")
+    if init_mean is not None and init_mean.shape != shape:
+        raise ValueError(f"init_mean must have shape {shape}")
 
     mean = (
         torch.zeros(shape, device=device)
@@ -103,6 +124,8 @@ def cem_plan(
     std = torch.full(shape, config.init_std, device=device)
     batch_idx = torch.arange(batch_size, device=device).unsqueeze(1)
     elite_cost_history = []
+    best_cost_history = []
+    best_cost = torch.full((batch_size,), float("inf"), device=device)
 
     for _ in range(config.num_iters):
         noise = torch.randn(
@@ -122,6 +145,8 @@ def cem_plan(
             raise ValueError(
                 f"cost_fn must return {(batch_size, config.num_samples)}, got {tuple(costs.shape)}"
             )
+        if not torch.isfinite(costs).all():
+            raise ValueError("CEM cost_fn returned non-finite costs")
 
         elite_costs, elite_idx = torch.topk(
             costs, config.num_elites, dim=1, largest=False
@@ -133,6 +158,8 @@ def cem_plan(
         # single elite; the sample std of one point would be NaN.
         std = elites.std(dim=1, correction=0)
         elite_cost_history.append(elite_costs.mean(dim=1))
+        best_cost = torch.minimum(best_cost, elite_costs[:, 0])
+        best_cost_history.append(best_cost)
 
     return CEMResult(
         plan=mean,
@@ -140,6 +167,7 @@ def cem_plan(
         costs=costs,
         elite_idx=elite_idx,
         elite_cost_history=torch.stack(elite_cost_history),
+        best_cost_history=torch.stack(best_cost_history),
     )
 
 
@@ -157,7 +185,7 @@ if __name__ == "__main__":
     device = "cpu"
     action_dim, horizon = 6, 5
     config = CEMConfig(horizon=horizon)
-    bounds = dict(action_low=-1.0, action_high=1.0)
+    bounds = {"action_low": -1.0, "action_high": 1.0}
 
     # -- L0: recover a known optimum, with no environment and no world model.
     torch.manual_seed(0)
@@ -177,7 +205,9 @@ if __name__ == "__main__":
     )
     assert far.plan.max().item() <= 1.0 + 1e-6, "plan exceeded the action upper bound"
     assert far.plan.min().item() >= 0.9, f"plan did not saturate: {far.plan.min()}"
-    print(f"PASS: respected action bounds (range [{far.plan.min():.3f}, {far.plan.max():.3f}]).")
+    print(
+        f"PASS: respected action bounds (range [{far.plan.min():.3f}, {far.plan.max():.3f}])."
+    )
 
     # -- L1: CEM must beat random shooting at an equal rollout budget. This is
     # the test that catches a reversed topk, a mis-gathered elite set, or a
@@ -200,8 +230,12 @@ if __name__ == "__main__":
 
     # -- L1: the elite cost must actually come down over iterations.
     history = result.elite_cost_history[:, 0]
-    assert torch.isfinite(history).all(), "elite cost history contains non-finite values"
-    assert history[-1] < history[0], f"elite cost did not improve: {history[0]} -> {history[-1]}"
+    assert torch.isfinite(
+        history
+    ).all(), "elite cost history contains non-finite values"
+    assert (
+        history[-1] < history[0]
+    ), f"elite cost did not improve: {history[0]} -> {history[-1]}"
     print(f"PASS: elite cost decreased ({history[0]:.3f} -> {history[-1]:.2e}).")
 
     # -- L1: same seed, same plan.
@@ -216,7 +250,9 @@ if __name__ == "__main__":
             generator=gen,
         ).plan
 
-    assert torch.equal(run_seeded(), run_seeded()), "CEM is not reproducible under a fixed seed"
+    assert torch.equal(
+        run_seeded(), run_seeded()
+    ), "CEM is not reproducible under a fixed seed"
     print("PASS: identical plans under a fixed seed.")
 
     # -- L1: a single elite must not poison the next distribution with NaNs
@@ -228,7 +264,9 @@ if __name__ == "__main__":
         config=CEMConfig(horizon=horizon, num_elites=1, num_iters=5),
         device=device,
     )
-    assert torch.isfinite(single.plan).all(), "single-elite update produced non-finite values"
+    assert torch.isfinite(
+        single.plan
+    ).all(), "single-elite update produced non-finite values"
     print("PASS: single-elite update stayed finite.")
 
     # -- L1: a cost that ignores the actions must not crash or drift.

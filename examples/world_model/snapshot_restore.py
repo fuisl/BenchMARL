@@ -57,19 +57,24 @@ def snapshot_state(env):
                 for k, v in _batch_tensor_attrs(entity.state, batch_dim).items()
             },
             "entity": {
-                k: v.clone()
-                for k, v in _batch_tensor_attrs(entity, batch_dim).items()
+                k: v.clone() for k, v in _batch_tensor_attrs(entity, batch_dim).items()
             },
         }
     scenario_attrs = {
         k: v.clone() for k, v in _batch_tensor_attrs(scenario, batch_dim).items()
     }
-    return {"entities": entities, "scenario": scenario_attrs}
+    return {
+        "entities": entities,
+        "scenario": scenario_attrs,
+        "steps": env._env.steps.clone(),
+    }
 
 
 def restore_state(env, snapshot) -> None:
     """Write a snapshot taken by `snapshot_state` back into `env`, in place."""
     world = env._env.world
+    if snapshot["steps"].shape != env._env.steps.shape:
+        raise ValueError("Snapshot batch must match the environment batch")
     scenario = env._env.scenario
     entities_by_name = {entity.name: entity for entity in world.entities}
 
@@ -82,23 +87,29 @@ def restore_state(env, snapshot) -> None:
 
     for attr, value in snapshot["scenario"].items():
         setattr(scenario, attr, value.clone())
+    env._env.steps = snapshot["steps"].clone()
 
 
-def broadcast_state(env, snapshot, env_index: int = 0) -> None:
-    """Write one snapshotted environment's state into *every* batch slot of `env`.
+def broadcast_state(env, snapshot, env_index: int = 0, *, source_indices=None) -> None:
+    """Copy source slots into scratch slots, including their episode clocks.
 
-    This is what branching needs: CEM scores K candidate plans from a single
-    evaluation state, so a scratch env with `num_envs=K` is filled with K copies
-    of that one state and then stepped with K different action sequences. `env`
-    may have a different batch size than the env the snapshot came from.
+    ``source_indices`` has one source index per destination slot. For B states
+    and K candidates use ``arange(B).repeat_interleave(K)``. Without indices,
+    retain the single-source branching convention.
     """
     world = env._env.world
     scenario = env._env.scenario
     k = world.batch_dim
     entities_by_name = {entity.name: entity for entity in world.entities}
+    if source_indices is None:
+        source_indices = torch.full(
+            (k,), env_index, dtype=torch.long, device=snapshot["steps"].device
+        )
+    if source_indices.shape != (k,):
+        raise ValueError("One source index is required per scratch environment")
 
     def spread(value):
-        return value[env_index].unsqueeze(0).expand(k, *value.shape[1:]).clone()
+        return value.index_select(0, source_indices)
 
     for name, entity_snapshot in snapshot["entities"].items():
         entity = entities_by_name[name]
@@ -109,6 +120,7 @@ def broadcast_state(env, snapshot, env_index: int = 0) -> None:
 
     for attr, value in snapshot["scenario"].items():
         setattr(scenario, attr, spread(value))
+    env._env.steps = spread(snapshot["steps"])
 
 
 def _rollout(env, td, action_sequence):
