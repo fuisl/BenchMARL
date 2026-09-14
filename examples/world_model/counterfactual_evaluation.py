@@ -99,20 +99,32 @@ def main():
     target_id = reference["next_observation"][ids, block - 1]
     target_cf = counterfactual["next_observation"][:, block - 1]
 
+    # The collector zeroes actions once an episode stops being live, and the two
+    # branches terminate at different steps, so only anchors whose block is live
+    # in BOTH branches carry a comparable intervention. On Transport nothing
+    # terminates inside a snippet and this keeps everything; on Buzz Wire, which
+    # ends on wall contact, it is what makes the comparison well posed.
+    live = reference["valid"][ids, :block].all(dim=1) & counterfactual["valid"][
+        :, :block
+    ].all(dim=1)
     if not torch.equal(observation, counterfactual["observation"][:, 0]):
         raise ValueError("Reference and counterfactual start from different states")
-    if not torch.equal(logged[:, :, non_intervened], intervened[:, :, non_intervened]):
-        raise ValueError("Non-intervened agents' actions must be identical")
-    if torch.equal(logged[:, :, INTERVENED], intervened[:, :, INTERVENED]):
+    if not torch.equal(
+        logged[live][:, :, non_intervened], intervened[live][:, :, non_intervened]
+    ):
+        raise ValueError("Non-intervened agents' actions must be identical while live")
+    if torch.equal(logged[live][:, :, INTERVENED], intervened[live][:, :, INTERVENED]):
         raise ValueError("The intervention did not change agent 1's action")
 
     _, active = effect_labels(args.data, block)
+    active = active & live
     moved = (target_cf[:, non_intervened] - target_id[:, non_intervened]).abs().amax(
         dim=(1, 2)
     ) > 0
     print(
-        f"test anchors: {ids.numel()}   simulator says a cross-agent effect exists "
-        f"in {int(active.sum())} (label) / {int(moved.sum())} (observation moved)"
+        f"test anchors: {ids.numel()}   live through the block in both branches: "
+        f"{int(live.sum())}   simulator says a cross-agent effect exists in "
+        f"{int(active.sum())} (label) / {int((moved & live).sum())} (observation moved)"
     )
 
     results = {}
@@ -149,7 +161,10 @@ def main():
     seeds = sorted({s for _, _, s in results})
     print(f"scored {len(results)} checkpoints over {len(seeds)} seeds")
 
-    for stratum, mask in (("interaction-active", active), ("inactive", ~active)):
+    for stratum, mask in (
+        ("interaction-active", active),
+        ("inactive", (~active) & live),
+    ):
         print(f"\n=== {stratum} anchors (n={int(mask.sum())}) ===")
         header = (
             f"{'regime':12s} {'kind':12s} {'E_ID':>10s} {'E_CF':>10s} "

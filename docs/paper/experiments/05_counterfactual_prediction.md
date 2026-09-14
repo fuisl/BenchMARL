@@ -1,9 +1,16 @@
 # M5 link 1 — counterfactual prediction (claim C7)
 
-2026-09-14. The paper's headline claim, measured for the first time.
+2026-09-14. The paper's headline claim, measured for the first time, on two
+tasks that differ in how much interaction their data contains.
 
-**Result: negative. No baseline captures the cross-agent effect on Transport.
-`relational` scores 1.002x the error of predicting no effect at all.**
+**Result: negative on Transport, positive on Buzz Wire, and the difference
+tracks measured coupling.** On Transport no baseline captures any of the
+cross-agent effect (`relational` at 1.002x the no-response floor). On Buzz Wire,
+whose rigid joint couples the agents structurally, `relational` captures **26%**
+of the effect on 8/8 seeds in both regimes, and beats `joint` — which holds
+identical information — on 7/8. That is claim C7 supported where the signal
+exists, and claim C10's "benefit tracks measured cross-agent effect rather than
+task identity" demonstrated by the contrast.
 
 ## What is measured
 
@@ -128,9 +135,85 @@ this line has not yet produced. Job 1196 runs that pipeline end to end.
 Buzz Wire also terminates on wall contact, so its bank should supply the
 termination positives that both Transport and Dropout lack.
 
+## Buzz Wire — the same measurement where the interaction exists
+
+Job 1196 ran M3 collection and M4 training end to end on Buzz Wire at the same
+budgets, seeds and matched capacity as the Transport runs. Only the task differs.
+
+The bank resolves all three of the scarcities that limited Transport:
+
+| Property | Transport | Buzz Wire |
+|---|---:|---:|
+| anchors with a cross-agent effect | 33/239 (**0** at the first step) | **117/117** (all at the first step) |
+| terminations in the bank | 0 | **252** (27.8% of snippets) |
+| transitions with nonzero reward | 22.6% | **86%** |
+
+113 of 117 test anchors are live through the block in both branches and all 113
+are interaction-active. One correctness note: the collector zeroes actions once
+an episode stops being live, and the two branches terminate at different steps,
+so only anchors live in both carry a comparable intervention. Transport never
+terminates inside a snippet, so this restriction changes nothing there and its
+numbers are bit-identical; on Buzz Wire it is what makes the comparison well
+posed.
+
+| Regime | Baseline | response | vs no-response floor |
+|---|---|---:|---:|
+| correlated | independent | 0.260873 | 1.000x |
+| correlated | joint | 0.211979 | 0.813x |
+| correlated | relational | 0.191901 | **0.736x** |
+| independent | independent | 0.253583 | 1.000x |
+| independent | joint | 0.225405 | 0.889x |
+| independent | relational | 0.188497 | **0.743x** |
+
+Paired against `independent` (negative = captured more of the effect):
+
+| Regime | Baseline | mean | 95% CI | seeds better |
+|---|---|---:|---:|---:|
+| correlated | joint | -0.048894 | [-0.064261, -0.031461] | 8/8 |
+| correlated | relational | -0.068972 | [-0.085691, -0.048277] | 8/8 |
+| independent | joint | -0.028178 | [-0.048864, -0.010234] | 8/8 |
+| independent | relational | -0.065086 | [-0.090278, -0.036115] | 8/8 |
+
+And the sharper comparison, `relational` against `joint`, which receive
+**identical information** and differ only in inductive bias (permutation-
+equivariant sum pooling against fixed-order concatenation):
+
+| Regime | mean | 95% CI | seeds better |
+|---|---:|---:|---:|
+| correlated | -0.020078 | [-0.036831, -0.002760] | 7/8 |
+| independent | -0.036908 | [-0.061684, -0.013023] | 7/8 |
+
+So on Buzz Wire the ordering is `relational` < `joint` < `independent`, with both
+gaps significant. The relational model is not merely using cross-agent
+information; its structure uses that information better than a model with the
+same access. That is exactly the argument §4 makes for why `joint` is a control
+rather than a strawman, and it is the first evidence in this line that supports
+it.
+
+## What the contrast establishes
+
+| | Transport | Buzz Wire |
+|---|---:|---:|
+| interaction density (anchors with an effect) | 14% | 100% |
+| effect present after one primitive step | no | yes |
+| relational captures | **0%** (1.002x) | **26%** (0.736x) |
+
+The same three architectures, the same objective, the same budgets, capacity,
+seeds and evaluation code. The only thing that changed is how much cross-agent
+effect the data contains, and that is what decided whether relational structure
+helped. Read together with the Dropout control, this is C10's claim measured on
+three tasks spanning near-zero, sparse-contingent and structural coupling.
+
+It also reframes the Transport result rather than retracting it. M4's 12%
+rollout advantage there is real, reproducible and **not** interaction modelling;
+the interaction claim needs a task whose data identifies the interaction, which
+was M3's stated condition all along.
+
 ## Reproduce
 
 ```bash
 python -m examples.world_model.counterfactual_evaluation \
   outputs/interaction_control_1194/transport --data outputs/transport_data_1190
+python -m examples.world_model.counterfactual_evaluation \
+  outputs/buzz_wire_1196/baselines --data outputs/buzz_wire_1196/data
 ```

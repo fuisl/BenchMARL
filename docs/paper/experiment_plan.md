@@ -170,6 +170,19 @@ SIGReg objective sits near an unreachable floor set by latent rank deficiency
 (~330:1 against the prediction term); candidate fixes are recorded but unrun. See
 [M4 baselines](experiments/04_model_baselines.md).
 
+**M5 link 1 result (2026-09-14, jobs 1194 and 1196):** C7 is measured. On
+Transport it is negative -- no baseline captures any of the cross-agent effect
+(relational at 1.002x a no-response floor), and four independent measurements
+agree that M4's rollout advantage there is not interaction modelling. The cause
+is upstream: 0/239 anchors show an effect after one primitive step. Running the
+identical pipeline on **Buzz Wire**, whose rigid joint couples the agents
+structurally, reverses it: relational captures **26%** of the effect on 8/8 seeds
+in both regimes and beats joint-concatenated on 7/8, with joint holding identical
+information. The benefit appears exactly where measured coupling does, which is
+C10. Buzz Wire's bank also supplies the termination positives (252) that both
+other tasks lack. See
+[counterfactual prediction](experiments/05_counterfactual_prediction.md).
+
 ### M5 — Run the central experiment
 
 - Measure logged versus counterfactual prediction error and their gap.
