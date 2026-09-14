@@ -42,7 +42,14 @@ def tracked_entities(env):
     breaking the schema that the existing Transport bank was written with.
     """
     scenario = env._env.scenario
-    return getattr(scenario, "packages", None) or env._env.world.landmarks
+    packages = getattr(scenario, "packages", None)
+    if packages:
+        return packages
+    # Prefer the movable landmarks -- Buzz Wire's ball is the reward-relevant
+    # body, while its walls, floors and joints are static and would only pad the
+    # diagnostic with constant columns.
+    movable = [e for e in env._env.world.landmarks if getattr(e, "movable", False)]
+    return movable or env._env.world.landmarks
 
 
 REGIMES = ("independent", "correlated")
@@ -310,8 +317,10 @@ def run_collection(cfg, output, task_name):
     # Dropout is M1 Row 4's weak-interaction control: its agents have no
     # cross-agent dynamics, so a relational advantage there would show the
     # benefit is not interaction modelling.
-    if task_name not in ("vmas/transport", "vmas/dropout"):
-        raise ValueError("M3 collection validates Transport and Dropout only")
+    if task_name not in ("vmas/transport", "vmas/dropout", "vmas/buzz_wire"):
+        raise ValueError(
+            "M3 collection validates Transport, Dropout and Buzz Wire only"
+        )
     settings = cfg.dataset
     if (
         min(
@@ -326,7 +335,9 @@ def run_collection(cfg, output, task_name):
         raise ValueError("Data budgets must be positive")
     if settings.action_block < 1 or settings.sequence_steps % settings.action_block:
         raise ValueError("Sequence steps must be divisible by a positive action block")
-    if cfg.task.n_agents < 2:
+    # Not every task config carries n_agents (Buzz Wire's team size is fixed by
+    # the scenario), so only check it where the field exists.
+    if getattr(cfg.task, "n_agents", 2) < 2:
         raise ValueError("The joint-action intervention requires at least two agents")
     if cfg.experiment.render:
         raise ValueError("Offline data collection does not render")

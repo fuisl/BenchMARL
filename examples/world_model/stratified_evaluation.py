@@ -57,7 +57,10 @@ def effect_labels(data_root: Path, horizon: int):
     ids = counterfactual["anchor_id"]
     valid = reference["valid"][ids] & counterfactual["valid"]
 
-    other_agents = [0, 2, 3]  # agent 1 is the intervened one
+    # The collector intervenes on agent 1; every other agent is a witness whose
+    # own action is unchanged. Derived from the data so 2-agent tasks work too.
+    n_agents = reference["next_agent_state"].shape[2]
+    other_agents = [i for i in range(n_agents) if i != 1]
     labels = torch.zeros(ids.numel(), dtype=torch.bool)
     for key, entities in (
         ("next_agent_state", other_agents),
