@@ -1,0 +1,15 @@
+# @package _global_
+defaults:
+  - /offline_data
+  - _self_
+
+dataset:
+  episodes: 8
+  anchor_stride: 2
+  sequence_steps: 5
+  branch_batch_size: 8
+task:
+  max_steps: 6
+experiment:
+  sampling_device: cpu
+  loggers: [csv]

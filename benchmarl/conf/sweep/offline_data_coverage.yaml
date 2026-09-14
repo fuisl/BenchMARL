@@ -1,0 +1,10 @@
+# @package _global_
+defaults:
+  - /offline_data
+  - _self_
+
+# M3's random-only pilot had almost no physical intervention effects. Add the
+# shipped VMAS heuristic as a shared source of states, keeping branch actions,
+# task settings, episode splits and training budgets paired across regimes.
+dataset:
+  include_heuristic: true

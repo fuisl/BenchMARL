@@ -1,0 +1,21 @@
+defaults:
+  - experiment: base_experiment
+  - task: vmas/transport
+  - _self_
+
+# M3 development data; independent from the M2 state-seed-0 design bank.
+dataset:
+  episodes: 128
+  state_seed: 3100
+  split_seed: 3101
+  action_seed: 3102
+  branch_seed: 3103
+  anchor_stride: 20
+  sequence_steps: 25
+  action_block: 5
+  branch_batch_size: 256
+  excluded_states_file: null
+  include_heuristic: false
+experiment:
+  sampling_device: cuda
+  render: false
