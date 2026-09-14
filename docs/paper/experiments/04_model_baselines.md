@@ -172,6 +172,39 @@ Reproduce with `python -m examples.world_model.compare_baselines
 outputs/interaction_control_1194`. The summariser is version controlled rather
 than left in a run directory, because M5 needs the same comparison.
 
+## Stratified diagnostic — does the advantage live where the interaction is?
+
+The Dropout control compares two tasks, so a null there has causes besides the
+absence of interaction. The tighter within-task version scores the same models on
+the same data, split by whether an anchor actually shows a physical cross-agent
+effect under the M3 intervention (31/239 test anchors at five primitive steps).
+
+**The diagnostic is inconclusive, and the two natural metrics disagree
+significantly in opposite directions.** Relational beats independent in both
+strata on 8/8 seeds, but:
+
+| Metric | active | inactive | active - inactive |
+|---|---:|---:|---:|
+| relative | -6.4% | -14.0% | **+7.6 pts [+4.9, +10.0]** |
+| absolute | -0.01296 | -0.00711 | **-0.00584 [-0.00882, -0.00271]** |
+
+Interaction-active anchors carry **4.11x** the error while the reduction ratio is
+**1.82x**. That sits between two equally natural nulls: "uniformly r% better
+everywhere" predicts a ratio equal to the error ratio (4.11), and "constant
+absolute reduction" predicts 1.0. Neither is privileged by theory, so the
+observation is bracketed rather than resolved, and this proxy cannot decide
+whether the advantage is interaction modelling or better conditioning.
+
+The pre-registered reading was that concentration on active anchors would be the
+interaction signature. The absolute metric says concentrated, the relative says
+the opposite; reporting only one would manufacture a result. What settles the
+question is the counterfactual measurement itself -- `E_CF` against `E_ID` on the
+same restored states -- which isolates joint-action dependence instead of
+inferring it from state difficulty. That is M5 Row 1 and remains to be run.
+
+Reproduce: `python -m examples.world_model.stratified_evaluation
+outputs/interaction_control_1194/transport --data outputs/transport_data_1190`.
+
 ### Latent health
 
 | Baseline | effective rank | latent variance | SIGReg | reward relative error | checkpoint reload |
