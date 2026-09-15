@@ -36,11 +36,11 @@ CEM = CEMConfig(horizon=2, num_samples=SAMPLES, num_elites=2, num_iters=2)
 MPC = MPCConfig(receding_horizon=2, action_block=5)
 
 
-def build():
+def build(device="cpu"):
     task = VmasTask.BUZZ_WIRE.get_from_yaml()
     task.config["max_steps"] = 20
-    env = task.get_env_fun(STATES, True, 0, "cpu")()
-    scratch = task.get_env_fun(STATES * SAMPLES, True, 0, "cpu")()
+    env = task.get_env_fun(STATES, True, 0, device)()
+    scratch = task.get_env_fun(STATES * SAMPLES, True, 0, device)()
     env.set_seed(0)
     env.reset()
     scratch.reset()
@@ -119,15 +119,27 @@ def test_agent_observations_match_the_scenario():
         _scratch.close()
 
 
-def test_achieved_goal_is_a_state_the_plan_actually_reached():
-    """The LeWM goal must be reachable, so it has to come from a real rollout."""
-    env, scratch, initial = build()
+@pytest.mark.parametrize(
+    "device",
+    ["cpu"] + (["cuda"] if torch.cuda.is_available() else []),
+)
+def test_achieved_goal_is_a_state_the_plan_actually_reached(device):
+    """The LeWM goal must be reachable, so it has to come from a real rollout.
+
+    It is then differenced against live observations, so it must also come back
+    on the environment's device -- the simulator helper it wraps returns on CPU.
+    """
+    env, scratch, initial = build(device)
     try:
-        plans = torch.rand(STATES, SAMPLES, 10, 4) * 2 - 1
+        plans = (torch.rand(STATES, SAMPLES, 10, 4, device=device) * 2 - 1)
         goals = achieved_goals(scratch, initial, plans, MPC.action_block)
+        observation = agent_observations(env)
         assert goals.shape[0] == STATES
-        assert goals.shape[-1] == agent_observations(env).shape[-1]
+        assert goals.shape[-1] == observation.shape[-1]
         assert torch.isfinite(goals).all()
+        assert goals.device.type == observation.device.type
+        # The subtraction the driver performs must not raise.
+        assert torch.isfinite(observation - goals).all()
     finally:
         env.close()
         scratch.close()

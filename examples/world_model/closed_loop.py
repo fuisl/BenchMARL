@@ -109,7 +109,11 @@ def achieved_goals(scratch_env, snapshot, candidates, action_block):
     _, block_valid, observation = simulate(
         scratch_env, snapshot, candidates, action_block
     )
-    return terminal_observations(observation, block_valid)[:, 0]
+    # `simulate` returns on CPU because its own caller compares on CPU. The goal
+    # is then differenced against live observations, so hand it back on the
+    # environment's device rather than leaving that to every caller.
+    goals = terminal_observations(observation, block_valid)[:, 0]
+    return goals.to(scratch_env.device)
 
 
 def summarize(rows, seed=0):
