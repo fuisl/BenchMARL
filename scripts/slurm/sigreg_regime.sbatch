@@ -60,7 +60,6 @@ for dim in 16 48 192; do
             hydra/launcher=joblib "hydra.launcher.n_jobs=$workers" \
             "data.root=$data" "data.regime=correlated,independent" \
             "seed=$seeds" "model.dim=$dim" "train.sigreg_weight=$weight" \
-            "wandb.group=m4-sigreg-$point" \
             "hydra.sweep.dir=$output/$point"
         srun --ntasks=1 .venv/bin/python -m examples.world_model.counterfactual_evaluation \
             "$output/$point" --data "$data" | tee "$output/${point}_counterfactual.txt"

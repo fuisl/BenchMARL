@@ -73,7 +73,6 @@ srun --ntasks=1 .venv/bin/python -m examples.world_model.train \
     hydra/launcher=joblib "hydra.launcher.n_jobs=$workers" \
     "data.root=$holdout/data" "data.regime=correlated,independent" \
     "seed=5200,5201,5202,5203,5204,5205,5206,5207" \
-    wandb.group=m4-buzz-wire-holdout \
     "hydra.sweep.dir=$holdout/baselines"
 
 # Measured once. Nothing is tuned against this output.
@@ -92,7 +91,6 @@ for dim in 16 48 192; do
             "data.root=$dev_data" "data.regime=correlated,independent" \
             "seed=4100,4101,4102,4103" \
             "model.dim=$dim" "train.sigreg_weight=$weight" \
-            "wandb.group=m4-sigreg-$point" \
             "hydra.sweep.dir=$output/sigreg/$point"
         srun --ntasks=1 .venv/bin/python -m examples.world_model.counterfactual_evaluation \
             "$output/sigreg/$point" --data "$dev_data" --device cuda \

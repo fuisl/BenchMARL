@@ -29,6 +29,7 @@ from pathlib import Path
 import hydra
 import torch
 
+from benchmarl.experiment.logger import JsonWriter
 from examples.world_model.dataset import OfflineSequences
 from examples.world_model.models import (
     conditioning_gate_scale,
@@ -43,7 +44,9 @@ from examples.world_model.models import (
 from omegaconf import DictConfig, OmegaConf
 from tensordict import TensorDict
 from torch.utils.data import DataLoader
+from hydra.utils import to_absolute_path
 from torchrl.record.loggers import get_logger
+from torchrl.record.loggers.utils import generate_exp_name
 
 
 def write_json(path, value):
@@ -240,6 +243,22 @@ def run_stage(model, parameters, loader, step_fn, epochs, cfg, device, logger, s
     return history
 
 
+MODEL_NAME = "lewm"
+MARL_EVAL_FILE = "marl_eval.json"
+
+# Metrics written to the marl-eval file, and whether smaller is better. The
+# reporting stack assumes larger is better, so those are negated on the way out
+# and renamed, because a field called `rollout_error` holding a negative number
+# would mislead anyone reading the file without this table beside it.
+REPORTED_METRICS = {
+    "one_step_error": True,
+    "rollout_error": True,
+    "final_step_error": True,
+    "latent_variance": False,
+    "effective_rank": False,
+}
+
+
 def run_training(cfg, output: Path):
     torch.manual_seed(cfg.seed)
     device = cfg.device
@@ -295,20 +314,58 @@ def run_training(cfg, output: Path):
     ).to(device)
     sigreg = SIGReg(cfg.train.sigreg_knots, cfg.train.sigreg_projections).to(device)
 
-    logger_name = str(output)
+    # BenchMARL's own convention, so these runs group and aggregate like every
+    # other run in the project: the name carries algorithm, task and model, the
+    # wandb group is the task, and the id is the unique experiment name. Our
+    # three predictors are the algorithm -- they are what is compared on a
+    # shared task at matched capacity, exactly as MAPPO and IPPO are there.
+    task_name = json.loads(
+        (Path(to_absolute_path(cfg.data.root)) / "manifest.json").read_text()
+    )["task_name"]
+    environment_name, task_name = task_name.split("/")
+    algorithm_name = f"{cfg.model.kind}_{cfg.data.regime}"
+    experiment_name = generate_exp_name(
+        f"{algorithm_name}_{task_name}_{MODEL_NAME}", ""
+    )
     loggers = [
         get_logger(
             logger_type=name,
-            logger_name=logger_name,
-            experiment_name=f"m4_{cfg.model.kind}_{cfg.data.regime}",
+            logger_name=str(output),
+            experiment_name=experiment_name,
             wandb_kwargs={
+                "group": task_name,
+                "id": experiment_name,
                 "project": cfg.wandb.project,
-                "group": cfg.wandb.group,
                 "entity": cfg.wandb.entity,
+                # Config fields, so the UI can group or filter on any axis.
+                "config": {
+                    "algorithm": algorithm_name,
+                    "kind": cfg.model.kind,
+                    "regime": cfg.data.regime,
+                    "task": task_name,
+                    "environment": environment_name,
+                    "seed": cfg.seed,
+                    "model": MODEL_NAME,
+                },
             },
         )
         for name in cfg.loggers
     ]
+
+    # BenchMARL's marl-eval reporting file, written per run exactly as
+    # Experiment does, so benchmarl.eval_results reads these runs natively.
+    # Fixed name rather than the experiment name: BenchMARL's own run folders
+    # hold exactly one json, so its loader walks for any of them, while ours
+    # also hold metrics/parameters/provenance. A known name keeps the reporting
+    # file identifiable without renaming our diagnostics.
+    json_writer = JsonWriter(
+        folder=str(output),
+        name=MARL_EVAL_FILE,
+        algorithm_name=algorithm_name,
+        task_name=task_name,
+        environment_name=environment_name,
+        seed=cfg.seed,
+    )
 
     class Fan:
         def log_scalar(self, key, value, step=None):
@@ -387,6 +444,22 @@ def run_training(cfg, output: Path):
     for key, value in metrics.items():
         fan.log_scalar(f"validation/{key}", value, step=cfg.train.dynamics_epochs)
     write_json(output / "metrics.json", metrics)
+
+    # The marl-eval file BenchMARL's tooling reads. Errors are negated into
+    # scores because everything downstream -- rliable's aggregates, marl-eval's
+    # normalisation -- assumes larger is better. One value per metric: these are
+    # per-run figures, not per-episode ones.
+    json_writer.write(
+        total_frames=len(train_loader.dataset) * cfg.train.dynamics_epochs,
+        metrics={
+            (f"neg_{name}" if lower_is_better else name): torch.tensor(
+                [-value if lower_is_better else value]
+            )
+            for name, lower_is_better in REPORTED_METRICS.items()
+            if (value := metrics.get(name)) is not None
+        },
+        evaluation_step=0,
+    )
     with (output / "history.csv").open("w", newline="") as stream:
         rows = [{"stage": "dynamics", **row} for row in dynamics_history]
         rows += [{"stage": "readout", **row} for row in readout_history]

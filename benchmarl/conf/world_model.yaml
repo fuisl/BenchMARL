@@ -8,7 +8,6 @@ loggers: [csv, wandb]
 wandb:
   project: counterfactual-wm
   entity: cair-traffic
-  group: m4-transport-baselines
 
 data:
   root: outputs/transport_data_1190

@@ -66,7 +66,6 @@ srun --ntasks=1 .venv/bin/python -m examples.world_model.train \
     "data.root=$data_output" \
     "data.regime=correlated,independent" \
     "seed=$seeds" \
-    wandb.group=m4-buzz-wire \
     "hydra.sweep.dir=$output/baselines"
 
 printf 'Completed Buzz Wire pipeline: %s/baselines\n' "$output"

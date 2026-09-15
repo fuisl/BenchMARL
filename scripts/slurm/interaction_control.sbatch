@@ -50,7 +50,6 @@ run_task() {
         "data.root=$root" \
         "data.regime=correlated,independent" \
         "seed=$seeds" \
-        "wandb.group=m4-interaction-control-$name" \
         "hydra.sweep.dir=$output/$name"
 }
 

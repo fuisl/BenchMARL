@@ -55,7 +55,7 @@ srun --ntasks=1 .venv/bin/python -m examples.world_model.train \
     --config-name sweep/world_model_baselines --multirun \
     hydra/launcher=joblib "hydra.launcher.n_jobs=$workers" \
     "data.root=$data_output" "data.regime=correlated,independent" \
-    "seed=$seeds" wandb.group=m4-buzz-wire-holdout \
+    "seed=$seeds" \
     "hydra.sweep.dir=$output/baselines"
 
 # Measured once. Do not iterate against this output.

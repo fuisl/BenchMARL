@@ -58,7 +58,6 @@ srun --ntasks=1 .venv/bin/python -m examples.world_model.train \
     hydra/launcher=joblib "hydra.launcher.n_jobs=$workers" \
     "data.root=$data_output" \
     "data.regime=correlated,independent" \
-    wandb.group=m4-dropout-control \
     "hydra.sweep.dir=$output/baselines"
 
 printf 'Completed Dropout control: %s/baselines\n' "$output"
