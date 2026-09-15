@@ -1,86 +1,100 @@
-# Aggregate reporting
+# Logging and aggregate reporting
 
-2026-09-15. How every run in this project is turned into one comparable report,
-and where the published-benchmark tooling does and does not apply.
+2026-09-15. How world-model runs reach wandb and the aggregate tables, and why
+that is almost entirely BenchMARL's code rather than ours.
 
-## Problem
+## The mistake this replaces
 
-Results lived as 192 per-run `metrics.json` files under four sweep directories,
-plus closed-loop summaries, and reached wandb in groups named after the milestone
-that produced them (`m4-buzz-wire`, `m3-transport-data`, ...). With 400+ runs in
-one project, nobody could group by algorithm and task the way the published VMAS
-benchmark does, so cross-task comparison meant reading directories.
+`train.py` called `get_logger` directly with `experiment_name =
+"m4_{kind}_{regime}"` and `group = "m4-transport-baselines"`. That name carries
+no task and no seed, no wandb id was passed, and no marl-eval file was written.
+In `counterfactual-wm` the result was 400 runs sharing **14 distinct names**,
+with `m4_independent_correlated` appearing 59 times, grouped by milestone
+string. The repository's own runs in that same project -- `transport`,
+`give_way`, `balance` -- group correctly by task, because they go through
+`Logger`.
 
-## What `examples/world_model/report.py` produces
+Everything downstream followed from that. A 538-line `report.py` existed to
+reconstruct, after the fact, what the logger would have recorded: a
+reimplementation of `JsonWriter`'s schema, a reimplementation of `Logger`'s
+wandb conventions, and a deterministic id scheme that was only needed because
+runs had no ids.
 
-| Output | Content |
+## What happens now
+
+`train.py` uses BenchMARL's convention directly:
+
+| | |
 |---|---|
-| `results.json` | marl-eval schema, identical to BenchMARL's own `JsonWriter` |
-| `aggregate_scores.txt` | IQM, median and mean over seeds, with bootstrap intervals |
-| `aggregate_scores.png` | IQM per algorithm, pooled over tasks |
-| `performance_profile.png` | fraction of runs above each normalised score |
-| `per_task_scores.png` | IQM per algorithm within each task |
-| wandb | one run per (task, algorithm, regime, seed), plus an aggregate run |
+| run name | `{algorithm}_{task}_{model}` via `generate_exp_name` |
+| wandb group | `task_name` |
+| wandb id | the experiment name |
+| marl-eval file | `JsonWriter`, one per run |
+
+The three predictors are the **algorithm**: they are what is compared on a
+shared task at matched capacity, the slot BenchMARL gives MAPPO and IPPO. The
+data regime has no slot in that schema, so it joins the algorithm name
+(`relational_correlated`) and is also a config field for filtering. Task and
+environment are read from the bank's own manifest, not passed in.
 
 ```bash
-.venv/bin/python -m examples.world_model.report --output outputs/report \
-    --figures --wandb
+# Aggregate any set of sweeps
+.venv/bin/python -m examples.world_model.report \
+    outputs/interaction_control_1194 outputs/buzz_wire_1196/baselines \
+    outputs/wheel_1205/baselines
 ```
 
-No GPU: every number already exists in the run directories, so this reads and
-aggregates on CPU.
+`report.py` is 112 lines: merge with `load_and_merge_json_dicts`, build matrices
+with `Plotting`, print IQM. No GPU -- the numbers already exist in the run
+directories.
 
-## Mapping our comparison onto BenchMARL's schema
+## Two deliberate deviations
 
-BenchMARL's schema is `{environment: {task: {algorithm: {seed_i: ...}}}}`. Our
-three predictors take the slot it gives algorithms -- independent, joint and
-relational are what is compared on a shared task at matched capacity, exactly as
-MAPPO and IPPO are there. The **data regime** is a second axis that schema has no
-room for, so it is folded into the algorithm name (`relational-correlated`) and
-also kept as its own wandb field, where it can be grouped or filtered
-independently.
+**Negated metrics are renamed.** The reporting stack assumes larger is better,
+so errors are negated -- but a field called `rollout_error` holding `-0.93`
+would mislead anyone reading the file without this note beside it. They are
+written as `neg_rollout_error`.
 
-Errors are negated into scores (`neg_rollout_error`) because everything
-downstream -- rliable's aggregates, marl-eval's normalisation -- assumes larger
-is better. Metrics are lists per evaluation episode: single-element for a
-per-run dynamics metric, genuinely per-episode for closed-loop control.
+**The marl-eval file has a fixed name**, `marl_eval.json`.
+`get_raw_dict_from_multirun_folder` walks for *every* json under a sweep, which
+is correct for BenchMARL run folders because they hold exactly one; ours also
+hold `metrics.json`, `parameters.json` and `provenance.json`, and merging those
+raises `AttributeError`. `report.py` therefore names the files and passes them
+to the explicit `load_and_merge_json_dicts`, which is the same BenchMARL API one
+level down.
 
-wandb organisation follows BenchMARL's own logger, which sets `group=task_name`
-and a deterministic run id. Runs go to `counterfactual-wm-benchmark` rather than
-the existing project, which holds every milestone, sweep and smoke test; ids are
-deterministic, so re-running the report updates runs instead of duplicating them.
+## What the published tooling cannot do here
 
-## What the published tooling can and cannot do here
+`Plotting`'s figures call `rliable.library.get_interval_estimates`, which builds
+an `arch` `StratifiedBootstrap`. `arch` 7.2 fails to import against the
+installed pandas 3.0, and `arch` 8.0 renamed the `random_state` argument that
+`rliable` still passes. Neither works, and `id-marl-eval` pins pandas 1.4.4,
+which would mean downgrading the environment the experiments run in. `arch` was
+upgraded to 8.0 because that is what lets BenchMARL's data pipeline import at
+all; nothing else depends on it.
 
-`benchmarl.eval_results` wraps `marl-eval`, which wraps `rliable`. Its **data
-pipeline runs on our results unchanged**: `process_data` normalises and cleans,
-`create_matrices` yields the (8 seeds x 4 tasks) matrices rliable expects.
+Only the interval is substituted, by a percentile bootstrap. Point estimates are
+`rliable.metrics`'.
 
-Its **plotting cannot run in this environment**. Those functions call
-`rliable.library.get_interval_estimates`, which constructs an `arch`
-`StratifiedBootstrap`:
+## Migration
 
-* `arch` 7.2 fails to import against the installed pandas 3.0 --
-  `deprecate_kwarg` changed signature;
-* `arch` 8.0 imports, but rejects the `random_state` argument `rliable` still
-  passes, having renamed it.
+The 192 runs from jobs 1194, 1196 and 1205 predate this and were re-logged from
+their `metrics.json` and resolved configs: a `marl_eval.json` written into each
+run directory, and a wandb run under the new convention. They carry deterministic
+ids derived from the source job and run index rather than a uuid, so the
+migration is idempotent. `counterfactual-wm` now holds 192 runs grouped 48 per
+task, 32 per algorithm, beside the older `m4_*` runs describing the same
+experiments.
 
-Neither version works, and `id-marl-eval` pins pandas 1.4.4, which would mean
-downgrading the environment the experiments run in -- including a venv with jobs
-executing in it. Upgrading `arch` to 8.0 was the one change made, because it is
-what lets BenchMARL's data pipeline import at all; nothing else depends on it.
+## What was audited and left alone
 
-So only the interval step is substituted, by the percentile bootstrap used
-elsewhere in this project. Point estimates remain `rliable.metrics`'.
+`oracle_comparison/` was flagged as config sprawl and is not. Config groups are
+BenchMARL's own pattern -- `algorithm/`, `experiment/`, `model/`, `task/` are all
+groups -- and all nine presets are referenced by the sweeps that produced jobs
+1182 and 1183, whose results are recorded. Collapsing them would cost
+reproducibility and buy nothing.
 
-## A result that depends on which statistic is used
-
-Job 1194's Dropout control was reported from paired seed means: relational
-*worse* than independent (-9% and -28%, better on 3/8 seeds). By IQM, the
-statistic the published tables use, relational-correlated is **better**
-(0.0772 against 0.0888). IQM trims the top and bottom quarter of seeds, and
-Dropout has two runs (4101, 4106) that diverge badly for every predictor.
-
-The intervals overlap heavily, so neither direction is established -- but the
-Dropout control reads differently under the two statistics, and the claim it
-supports should say which one it rests on.
+The real sprawl was `wandb.group` in nine submission scripts, which existed only
+to compensate for the group not being the task. Those are gone. What remains in
+those scripts is mostly Hydra output plumbing (`hydra.run.dir`,
+`hydra.sweep.dir`, `launcher.n_jobs`) that every submission needs.
