@@ -23,8 +23,11 @@
 #SBATCH --partition=gpu
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=28
-#SBATCH --mem=72G
+# Four shards, a monitor and single-threaded BLAS: 28 CPUs/72G was sized
+# for eight shards and does not fit beside another user's job on this
+# 32-CPU/84G node, which left the submission pending on Resources.
+#SBATCH --cpus-per-task=16
+#SBATCH --mem=48G
 #SBATCH --gres=gpu:a100_3g.20gb:1
 #SBATCH --time=04:00:00
 #SBATCH --output=slurm-%j.out
