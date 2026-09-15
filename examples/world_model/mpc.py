@@ -133,6 +133,22 @@ class EpisodeStats:
         ]
 
 
+def agent_observations(env):
+    """(B, N, obs_dim) -- what the agents themselves see at the current state."""
+    return torch.stack(
+        [env._env.scenario.observation(agent) for agent in env._env.world.agents], dim=1
+    )
+
+
+def oracle_costs(scratch_env):
+    """The default plan cost: roll the true simulator from the snapshot."""
+
+    def costs(snapshot, observation, candidates):
+        return oracle_plan_costs(scratch_env, snapshot, candidates)
+
+    return costs
+
+
 def synchronize(device):
     if torch.device(device).type == "cuda":
         torch.cuda.synchronize(device)
@@ -150,20 +166,29 @@ def evaluate_policy(
     scratch_env=None,
     diagnostics_path: Path | None = None,
     outcome_fn=buzz_wire_outcome,
+    plan_costs=None,
 ):
     """Evaluate exactly one episode per slot; return episode rows and timing.
 
     Finished slots receive zero actions and remain masked; there is no reset or
     replacement episode. VMAS batch slots are independent. The horizon counts
     blocks, while reward, timeout and termination always count primitive steps.
+
+    ``plan_costs(snapshot, observation, candidates) -> (B,K)`` scores candidate
+    plans. It defaults to the simulator oracle, which needs the snapshot and
+    ignores the observation; a learned model is the reverse, planning from what
+    the agents can actually see. Passing it is what makes this a test of the
+    world model rather than of CEM.
     """
     mpc_config.validate(cem_config.horizon)
     if policy not in ("random", "mpc"):
         raise ValueError(f"Unknown policy: {policy}")
     if env._env.max_steps is None:
         raise ValueError("Evaluation requires a finite task max_steps")
-    if policy == "mpc" and (scratch_env is None or scratch_env is env):
-        raise ValueError("MPC requires a separate scratch environment")
+    if policy == "mpc" and plan_costs is None:
+        if scratch_env is None or scratch_env is env:
+            raise ValueError("Oracle MPC requires a separate scratch environment")
+        plan_costs = oracle_costs(scratch_env)
     restore_state(env, initial_state)
     stats = EpisodeStats(env, outcome_fn)
     batch_size = env.batch_size[0]
@@ -182,10 +207,12 @@ def evaluate_policy(
         if policy == "mpc":
             snapshot = snapshot_state(env)
 
-            def cost_fn(candidates, snapshot=snapshot):
-                return oracle_plan_costs(
-                    scratch_env,
+            observation = agent_observations(env)
+
+            def cost_fn(candidates, snapshot=snapshot, observation=observation):
+                return plan_costs(
                     snapshot,
+                    observation,
                     unpack_actions(candidates, mpc_config.action_block),
                 )
 
