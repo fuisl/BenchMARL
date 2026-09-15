@@ -118,7 +118,11 @@ def readout_losses(model, batch):
         latent = model.encode(batch["observation"])
         predicted = model.predict(latent[:, :-1], batch["action"])
     reward, terminated = model.readout(latent[:, :-1], predicted)
-    valid = batch["valid"]
+    # Outcome validity, not dynamics validity: the readout reads the block-start
+    # latent and the model's own predicted next latent, never the unobserved
+    # end-of-block frame, so a partial terminal block is a legitimate target.
+    # Masking it out dropped most terminations and every collision penalty.
+    valid = batch["outcome_valid"]
     reward_loss = masked_mean((reward - block_reward(batch)).square(), valid)
     target = batch["terminated"].float()
     termination = torch.nn.functional.binary_cross_entropy_with_logits(
@@ -150,6 +154,10 @@ def evaluate(model, sigreg, loader, cfg, device):
         rolled = model.rollout(latent[:, :1], batch["action"])
         reward, _ = model.readout(latent[:, :-1], predicted)
         valid = batch["valid"]
+        # Reward and termination are scored on outcome validity, matching how
+        # they are trained; prediction stays on dynamics validity, which is the
+        # only mask for which an end-of-block latent target exists.
+        outcome = batch["outcome_valid"]
         target = latent[:, 1:]
         pairs = {
             "one_step_error": ((predicted - target).square(), valid),
@@ -158,20 +166,20 @@ def evaluate(model, sigreg, loader, cfg, device):
                 (rolled[:, -1:] - target[:, -1:]).square(),
                 valid[:, -1:],
             ),
-            "reward_error": ((reward - block_reward(batch)).square(), valid),
+            "reward_error": ((reward - block_reward(batch)).square(), outcome),
         }
         # Reward targets, to normalise the readout error by the variance a
         # constant predictor would already achieve.
         target_reward = block_reward(batch)
         for key, (values, mask) in list(pairs.items()) + [
-            ("reward_target_sum", (target_reward, valid)),
-            ("reward_target_square", (target_reward.square(), valid)),
+            ("reward_target_sum", (target_reward, outcome)),
+            ("reward_target_square", (target_reward.square(), outcome)),
         ]:
             total, count = masked_sum_count(values, mask)
             sums[key] = sums.get(key, 0.0) + float(total)
             counts[key] = counts.get(key, 0.0) + float(count)
         terminated_total, terminated_count = masked_sum_count(
-            batch["terminated"].float(), valid
+            batch["terminated"].float(), outcome
         )
         sums["terminated_rate"] = sums.get("terminated_rate", 0.0) + float(
             terminated_total

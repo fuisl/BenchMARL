@@ -17,7 +17,6 @@ import torch.nn.functional as F
 from examples.world_model.goal_planning import (
     lewm_rollout,
     terminal_goal_cost,
-    terminal_observations,
     true_goal_costs,
 )
 from test.test_world_model_models import build, sample
@@ -105,21 +104,20 @@ def test_rollout_matches_the_unrestricted_one_when_history_is_large():
     torch.testing.assert_close(wide, base, atol=1e-6, rtol=1e-6)
 
 
-def test_terminal_observation_respects_early_termination():
-    """Reading the final frame unconditionally would score states past the end."""
-    observation = torch.arange(2 * 1 * 4 * 1 * 1, dtype=torch.float32).reshape(
-        2, 1, 4, 1, 1
-    )
-    block_valid = torch.tensor([[[True, True, False]], [[True, False, False]]])
-    reached = terminal_observations(observation, block_valid)
-    assert float(reached[0, 0, 0, 0]) == float(observation[0, 0, 2, 0, 0])
-    assert float(reached[1, 0, 0, 0]) == float(observation[1, 0, 1, 0, 0])
-
-
 def test_true_goal_cost_is_zero_for_a_candidate_that_reaches_the_goal():
-    observation = torch.randn(2, 3, 4, 2, 5)
-    block_valid = torch.ones(2, 3, 3, dtype=torch.bool)
-    goal = terminal_observations(observation, block_valid)[:, 0]
-    cost = true_goal_costs(observation, block_valid, goal)
+    """Endpoints now come from the rollout, so the cost takes them directly."""
+    endpoint = torch.randn(2, 3, 2, 5)
+    goal = endpoint[:, 0]
+    cost = true_goal_costs(endpoint, goal)
     assert float(cost[0, 0]) < 1e-10 and float(cost[1, 0]) < 1e-10
     assert float(cost[0, 1]) > 0.0
+
+
+def test_block_boundary_endpoints_are_refused():
+    """The replaced helper mis-located endpoints; it must not be used silently."""
+    import pytest
+
+    from examples.world_model.goal_planning import terminal_observations
+
+    with pytest.raises(NotImplementedError):
+        terminal_observations(torch.zeros(1, 1, 3, 1, 1), torch.ones(1, 1, 2, dtype=torch.bool))

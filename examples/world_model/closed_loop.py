@@ -43,10 +43,9 @@ import numpy as np
 import torch
 
 from examples.world_model.cem import CEMConfig
-from examples.world_model.goal_planning import goal_plan_costs, terminal_observations
+from examples.world_model.goal_planning import goal_plan_costs
 from examples.world_model.metrics import mean_interval, success_interval
 from examples.world_model.mpc import (
-    agent_observations,
     buzz_wire_outcome,
     evaluate_policy,
     MPCConfig,
@@ -106,14 +105,13 @@ def achieved_goals(scratch_env, snapshot, candidates, action_block):
     the goal is fixed before planning starts and the learned planner never touches
     the simulator.
     """
-    _, block_valid, observation = simulate(
+    _, _complete, _block_valid, _observation, endpoint = simulate(
         scratch_env, snapshot, candidates, action_block
     )
     # `simulate` returns on CPU because its own caller compares on CPU. The goal
     # is then differenced against live observations, so hand it back on the
     # environment's device rather than leaving that to every caller.
-    goals = terminal_observations(observation, block_valid)[:, 0]
-    return goals.to(scratch_env.device)
+    return endpoint[:, 0].to(scratch_env.device)
 
 
 def persist(args, manifest, states, chosen, cem_config, rows, timings):
@@ -161,13 +159,22 @@ def summarize(rows, seed=0):
             "return": mean_interval([r["return"] for r in episodes], rng),
             "team_return": mean_interval([r["team_return"] for r in episodes], rng),
             "success": success_interval([r["success"] for r in episodes]),
+            **(
+                {
+                    "goal_reached": success_interval(
+                        [r["goal_reached"] for r in episodes]
+                    ),
+                    "goal_observation_distance": mean_interval(
+                        [r["goal_observation_distance"] for r in episodes], rng
+                    ),
+                }
+                if "goal_reached" in episodes[0]
+                else {}
+            ),
             "collision_rate": float(np.mean([r["collision"] for r in episodes])),
             "timeout_rate": float(np.mean([r["timeout"] for r in episodes])),
             "final_goal_distance": mean_interval(
                 [r["final_goal_distance"] for r in episodes], rng
-            ),
-            "goal_observation_distance": mean_interval(
-                [r["goal_observation_distance"] for r in episodes], rng
             ),
             "episode_length": mean_interval([r["length"] for r in episodes], rng),
         }
@@ -201,6 +208,14 @@ def main():
     )
     parser.add_argument("--horizon", type=int, default=5)
     parser.add_argument("--goal-offset", type=int, default=5, help="blocks ahead")
+    parser.add_argument(
+        "--goal-threshold",
+        type=float,
+        default=0.05,
+        help="observation-space L2 within which a goal counts as reached. A "
+        "declared parameter, not a calibrated one: the graded distance is the "
+        "primary number and this only names a cut through it.",
+    )
     parser.add_argument("--skip-oracle", action="store_true")
     parser.add_argument(
         "--seeds",
@@ -281,17 +296,16 @@ def main():
                 scratch_env=scratch,
                 outcome_fn=outcome_fn,
                 plan_costs=plan_costs,
+                goal_observation=goal_observation,
+                goal_threshold=args.goal_threshold,
             )
-            # The task's own final_goal_distance says nothing about the LeWM
-            # objective, which targets an achieved observation rather than the
-            # scenario goal. Measure that reached distance for every policy so
-            # the goal planner is scored on what it actually optimises, and the
-            # others give it a floor and a ceiling.
-            reached = agent_observations(env)
-            goal_distance = (reached - goal_observation).flatten(1).norm(dim=-1)
-            for row, distance in zip(episodes, goal_distance.tolist()):
+            # Goal distance and goal reaching are latched inside EpisodeStats
+            # at each episode's own terminal frame. Reading them here, after the
+            # loop, measured whichever state a finished slot had drifted to
+            # while its neighbours kept running -- on Buzz Wire, where most
+            # episodes collide early, that was almost every episode.
+            for row in episodes:
                 row["policy"] = label
-                row["goal_observation_distance"] = distance
             rows.extend(episodes)
             decisions = timing["decisions"]
             timings[label] = {
@@ -329,8 +343,9 @@ def main():
                 in wanted
             )
         ]
+        checkpoints = checkpoints[: args.max_runs]
         print(f"scoring {len(checkpoints)} checkpoints", flush=True)
-        for directory in checkpoints[: args.max_runs]:
+        for directory in checkpoints:
             config = yaml.safe_load((directory / "resolved_config.yaml").read_text())
             kind, regime, seed = (
                 config["model"]["kind"],

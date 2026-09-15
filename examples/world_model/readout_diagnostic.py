@@ -54,8 +54,12 @@ BASELINES = ("independent", "joint", "relational")
 def simulate(scratch_env, snapshot, candidates, action_block):
     """Roll the simulator and keep the observations, not only the rewards.
 
-    Returns true per-candidate cost (B,K), block validity (B,K,L) and the
-    observations at every block boundary (B,K,L+1,N,O).
+    Returns true per-candidate cost (B,K), that cost restricted to complete
+    blocks (B,K) for comparison with block-boundary scorers, block validity
+    (B,K,L), the
+    observations at every block boundary (B,K,L+1,N,O), and the endpoint each
+    candidate actually reached (B,K,N,O) -- its first terminal frame, or its
+    final frame when it never terminates.
     """
     batch, n_candidates, horizon, joint_dim = candidates.shape
     count = batch * n_candidates
@@ -80,19 +84,49 @@ def simulate(scratch_env, snapshot, candidates, action_block):
             dim=1,
         ).clone()
     ]
+    # The endpoint each candidate actually reached: the frame at its first
+    # termination, or the final frame if it never terminated. Block boundaries
+    # cannot express this -- an episode ending inside a block has no boundary
+    # frame at its endpoint, and the nearest ones are either before the
+    # termination or padded after it.
+    endpoint = frames[0].clone()
+    ended = torch.zeros(count, dtype=torch.bool, device=candidates.device)
+
     rewards, lives = [], []
     for step in range(horizon):
         td.set(("agents", "action"), actions[:, step])
         td = scratch_env.step(td)["next"]
         rewards.append(td["agents", "reward"].sum(dim=1).squeeze(-1))
         lives.append(live)
-        live = live & ~td["done"].squeeze(-1)
+        observation = td["agents", "observation"]
+        # Advance while running; freeze on the terminal frame itself.
+        endpoint = torch.where((~ended).reshape(-1, 1, 1), observation, endpoint)
+        done = td["done"].squeeze(-1)
+        ended = ended | (live & done)
+        live = live & ~done
         if (step + 1) % action_block == 0:
-            frames.append(td["agents", "observation"].clone())
+            frames.append(observation.clone())
 
     reward = torch.stack(rewards, dim=-1)
     alive = torch.stack(lives, dim=-1)
     cost = -reward.masked_fill(~alive, 0).sum(dim=-1).reshape(batch, n_candidates)
+    # The readout comparator scores block boundaries, and a partial terminal
+    # block has no observed end-of-block frame to score -- admitting it would
+    # feed the readout a padded observation. So the comparison is made over
+    # complete blocks, and the truth it is compared against must cover exactly
+    # those blocks too. Comparing a truth that includes the terminal partial
+    # block against a readout that drops it measures the mismatch, not the
+    # readout.
+    complete = (
+        alive.reshape(count, blocks, action_block)
+        .all(dim=-1)
+        .repeat_interleave(action_block, dim=1)
+    )
+    cost_complete = (
+        -reward.masked_fill(~(alive & complete), 0)
+        .sum(dim=-1)
+        .reshape(batch, n_candidates)
+    )
     block_valid = (
         alive.reshape(count, blocks, action_block)
         .all(dim=-1)
@@ -101,7 +135,13 @@ def simulate(scratch_env, snapshot, candidates, action_block):
     observation = torch.stack(frames, dim=1).reshape(
         batch, n_candidates, blocks + 1, agents, -1
     )
-    return cost.cpu(), block_valid.cpu(), observation.cpu()
+    return (
+        cost.cpu(),
+        cost_complete.cpu(),
+        block_valid.cpu(),
+        observation.cpu(),
+        endpoint.reshape(batch, n_candidates, *endpoint.shape[-2:]).cpu(),
+    )
 
 
 @torch.no_grad()
@@ -158,7 +198,7 @@ def main():
     scratch = task.get_env_fun(chosen.numel() * args.candidates, True, 0, args.device)()
     scratch.reset()
     try:
-        truth, block_valid, observation = simulate(
+        truth, truth_complete, block_valid, observation, _endpoint = simulate(
             scratch,
             select_anchor_states(anchors, chosen, args.device),
             candidates.to(args.device),
@@ -168,9 +208,11 @@ def main():
         scratch.close()
 
     rankable = truth.std(dim=1) > 1e-9
+    rankable_complete = truth_complete.std(dim=1) > 1e-9
     print(
         f"states {chosen.numel()}, candidates {args.candidates}, "
-        f"rankable {int(rankable.sum())}/{rankable.numel()}"
+        f"rankable {int(rankable.sum())}/{rankable.numel()}, "
+        f"complete-block rankable {int(rankable_complete.sum())}/{rankable.numel()}"
     )
 
     rows = {}
@@ -196,7 +238,9 @@ def main():
         rows.setdefault((regime, kind), []).append(
             (
                 rank_against(truth, predicted, rankable),
-                rank_against(truth, on_true, rankable),
+                # Scored against the complete-block truth, which is the set of
+                # blocks a boundary scorer can see at all.
+                rank_against(truth_complete, on_true, rankable_complete),
             )
         )
 

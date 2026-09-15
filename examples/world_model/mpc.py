@@ -87,8 +87,19 @@ def transport_outcome(env):
 class EpisodeStats:
     """Latch first terminal outcomes; never count post-terminal rewards or goals."""
 
-    def __init__(self, env, outcome_fn=buzz_wire_outcome):
+    def __init__(self, env, outcome_fn=buzz_wire_outcome, goal_observation=None,
+                 goal_threshold=None):
+        """``goal_observation`` (B,N,O) scores a goal-reaching objective.
+
+        The native ``success`` flag is the scenario's own ``done()``; goal
+        reaching is a separate outcome with its own declared threshold, latched
+        at the same terminal frame. Reading either from the environment after the
+        loop would measure whichever state a finished slot drifted to while its
+        neighbours kept running.
+        """
         self.outcome_fn = outcome_fn
+        self.goal_observation = goal_observation
+        self.goal_threshold = goal_threshold
         self.alive = ~env._env.done()
         if not self.alive.all():
             raise ValueError("Evaluation states must be nonterminal")
@@ -98,6 +109,12 @@ class EpisodeStats:
         self.collision = torch.zeros_like(self.alive)
         self.timeout = torch.zeros_like(self.alive)
         self.final_distance = torch.zeros_like(env._env.steps)
+        self.goal_distance = torch.full_like(env._env.steps, float("nan"))
+        self.goal_reached = torch.zeros_like(self.alive)
+
+    def _goal_distance(self, env):
+        reached = agent_observations(env)
+        return (reached - self.goal_observation).flatten(1).norm(dim=-1)
 
     def update(self, env, td):
         reward = td["agents", "reward"].sum(dim=1).squeeze(-1)
@@ -114,6 +131,16 @@ class EpisodeStats:
         self.collision |= ended & collided
         self.timeout |= ended & ~collided & ~goal & timed_out
         self.final_distance = torch.where(ended, distance, self.final_distance)
+        if self.goal_observation is not None:
+            # Latched at the terminal frame, and refreshed while still running
+            # so an episode that never terminates is scored at its last state.
+            current = self._goal_distance(env)
+            live_or_ending = self.alive
+            self.goal_distance = torch.where(
+                live_or_ending, current, self.goal_distance
+            )
+            if self.goal_threshold is not None:
+                self.goal_reached |= live_or_ending & (current <= self.goal_threshold)
         self.alive &= ~ended
 
     def rows(self, policy, n_agents):
@@ -128,6 +155,17 @@ class EpisodeStats:
                 "timeout": bool(self.timeout[i]),
                 "length": int(self.length[i]),
                 "final_goal_distance": float(self.final_distance[i]),
+                # Only when a goal was actually supplied. A NaN placeholder
+                # would make identical rows compare unequal and would fail the
+                # results write, which forbids non-finite JSON.
+                **(
+                    {
+                        "goal_observation_distance": float(self.goal_distance[i]),
+                        "goal_reached": bool(self.goal_reached[i]),
+                    }
+                    if self.goal_observation is not None
+                    else {}
+                ),
             }
             for i in range(len(self.alive))
         ]
@@ -167,6 +205,8 @@ def evaluate_policy(
     diagnostics_path: Path | None = None,
     outcome_fn=buzz_wire_outcome,
     plan_costs=None,
+    goal_observation=None,
+    goal_threshold=None,
 ):
     """Evaluate exactly one episode per slot; return episode rows and timing.
 
@@ -190,7 +230,7 @@ def evaluate_policy(
             raise ValueError("Oracle MPC requires a separate scratch environment")
         plan_costs = oracle_costs(scratch_env)
     restore_state(env, initial_state)
-    stats = EpisodeStats(env, outcome_fn)
+    stats = EpisodeStats(env, outcome_fn, goal_observation, goal_threshold)
     batch_size = env.batch_size[0]
     n_agents = len(env._env.world.agents)
     action_dim = env.full_action_spec_unbatched["agents", "action"].shape[-1]

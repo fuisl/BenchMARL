@@ -124,26 +124,27 @@ def goal_plan_costs(
 
 
 def terminal_observations(observation, block_valid):
-    """Last observation each candidate actually reached: (B,K,N,O).
+    """Deprecated: block-boundary approximation of the endpoint.
 
-    Episodes end at different steps, so the frame after the last valid block is
-    the reachable endpoint; reading the final frame unconditionally would compare
-    against states past termination.
+    Kept only so existing callers fail loudly rather than silently returning the
+    wrong frame. It counts complete blocks and clamps to at least one, so a
+    candidate terminating inside its first block returns a frame from *after*
+    termination, and one terminating inside a later block returns the boundary
+    *before* it. Use the ``endpoint`` that ``simulate`` now returns.
     """
-    last = block_valid.sum(dim=-1).clamp_min(1)
-    index = last.view(*last.shape, 1, 1).expand(*last.shape, *observation.shape[-2:])
-    return observation.gather(2, index.unsqueeze(2)).squeeze(2)
+    raise NotImplementedError(
+        "terminal_observations mis-locates endpoints; use simulate()'s endpoint"
+    )
 
 
-def true_goal_costs(observation, block_valid, goal_observation):
+def true_goal_costs(endpoint, goal_observation):
     """Ground-truth analogue: terminal distance in observation space, (B,K).
 
     The simulator has no latent space, so the objective it can be held to is the
-    same terminal distance measured on observations. Summed, to match the
-    latent cost's reduction.
+    same terminal distance measured on observations, at the endpoint each
+    candidate actually reached. Summed, to match the latent cost's reduction.
     """
-    reached = terminal_observations(observation, block_valid)
-    return (reached - goal_observation.unsqueeze(1)).square().sum(dim=(-1, -2))
+    return (endpoint - goal_observation.unsqueeze(1)).square().sum(dim=(-1, -2))
 
 
 def rank_scores(truth, predicted, rankable):
@@ -220,7 +221,7 @@ def main():
     )()
     scratch.reset()
     try:
-        _, block_valid, observation = simulate(
+        _, _complete, _block_valid, _observation, endpoint = simulate(
             scratch,
             select_anchor_states(anchors, chosen, args.device),
             candidates.to(args.device),
@@ -229,9 +230,11 @@ def main():
     finally:
         scratch.close()
 
-    goal = terminal_observations(observation, block_valid)[:, 0]
+    # Candidate 0 supplies the goal and is excluded from ranking. Both the goal
+    # and the scored endpoints are the frames actually reached.
+    goal = endpoint[:, 0]
     scored = candidates[:, 1:]
-    truth = true_goal_costs(observation[:, 1:], block_valid[:, 1:], goal)
+    truth = true_goal_costs(endpoint[:, 1:], goal)
     rankable = truth.std(dim=1) > 1e-9
     print(
         f"states {chosen.numel()}, candidates {args.candidates}, "

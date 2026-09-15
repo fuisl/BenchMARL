@@ -107,7 +107,11 @@ def main():
     parser.add_argument("--horizon", type=int, default=5)
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--full-state", action="store_true")
-    parser.add_argument("--output", type=Path, default=Path("stratified_scores.json"))
+    # Under outputs/, not the repository root: the old default dropped a
+    # result file beside the source tree on every run.
+    parser.add_argument(
+        "--output", type=Path, default=Path("outputs/stratified_scores.json")
+    )
     args = parser.parse_args()
 
     ids, labels = effect_labels(args.data, args.horizon, full_state=args.full_state)

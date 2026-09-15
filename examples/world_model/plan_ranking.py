@@ -125,8 +125,15 @@ def model_costs(model, observation, candidates, action_block, device):
     # collapses to it when the head is confident. Where termination never occurs
     # the probabilities are ~0 and survival stays ~1, so this is a no-op on a
     # task like Transport whose bank contains no terminations at all.
-    ends = torch.sigmoid(terminated)
-    survival = torch.cumprod(1 - ends, dim=1) / (1 - ends).clamp_min(1e-6)
+    # Probability of still being alive when each block *starts*: an exclusive
+    # prefix product. The earlier form divided an inclusive cumprod by the
+    # current factor, which collapses when a termination sigmoid saturates --
+    # for end probabilities [1, 0.5, 0.5] it returns [0, 0, 0] where the first
+    # block must carry weight 1, discarding the terminal block's own reward.
+    alive = 1 - torch.sigmoid(terminated)
+    survival = torch.cat(
+        [torch.ones_like(alive[:, :1]), torch.cumprod(alive, dim=1)[:, :-1]], dim=1
+    )
     cost = -(reward.squeeze(-1) * survival.unsqueeze(-1)).sum(dim=(1, 2))
     return cost.view(batch, n_candidates).cpu()
 
@@ -163,7 +170,10 @@ def main():
     parser.add_argument("--states", type=int, default=128)
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--seed", type=int, default=5100)
-    parser.add_argument("--cache", type=Path, default=Path("plan_ranking_truth.pt"))
+    # No default: a task-agnostic name in the working directory invites one
+    # task's simulator truth to be read back for another. Caching is opt-in and
+    # the file records what it was built from.
+    parser.add_argument("--cache", type=Path, default=None)
     args = parser.parse_args()
 
     anchors = torch.load(
@@ -173,8 +183,26 @@ def main():
     generator = torch.Generator().manual_seed(args.seed)
     chosen = test[torch.randperm(test.numel(), generator=generator)[: args.states]]
 
-    if args.cache.exists():
+    manifest = json.loads((args.data / "manifest.json").read_text())
+    # Everything the cached costs depend on. A cache built under any other
+    # identity is a different experiment and must not be reused silently.
+    identity = {
+        "task_name": manifest["task_name"],
+        "anchors_sha256": manifest["anchors_sha256"],
+        "sequence_steps": manifest["sequence_steps"],
+        "action_block": manifest["action_block"],
+        "states": args.states,
+        "candidates": args.candidates,
+        "seed": args.seed,
+    }
+
+    if args.cache is not None and args.cache.exists():
         cached = torch.load(args.cache, map_location="cpu", weights_only=True)
+        if cached.get("identity") != identity:
+            raise ValueError(
+                f"Cache {args.cache} was built for a different experiment.\n"
+                f"  cached: {cached.get('identity')}\n  wanted: {identity}"
+            )
         chosen, candidates, truth = (
             cached["indices"],
             cached["candidates"],
@@ -182,7 +210,6 @@ def main():
         )
         print(f"loaded cached truth for {chosen.numel()} states")
     else:
-        manifest = json.loads((args.data / "manifest.json").read_text())
         steps = manifest["sequence_steps"]
         joint_dim = torch.as_tensor(manifest["action_low"]).numel()
         candidates = (
@@ -193,9 +220,16 @@ def main():
             - 1
         )
         truth = true_costs(args.data, chosen, candidates, args.device)
-        torch.save(
-            {"indices": chosen, "candidates": candidates, "costs": truth}, args.cache
-        )
+        if args.cache is not None:
+            torch.save(
+                {
+                    "identity": identity,
+                    "indices": chosen,
+                    "candidates": candidates,
+                    "costs": truth,
+                },
+                args.cache,
+            )
         print(f"computed simulator truth for {chosen.numel()} states")
 
     rankable = truth.std(dim=1) > 1e-9

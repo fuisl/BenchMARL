@@ -19,8 +19,11 @@ class OfflineSequences(Dataset):
     Within each agent's action feature, primitive time precedes action coordinate.
     ``primitive_action`` keeps ``(L,block,N,A)`` for joint-action reconstruction;
     flatten its last three dimensions for the MPC's time-then-agent ordering.
-    A block is valid only when all its primitive transitions are valid. Partial
-    terminal blocks retain primitive rewards, masks and termination flags.
+    ``valid`` marks blocks whose every primitive transition is valid, which is
+    the contract prediction needs; ``outcome_valid`` marks blocks that start
+    from an observed state, which is the contract reward and termination need.
+    They differ exactly on partial terminal blocks, which retain their primitive
+    rewards, masks and termination flags.
 
     Simulator snapshots never appear in model samples. Normalization is left to
     M4 and must be fitted using valid training transitions only.
@@ -184,6 +187,17 @@ class OfflineSequences(Dataset):
                 ),
                 "primitive_valid": primitive_valid,
                 "valid": primitive_valid.all(dim=1),
+                # Dynamics validity and outcome validity are different
+                # contracts. A block that terminates part-way through has no
+                # observed end-of-block latent, so it cannot supply a prediction
+                # target -- but its reward and termination flag are complete and
+                # correct, and on Buzz Wire the terminal block is where the -10
+                # collision penalty lives. Masking the readout with `valid`
+                # discarded 79% of training terminations together with their
+                # penalties. `valid` is a contiguous prefix, so `any` selects
+                # exactly the blocks that start from an observed state, which
+                # admits each terminal block once and nothing after it.
+                "outcome_valid": primitive_valid.any(dim=1),
                 "observation_valid": torch.cat(
                     [torch.ones(1, dtype=torch.bool), primitive_valid.all(dim=1)]
                 ),
