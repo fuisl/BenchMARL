@@ -333,16 +333,22 @@ def benchmarl_figures(results_path, output, metric="neg_rollout_error"):
 
     # Per-task IQM, which is where the coupling story actually lives.
     tasks = sorted(processed[ENVIRONMENT])
-    figure, axes = plt.subplots(1, len(tasks), figsize=(4 * len(tasks), 4), sharey=True)
-    for axis, task in zip(np.atleast_1d(axes), tasks):
-        index = tasks.index(task)
+    figure, axes = plt.subplots(
+        1, len(tasks), figsize=(3.6 * len(tasks), 0.42 * len(algorithms) + 2)
+    )
+    axes = np.atleast_1d(axes)
+    for index, (axis, task) in enumerate(zip(axes, tasks)):
         for position, algorithm in enumerate(algorithms):
             column = np.asarray(scores[algorithm])[:, index]
             estimate, low, high = bootstrap_iqm(column)
             axis.barh(position, estimate, color="#4C72B0", height=0.6)
             axis.plot([low, high], [position, position], color="black", linewidth=1.5)
         axis.set_yticks(range(len(algorithms)))
-        axis.set_yticklabels(algorithms if task == tasks[0] else [], fontsize=8)
+        # Labels only on the left panel, but the axes must not be shared: with
+        # sharey, blanking one panel's tick labels blanks every panel's.
+        axis.set_yticklabels(algorithms if index == 0 else [], fontsize=8)
+        axis.set_ylim(-0.6, len(algorithms) - 0.4)
+        axis.set_xlim(0, 1)
         axis.set_title(task)
         axis.set_xlabel(f"normalised {metric}")
     path = output / "per_task_scores.png"
@@ -375,12 +381,17 @@ def log_to_wandb(records, closed_loop, references, project, entity, tree, figure
     for record in records:
         key = (record["task"], record["kind"], record["regime"], record["seed"])
         algorithm = algorithm_name(record)
+        name = f"{algorithm}__seed{record['seed']}"
         run = wandb.init(
             project=project,
             entity=entity,
+            # Deterministic id, as BenchMARL's own logger uses, so re-running
+            # the report updates each run rather than creating a duplicate.
+            id=f"{record['task']}__{name}",
+            resume="allow",
             group=record["task"],
             job_type=record["kind"],
-            name=f"{algorithm}__seed{record['seed']}",
+            name=name,
             tags=[record["task"], record["kind"], record["regime"]],
             config={
                 "environment": ENVIRONMENT,
@@ -405,6 +416,8 @@ def log_to_wandb(records, closed_loop, references, project, entity, tree, figure
         run = wandb.init(
             project=project,
             entity=entity,
+            id=f"{reference['task']}__reference__{reference['policy']}",
+            resume="allow",
             group=reference["task"],
             job_type="reference",
             name=f"{reference['policy']}__{reference['task']}",
@@ -430,6 +443,8 @@ def log_to_wandb(records, closed_loop, references, project, entity, tree, figure
     run = wandb.init(
         project=project,
         entity=entity,
+        id="aggregate-scores",
+        resume="allow",
         group="aggregate",
         job_type="summary",
         name="aggregate-scores",
