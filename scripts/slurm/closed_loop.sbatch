@@ -40,8 +40,8 @@
 #SBATCH --partition=gpu
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=12
-#SBATCH --mem=48G
+#SBATCH --cpus-per-task=28
+#SBATCH --mem=64G
 #SBATCH --gres=gpu:a100_3g.20gb:1
 #SBATCH --time=06:00:00
 #SBATCH --output=slurm-%j.out
@@ -57,10 +57,14 @@ states="${CLOSED_LOOP_STATES:-20}"
 # goal -- so the full 48-checkpoint grid is 3.2 hours per task and does not fit.
 # 24 checkpoints keeps all three predictors and both regimes, which are the
 # comparisons, and spends the budget on those rather than on seeds 4104-4107.
-# Seed groups, one concurrent process each per task. Measured peaks are 5.7 GB
-# for a Transport process and roughly half that for Buzz Wire, so six processes
-# sit near 18 GB of the 20 GB slice -- the same fill the Buzz Wire training
-# sweep ran at -- against the 6.1 GB two processes were using.
+# Seed groups, one concurrent process each per task.
+#
+# VRAM is not what limits concurrency here. Job 1214 ran four processes and
+# peaked at 6.9 GB of the 20 GB slice, barely above the 6.1 GB two processes
+# used -- but Buzz Wire's random policy went from 26 s to 200 s, because VMAS
+# steps the simulator on the CPU and Buzz Wire takes 15 substeps per step. Four
+# processes were splitting 12 cores. The allocation now takes 28 of the node's
+# 32, so each process gets more cores than it had when only two ran.
 groups="${CLOSED_LOOP_GROUPS:-4100,4101 4102,4103}"
 # The reference process also scores one seed group, so no work is duplicated.
 references_seed="${CLOSED_LOOP_REFERENCE_SEED:-4100}"
