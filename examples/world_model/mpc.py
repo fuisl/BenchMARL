@@ -9,8 +9,12 @@ from time import perf_counter
 import torch
 
 from examples.world_model.cem import cem_plan, CEMConfig
-from examples.world_model.oracle_dynamics import oracle_plan_costs
-from examples.world_model.snapshot_restore import restore_state, snapshot_state
+from examples.world_model.oracle_dynamics import GoalDistance, oracle_plan_costs
+from examples.world_model.snapshot_restore import (
+    agent_observations,
+    restore_state,
+    snapshot_state,
+)
 from tensordict import TensorDict
 
 
@@ -171,18 +175,29 @@ class EpisodeStats:
         ]
 
 
-def agent_observations(env):
-    """(B, N, obs_dim) -- what the agents themselves see at the current state."""
-    return torch.stack(
-        [env._env.scenario.observation(agent) for agent in env._env.world.agents], dim=1
-    )
-
-
 def oracle_costs(scratch_env):
     """The default plan cost: roll the true simulator from the snapshot."""
 
     def costs(snapshot, observation, candidates):
         return oracle_plan_costs(scratch_env, snapshot, candidates)
+
+    return costs
+
+
+def goal_oracle_costs(scratch_env, goal_observation):
+    """Plan cost for the goal objective, with the true simulator as dynamics.
+
+    Same planner and same goals as the learned goal policies; only the world
+    model differs. This is the ceiling the goal results were missing -- the
+    reward oracle optimizes a different objective and is not one.
+    """
+
+    objective = GoalDistance(goal_observation)
+
+    def costs(snapshot, observation, candidates):
+        return oracle_plan_costs(
+            scratch_env, snapshot, candidates, objective=objective
+        )
 
     return costs
 

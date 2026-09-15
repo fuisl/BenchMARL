@@ -18,7 +18,8 @@ world model", so the cost must be a thing that can be held fixed while the
 dynamics underneath it are swapped for a learned model.
 
 * dynamics: :func:`oracle_rollout` -- candidates in, rollout dict out.
-* objective: :class:`NegativeTaskReward` -- rollout dict in, per-candidate cost out.
+* objective: :class:`NegativeTaskReward` or :class:`GoalDistance` -- rollout
+  dict in, per-candidate cost out.
 * composed: :func:`oracle_plan_costs` -- what a solver's ``cost_fn`` calls.
 
 Cost convention (decided 2026-09-11): ``J = -sum_h r_h``, the true task reward,
@@ -35,6 +36,7 @@ import torch
 from benchmarl.environments import VmasTask
 
 from examples.world_model.snapshot_restore import (
+    agent_observations,
     broadcast_state,
     restore_state,
     snapshot_state,
@@ -50,6 +52,13 @@ def oracle_rollout(scratch_env, snapshot, candidates) -> dict:
     copies of each source state. Candidates are (B,K,T,N*d_a), where T counts
     primitive VMAS steps, not action blocks. Outputs reward/live are (B,K,T).
     A terminal transition contributes reward; every later transition is masked.
+
+    ``endpoint`` (B,K,N,O) is the state each candidate actually reached: the
+    frame at its own first termination, or the final frame if it never
+    terminated. The last frame of the batch is a different state -- finished
+    slots keep being stepped while their neighbours run -- so an objective that
+    scores where a plan ends must read this rather than the environment after
+    the loop.
     """
     if candidates.ndim != 4:
         raise ValueError("Oracle candidates must have shape (B,K,T,N*d_a)")
@@ -73,11 +82,19 @@ def oracle_rollout(scratch_env, snapshot, candidates) -> dict:
     actions = candidates.reshape(count, horizon, n_agents, primitive_dim)
     td = TensorDict({}, batch_size=[count], device=candidates.device)
     rewards, lives = [], []
+    ended = ~live
+    endpoint = agent_observations(scratch_env)
     for h in range(horizon):
         td.set(("agents", "action"), actions[:, h])
         td = scratch_env.step(td)["next"]
         rewards.append(td["agents", "reward"].sum(dim=1).squeeze(-1))
         lives.append(live)
+        # Overwrite while the candidate has not yet terminated, so the last
+        # write a candidate receives is the frame at its own termination.
+        endpoint = torch.where(
+            (~ended).reshape(-1, 1, 1), agent_observations(scratch_env), endpoint
+        )
+        ended = ended | td["done"].squeeze(-1)
         live = live & ~td["done"].squeeze(-1)
 
     return {
@@ -85,6 +102,7 @@ def oracle_rollout(scratch_env, snapshot, candidates) -> dict:
             batch_size, n_candidates, horizon
         ),
         "live": torch.stack(lives, dim=-1).reshape(batch_size, n_candidates, horizon),
+        "endpoint": endpoint.reshape(batch_size, n_candidates, *endpoint.shape[-2:]),
     }
 
 
@@ -93,6 +111,38 @@ class NegativeTaskReward:
 
     def __call__(self, rollout: dict) -> torch.Tensor:
         return -rollout["reward"].masked_fill(~rollout["live"], 0).sum(dim=-1)
+
+
+class GoalDistance:
+    """Cost = L2 from where the plan ends to a fixed goal observation.
+
+    The objective the goal planners are actually optimizing, given the true
+    simulator instead of a learned model. Job 1218 showed the reward oracle is
+    not a ceiling for it: on Buzz Wire the reward oracle ended 0.839 from the
+    generated goal against random's 0.256, because maximizing task reward moves
+    away from a goal drawn from an arbitrary trajectory. Without this, the goal
+    results have a random floor and no ceiling.
+
+    ``goal_observation`` is (B,N,O) -- one goal per evaluation state, the same
+    targets every learned policy is scored against.
+    """
+
+    def __init__(self, goal_observation: torch.Tensor):
+        if goal_observation.ndim != 3:
+            raise ValueError("Goal observation must be (B,N,O)")
+        self.goal_observation = goal_observation
+
+    def __call__(self, rollout: dict) -> torch.Tensor:
+        endpoint = rollout["endpoint"]
+        if endpoint.shape[0] != self.goal_observation.shape[0]:
+            raise ValueError(
+                f"{endpoint.shape[0]} rollout states against "
+                f"{self.goal_observation.shape[0]} goals"
+            )
+        # (B,K,N,O) against (B,1,N,O), flattened over agents and observation
+        # so the distance matches EpisodeStats' own goal metric exactly.
+        difference = endpoint - self.goal_observation.unsqueeze(1)
+        return difference.flatten(2).norm(dim=-1)
 
 
 def oracle_plan_costs(

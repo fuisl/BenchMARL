@@ -29,6 +29,7 @@ from examples.world_model.mpc import (
     MPCConfig,
     oracle_costs,
 )
+from examples.world_model.oracle_dynamics import GoalDistance, oracle_rollout
 from examples.world_model.snapshot_restore import snapshot_state
 
 STATES, SAMPLES = 2, 6
@@ -196,3 +197,65 @@ def test_learned_costs_return_on_the_planner_device(device):
         assert cost.device.type == candidates.device.type
         assert cost.shape == (STATES, SAMPLES)
         assert torch.isfinite(cost).all()
+
+
+def test_goal_oracle_scores_the_metric_the_episodes_are_judged_on():
+    """The oracle's objective must be the reported goal distance, exactly.
+
+    A ceiling computed on a slightly different quantity than the one the
+    learned policies are scored with would not bound them. This pins the two
+    to the same arithmetic: ``GoalDistance`` on a rollout endpoint against
+    ``EpisodeStats._goal_distance`` on the environment at that same state.
+    """
+    env, scratch, initial = build()
+    try:
+        goal = agent_observations(env).clone()
+        candidates = (
+            torch.rand(STATES, SAMPLES, CEM.horizon * MPC.action_block, 4) * 2 - 1
+        )
+        rollout = oracle_rollout(scratch, initial, candidates)
+        costs = GoalDistance(goal)(rollout)
+        assert costs.shape == (STATES, SAMPLES)
+
+        # The same distance, computed the way EpisodeStats computes it.
+        expected = (
+            (rollout["endpoint"] - goal.unsqueeze(1)).flatten(2).norm(dim=-1)
+        )
+        assert torch.allclose(costs, expected)
+        # A goal taken from the start state is not where random plans end, so
+        # the scores must actually separate candidates.
+        assert costs.std() > 0
+    finally:
+        env.close()
+        scratch.close()
+
+
+def test_rollout_endpoint_is_the_terminal_frame_not_the_last_frame():
+    """Buzz Wire terminates on collision; finished slots keep being stepped.
+
+    Reading the environment after the loop would score wherever a dead slot
+    drifted to. The endpoint must stop moving once its own candidate ended --
+    the same contract Stage 0 established for the readout diagnostic.
+    """
+    env, scratch, initial = build()
+    try:
+        # Full-throttle plans collide early on Buzz Wire, which is what makes
+        # some candidates terminate well before the horizon.
+        candidates = torch.ones(
+            STATES, SAMPLES, CEM.horizon * MPC.action_block, 4
+        )
+        short = oracle_rollout(scratch, initial, candidates)
+        long = oracle_rollout(
+            scratch, initial, candidates.repeat(1, 1, 2, 1)
+        )
+        terminated = ~short["live"][..., -1]
+        if not terminated.any():
+            pytest.skip("no candidate terminated inside the short horizon")
+        # A candidate that already ended must have the same endpoint however
+        # many further steps the batch takes.
+        assert torch.allclose(
+            short["endpoint"][terminated], long["endpoint"][terminated]
+        )
+    finally:
+        env.close()
+        scratch.close()

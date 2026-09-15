@@ -123,6 +123,17 @@ def broadcast_state(env, snapshot, env_index: int = 0, *, source_indices=None) -
     env._env.steps = spread(snapshot["steps"])
 
 
+def agent_observations(env):
+    """(B, N, obs_dim) -- what the agents themselves see at the current state.
+
+    Lives here rather than in ``mpc`` because ``oracle_dynamics`` needs it too,
+    and ``mpc`` imports ``oracle_dynamics``.
+    """
+    return torch.stack(
+        [env._env.scenario.observation(agent) for agent in env._env.world.agents], dim=1
+    )
+
+
 def _rollout(env, td, action_sequence):
     """Step `env` through a fixed action sequence, recording the trajectory."""
     observations, rewards, dones = [], [], []

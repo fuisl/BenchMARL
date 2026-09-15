@@ -12,13 +12,20 @@ evidence about control -- the last link in the chain the proposal names,
 
 This runs the same CEM-MPC loop the oracle already validated, on the same states,
 with the same horizon and search budget, and changes exactly one thing: the
-dynamics the planner rolls. Four policies share those states:
+dynamics the planner rolls. Five policies share those states:
 
-    random    the floor
-    oracle    the true simulator as dynamics -- the ceiling, and the oracle gap
-    reward    learned latents + the learned reward/termination readout,
-              scoring J = -sum_t sum_i r_i,t, the objective the plan committed to
-    goal      learned latents + LeWM's terminal latent-goal distance
+    random       the floor
+    oracle       the true simulator as dynamics, scoring task reward -- the
+                 ceiling for ``reward``, and the oracle gap
+    goal_oracle  the true simulator scoring goal distance -- the ceiling for
+                 ``goal``. A separate policy because job 1218 measured the
+                 reward oracle ending *further* from the generated goal than
+                 random did (0.839 against 0.256 on Buzz Wire): maximizing task
+                 reward moves away from a goal drawn from an arbitrary
+                 trajectory, so one oracle cannot bound both objectives.
+    reward       learned latents + the learned reward/termination readout,
+                 scoring J = -sum_t sum_i r_i,t, the objective the plan committed to
+    goal         learned latents + LeWM's terminal latent-goal distance
 
 The two learned costs are reported separately on purpose. The experiment plan
 fixes task reward as the planning objective and defers latent-goal scoring, so
@@ -34,7 +41,7 @@ observation, reached by rolling a random plan from the same state, so it is
 reachable by construction. ``goal`` therefore measures goal-reaching, not task
 success, and its success column is distance-thresholded rather than the
 scenario's ``done()``. Only ``reward`` and ``oracle`` are comparable on task
-success.
+success; ``goal`` belongs against ``goal_oracle`` and ``random``.
 """
 
 from pathlib import Path
@@ -48,6 +55,7 @@ from examples.world_model.metrics import mean_interval, success_interval
 from examples.world_model.mpc import (
     buzz_wire_outcome,
     evaluate_policy,
+    goal_oracle_costs,
     MPCConfig,
     transport_outcome,
 )
@@ -365,6 +373,7 @@ def main():
         "num_iters": args.num_iters,
         "horizon": args.horizon,
         "goal_offset": args.goal_offset,
+        "references": "random,oracle,goal_oracle",
     }
 
     env = task.get_env_fun(states, True, 0, args.device)()
@@ -478,6 +487,11 @@ def main():
             run("random", "random")
             if not args.skip_oracle:
                 run("oracle", "mpc")
+                run(
+                    "goal_oracle",
+                    "mpc",
+                    goal_oracle_costs(scratch, goal_observation),
+                )
             if cache is not None:
                 cache.parent.mkdir(parents=True, exist_ok=True)
                 torch.save(
