@@ -147,6 +147,46 @@ def true_goal_costs(endpoint, goal_observation):
     return (endpoint - goal_observation.unsqueeze(1)).square().sum(dim=(-1, -2))
 
 
+@torch.no_grad()
+def encoded_goal_costs(model, endpoint, goal_observation, device):
+    """B: latent distance between the TRUE endpoints and the goal, (B,K).
+
+    The simulator supplies the endpoints, so nothing here depends on the
+    model's rollout. It isolates whether the learned representation orders
+    physically meaningful goals at all -- the question A-B answers, before
+    rollout error enters in C.
+    """
+    batch, candidates, agents, obs_dim = endpoint.shape
+    flat = endpoint.reshape(batch * candidates, 1, agents, obs_dim).to(device)
+    latent = model.encode(flat).reshape(batch, candidates, 1, agents, -1)
+    goal = model.encode(goal_observation.unsqueeze(1).to(device))
+    goal = goal.reshape(batch, 1, 1, agents, -1)
+    return terminal_goal_cost(latent, goal).cpu()
+
+
+def selected_regret(reference, scores, rankable):
+    """Physical cost of each scorer's chosen plan, above the best available.
+
+    Rank correlation says whether the ordering is broadly right; regret says
+    what the ordering costs when a single plan is actually executed, which is
+    what a planner does.
+    """
+    values = []
+    for state in rankable.nonzero(as_tuple=True)[0]:
+        chosen = int(scores[state].argmin())
+        values.append(float(reference[state, chosen] - reference[state].min()))
+    return sum(values) / len(values) if values else float("nan")
+
+
+def top_agreement(reference, scores, rankable):
+    """Fraction of states where the scorer picks the physically best plan."""
+    hits = [
+        int(scores[state].argmin()) == int(reference[state].argmin())
+        for state in rankable.nonzero(as_tuple=True)[0]
+    ]
+    return sum(hits) / len(hits) if hits else float("nan")
+
+
 def rank_scores(truth, predicted, rankable):
     scores = []
     for state in rankable.nonzero(as_tuple=True)[0]:
@@ -157,6 +197,9 @@ def rank_scores(truth, predicted, rankable):
 
 
 __all__ = [
+    "encoded_goal_costs",
+    "selected_regret",
+    "top_agreement",
     "lewm_rollout",
     "terminal_goal_cost",
     "goal_plan_costs",
@@ -255,19 +298,46 @@ def main():
             )
             samples = (regime, loaded["observation"])
         model = load_model(directory / "model.pt", args.device)
+        # B: true endpoints, learned representation. C: predicted endpoints.
+        encoded = encoded_goal_costs(model, endpoint[:, 1:], goal, args.device)
         predicted = goal_plan_costs(
             model, samples[1][chosen, 0], goal, scored, block, args.device, args.history
         )
         rows.setdefault((regime, kind), []).append(
-            rank_scores(truth, predicted, rankable)
+            {
+                "B_vs_A": rank_scores(truth, encoded, rankable),
+                "C_vs_A": rank_scores(truth, predicted, rankable),
+                "C_vs_B": rank_scores(encoded, predicted, rankable),
+                "B_regret": selected_regret(truth, encoded, rankable),
+                "C_regret": selected_regret(truth, predicted, rankable),
+                "B_top": top_agreement(truth, encoded, rankable),
+                "C_top": top_agreement(truth, predicted, rankable),
+            }
         )
 
-    print("\nSpearman of goal-cost ranking against the simulator's terminal distance:")
-    header = f"{'regime':12s} {'kind':12s} {'spearman':>10s}"
+    # A is the simulator's own physical goal distance, the reference ordering.
+    # B adds the learned representation; C adds the learned rollout on top.
+    # A-B is representation geometry, B-C is what prediction costs.
+    random_regret = selected_regret(
+        truth, torch.rand(truth.shape, generator=generator), rankable
+    )
+    print(
+        f"\nA = simulator physical goal distance (reference). "
+        f"Random-choice regret {random_regret:.4f}."
+    )
+    header = (
+        f"{'regime':12s} {'kind':12s} {'B vs A':>8s} {'C vs A':>8s} {'C vs B':>8s} "
+        f"{'B regret':>9s} {'C regret':>9s} {'B top':>7s} {'C top':>7s}"
+    )
     print(header)
     print("-" * len(header))
     for (regime, kind), values in sorted(rows.items()):
-        print(f"{regime:12s} {kind:12s} {sum(values)/len(values):10.4f}")
+        avg = {k: sum(v[k] for v in values) / len(values) for k in values[0]}
+        print(
+            f"{regime:12s} {kind:12s} {avg['B_vs_A']:8.4f} {avg['C_vs_A']:8.4f} "
+            f"{avg['C_vs_B']:8.4f} {avg['B_regret']:9.4f} {avg['C_regret']:9.4f} "
+            f"{avg['B_top']:7.2f} {avg['C_top']:7.2f}"
+        )
 
 
 if __name__ == "__main__":

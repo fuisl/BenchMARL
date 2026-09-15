@@ -26,8 +26,12 @@ it trained on, so a correlated-trained model is being asked about a region its
 data never covered while an independent-trained model has seen it. That contrast
 is M1 Row 2.
 
-Errors live in each model's own latent space, so the reported quantity is the
-scale-free relative gap G_CF / E_ID, with absolutes shown alongside.
+Errors live in each model's own latent space, so each model is scored against
+its **own** no-response floor -- dividing one model's response by another's
+inertia would compare magnitudes from two different learned spaces. A shared
+physical probe is reported alongside: how well each model's predicted response
+magnitude ranks the simulator's true observation-space response, which is one
+common target for every model.
 
 Run:
     python -m examples.world_model.counterfactual_evaluation \\
@@ -42,6 +46,7 @@ import torch
 import yaml
 
 from examples.world_model.compare_baselines import bootstrap_interval, mean
+from examples.world_model.plan_ranking import spearman
 from examples.world_model.stratified_evaluation import effect_labels
 from examples.world_model.train import load_model
 
@@ -119,6 +124,13 @@ def main():
 
     _, active = effect_labels(args.data, block, full_state=args.full_state)
     active = active & live
+    # The simulator's own cross-agent response, in observation space. This is
+    # the shared target every model is ranked against below.
+    physical_move = (
+        (target_cf[:, non_intervened] - target_id[:, non_intervened])
+        .square()
+        .mean(dim=(1, 2))
+    )
     moved = (target_cf[:, non_intervened] - target_id[:, non_intervened]).abs().amax(
         dim=(1, 2)
     ) > 0
@@ -165,11 +177,19 @@ def main():
             ((pred_cf - pred_id) - (truth_cf - truth_id)).square().mean(dim=(1, 2))
         )
         inertia = (truth_cf - truth_id).square().mean(dim=(1, 2))
+        # Shared physical probe. The ratio above is scale-free but still lives in
+        # one model's latent space, so it cannot say whether the model knows
+        # *which* anchors carry a large cross-agent effect. This ranks each
+        # model's predicted response magnitude against the simulator's true
+        # response measured in observation space -- the same target for every
+        # model, no decoder required.
+        predicted_move = (pred_cf - pred_id).square().mean(dim=(1, 2))
         results[key] = {
             "id": e_id,
             "cf": e_cf,
             "response": response,
             "inertia": inertia,
+            "predicted_move": predicted_move,
         }
 
     regimes = sorted({r for r, _, _ in results})
@@ -245,19 +265,48 @@ def main():
     print(header)
     print("-" * len(header))
     for regime in regimes:
-        floor = mean(
-            [
-                float(v["inertia"][active].mean())
-                for (r, k, _), v in results.items()
-                if (r, k) == (regime, "independent")
-            ]
-        )
         for kind in BASELINES:
             rows = [v for (r, k, _), v in results.items() if (r, k) == (regime, kind)]
             if not rows:
                 continue
             value = mean([float(v["response"][active].mean()) for v in rows])
-            print(f"{regime:12s} {kind:12s} {value:11.6f} {value / floor:15.3f}x")
+            # Each model against ITS OWN no-response floor. Dividing one model's
+            # response by another model's inertia compares magnitudes measured
+            # in two different learned latent spaces, which makes the ratio
+            # uninterpretable as a physical quantity. `independent` cannot react
+            # to agent 1 by construction, so its response equals its own inertia
+            # and its ratio is exactly 1.000 -- a real structural floor rather
+            # than a borrowed one.
+            floor = mean([float(v["inertia"][active].mean()) for v in rows])
+            ratio = value / floor if floor > 0 else float("nan")
+            print(f"{regime:12s} {kind:12s} {value:11.6f} {ratio:15.3f}x")
+
+    print("\n=== SHARED PHYSICAL PROBE ===")
+    print("Spearman between each model's predicted response magnitude and the")
+    print("simulator's true response in observation space, over active anchors.")
+    print("One common target for every model, so this is comparable across them")
+    print("in a way a latent-space ratio is not.\n")
+    probe_header = f"{'regime':12s} {'kind':12s} {'spearman':>10s}"
+    print(probe_header)
+    print("-" * len(probe_header))
+    truth_move = physical_move[active]
+    for regime in regimes:
+        for kind in BASELINES:
+            rows = [v for (r, k, _), v in results.items() if (r, k) == (regime, kind)]
+            if not rows:
+                continue
+            # `independent` predicts exactly zero response at every anchor, so
+            # the rank correlation is undefined rather than poor. Say so.
+            constant = all(
+                float(v["predicted_move"][active].std()) == 0.0 for v in rows
+            )
+            if constant:
+                print(f"{regime:12s} {kind:12s} {'constant 0':>10s}")
+                continue
+            value = mean(
+                [spearman(v["predicted_move"][active], truth_move) for v in rows]
+            )
+            print(f"{regime:12s} {kind:12s} {value:10.4f}")
 
     print("\npaired response vs independent (negative = captured more of the effect):")
     header = f"{'regime':12s} {'kind':12s} {'mean':>12s} {'95% CI':>28s} {'seeds better':>13s}"
