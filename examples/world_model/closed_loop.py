@@ -52,6 +52,7 @@ from examples.world_model.mpc import (
     transport_outcome,
 )
 from examples.world_model.plan_ranking import model_costs, select_anchor_states
+from examples.world_model.train import MARL_EVAL_FILE, MODEL_NAME
 from examples.world_model.readout_diagnostic import simulate
 
 
@@ -112,6 +113,83 @@ def achieved_goals(scratch_env, snapshot, candidates, action_block):
     # is then differenced against live observations, so hand it back on the
     # environment's device rather than leaving that to every caller.
     return endpoint[:, 0].to(scratch_env.device)
+
+
+def log_policy(args, manifest, label, episodes, timing):
+    """One wandb run and one marl-eval file per evaluated policy.
+
+    BenchMARL's own convention, the same one `train.py` follows: the run name is
+    {algorithm}_{task}_{model}, the wandb group is the task, and the id is the
+    experiment name. A closed-loop policy is an algorithm in that sense -- it is
+    what is being compared on a shared task at a matched planning budget -- so
+    `relational_correlated_goal` and `oracle` sit in the same slot MAPPO and
+    IPPO occupy there.
+
+    Control metrics are genuinely per-episode, which is the shape JsonWriter
+    expects, so these files carry real distributions rather than single values.
+    """
+    if not args.wandb:
+        return
+    from benchmarl.experiment.logger import JsonWriter
+    from torchrl.record.loggers import get_logger
+    from torchrl.record.loggers.utils import generate_exp_name
+
+    environment, task_name = manifest["task_name"].split("/")
+    algorithm = label.replace("|", "_")
+    experiment_name = generate_exp_name(f"{algorithm}_{task_name}_{MODEL_NAME}", "")
+    metrics = {
+        "return": torch.tensor([row["return"] for row in episodes]),
+        "success": torch.tensor([float(row["success"]) for row in episodes]),
+        "collision": torch.tensor([float(row["collision"]) for row in episodes]),
+        "episode_length": torch.tensor([float(row["length"]) for row in episodes]),
+    }
+    if "goal_reached" in episodes[0]:
+        metrics["goal_reached"] = torch.tensor(
+            [float(row["goal_reached"]) for row in episodes]
+        )
+        metrics["neg_goal_distance"] = torch.tensor(
+            [-row["goal_observation_distance"] for row in episodes]
+        )
+
+    folder = args.output.parent / experiment_name
+    folder.mkdir(parents=True, exist_ok=True)
+    JsonWriter(
+        folder=str(folder),
+        name=MARL_EVAL_FILE,
+        algorithm_name=algorithm,
+        task_name=task_name,
+        environment_name=environment,
+        seed=args.seed,
+    ).write(total_frames=len(episodes), metrics=metrics, evaluation_step=0)
+
+    logger = get_logger(
+        logger_type="wandb",
+        logger_name=str(folder),
+        experiment_name=experiment_name,
+        wandb_kwargs={
+            "group": task_name,
+            "id": experiment_name,
+            "project": args.project,
+            "entity": args.entity,
+            "config": {
+                "algorithm": algorithm,
+                "task": task_name,
+                "environment": environment,
+                "model": MODEL_NAME,
+                "policy": label,
+                "seed": args.seed,
+                "states": args.states,
+                "num_samples": args.num_samples,
+                "num_iters": args.num_iters,
+                "horizon": args.horizon,
+            },
+        },
+    )
+    for name, values in metrics.items():
+        logger.log_scalar(name, float(values.mean()), step=0)
+    logger.log_scalar("seconds_per_decision", timing["seconds_per_decision"], step=0)
+    if hasattr(logger, "experiment"):
+        logger.experiment.finish()
 
 
 def persist(args, manifest, states, chosen, cem_config, rows, timings):
@@ -217,6 +295,26 @@ def main():
         "primary number and this only names a cut through it.",
     )
     parser.add_argument("--skip-oracle", action="store_true")
+    parser.add_argument("--project", default="counterfactual-wm")
+    parser.add_argument("--entity", default="cair-traffic")
+    parser.add_argument(
+        "--wandb",
+        action="store_true",
+        help="log each policy through BenchMARL's logger conventions",
+    )
+    parser.add_argument(
+        "--skip-references",
+        action="store_true",
+        help="score only checkpoints; references come from --reference-cache",
+    )
+    parser.add_argument(
+        "--reference-cache",
+        type=Path,
+        default=None,
+        help="random/oracle episodes and goals, computed once and reused. The "
+        "oracle rolls states x num_samples simulator environments per CEM "
+        "iteration and is the one policy that must not share the slice.",
+    )
     parser.add_argument(
         "--seeds",
         default=None,
@@ -256,14 +354,40 @@ def main():
     states = chosen.numel()
     initial_state = select_anchor_states(anchors, chosen, args.device)
 
+    # Everything the references depend on. A cache built under any other
+    # identity is a different experiment and must not be reused silently.
+    reference_identity = {
+        "task_name": manifest["task_name"],
+        "anchors_sha256": manifest["anchors_sha256"],
+        "states": args.states,
+        "seed": args.seed,
+        "num_samples": args.num_samples,
+        "num_iters": args.num_iters,
+        "horizon": args.horizon,
+        "goal_offset": args.goal_offset,
+    }
+
     env = task.get_env_fun(states, True, 0, args.device)()
-    scratch = task.get_env_fun(states * args.num_samples, True, 0, args.device)()
     env.reset()
-    scratch.reset()
+
+    # The scratch simulator exists only for the oracle and for generating goals:
+    # states x num_samples environments, which is the bulk of a process's
+    # memory. A shard that takes both from a reference cache never touches it,
+    # so it is not built -- which is what lets many shards share one slice.
+    cached = args.reference_cache is not None and args.reference_cache.exists()
+    needs_scratch = not (cached and args.skip_references)
+    scratch = None
+    if needs_scratch:
+        scratch = task.get_env_fun(
+            states * args.num_samples, True, 0, args.device
+        )()
+        scratch.reset()
 
     try:
         # One random plan per state supplies the LeWM goal, drawn before any
         # planning so every policy is scored against the same fixed targets.
+        # Drawn from the shared generator before any shard-dependent branching,
+        # so concurrent shards target identical goals whether cached or not.
         goal_plans = (
             torch.rand(
                 states,
@@ -275,7 +399,29 @@ def main():
             * 2
             - 1
         ).to(args.device)
-        goal_observation = achieved_goals(scratch, initial_state, goal_plans, block)
+
+        # The random and oracle references are per-state, not per-checkpoint,
+        # and the oracle is by far the most expensive policy here: it rolls
+        # states x num_samples simulator environments through every CEM
+        # iteration. Job 1216 measured it at 4827 s while sharing a slice
+        # against 299 s alone, so it is computed once, alone, and reused.
+        cache = args.reference_cache
+        if cache is not None and cache.exists():
+            stored = torch.load(cache, map_location="cpu", weights_only=False)
+            if stored["identity"] != reference_identity:
+                raise ValueError(
+                    f"Reference cache {cache} was built for a different "
+                    f"experiment.\n  cached: {stored['identity']}"
+                    f"\n  wanted: {reference_identity}"
+                )
+            goal_observation = stored["goal_observation"].to(args.device)
+            reference_rows = stored["rows"]
+            print(f"loaded reference cache for {states} states", flush=True)
+        else:
+            goal_observation = achieved_goals(
+                scratch, initial_state, goal_plans, block
+            )
+            reference_rows = None
 
         outcome_fn = (
             transport_outcome
@@ -318,15 +464,31 @@ def main():
                 ),
             }
             print(f"  {label}: {timings[label]['seconds']:.1f}s", flush=True)
+            log_policy(args, manifest, label, episodes, timings[label])
             # Persist after every policy. These runs take hours, and writing
             # only at the end means a wall-clock kill destroys all of it --
             # which is how job 1212 would have ended.
             persist(args, manifest, states, chosen, cem_config, rows, timings)
 
         print(f"task {manifest['task_name']}, {states} test states", flush=True)
-        run("random", "random")
-        if not args.skip_oracle:
-            run("oracle", "mpc")
+        if reference_rows is not None:
+            rows.extend(reference_rows)
+            print(f"  reused {len(reference_rows)} cached reference episodes")
+        elif not args.skip_references:
+            run("random", "random")
+            if not args.skip_oracle:
+                run("oracle", "mpc")
+            if cache is not None:
+                cache.parent.mkdir(parents=True, exist_ok=True)
+                torch.save(
+                    {
+                        "identity": reference_identity,
+                        "goal_observation": goal_observation.cpu(),
+                        "rows": list(rows),
+                    },
+                    cache,
+                )
+                print(f"  wrote reference cache {cache}", flush=True)
 
         wanted = (
             {int(s) for s in args.seeds.split(",")} if args.seeds else None
@@ -362,7 +524,8 @@ def main():
             )
     finally:
         env.close()
-        scratch.close()
+        if scratch is not None:
+            scratch.close()
 
     summary = persist(args, manifest, states, chosen, cem_config, rows, timings)
 
