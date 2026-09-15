@@ -27,13 +27,15 @@
 # Sizing, from a measured Level-0 probe rather than an estimate: 33 s per
 # checkpoint for `reward` and 21 s for `goal`, so 48 checkpoints scored twice is
 # ~43 min, plus ~5 min of oracle and ~1 min of setup. One task per submission
-# ~43 min, plus ~5 min of oracle and ~1 min of setup. The two tasks run
-# concurrently on the one slice, so the job is about one task's wall-clock --
-# roughly job 1194's hour. The H100 `mig` partition is not reachable from this
-# cluster (`sinfo` shows only `local-a100`), so Level 2 cannot be used here.
+# ~43 min. Those were measured on GPU 0, the full un-partitioned A100, and
+# proved to be a large underestimate: on this slice, with both tasks sharing it,
+# job 1212 measured 243 s per Transport checkpoint rather than 54 s. The grid is
+# cut to four seeds and the wall-clock raised accordingly, which puts each task
+# near 1.6 hours. Results are now written after every policy, so a wall-clock
+# kill costs the remaining checkpoints rather than all of them.
 #
-# Note the timings above were measured on GPU 0, the full un-partitioned A100.
-# This slice has roughly 40% of its SMs, so treat them as a lower bound.
+# The H100 `mig` partition is not reachable from this cluster (`sinfo` shows
+# only `local-a100`), so Level 2 is not available.
 #SBATCH --job-name=closed-loop
 #SBATCH --partition=gpu
 #SBATCH --nodes=1
@@ -41,7 +43,7 @@
 #SBATCH --cpus-per-task=12
 #SBATCH --mem=48G
 #SBATCH --gres=gpu:a100_3g.20gb:1
-#SBATCH --time=03:00:00
+#SBATCH --time=06:00:00
 #SBATCH --output=slurm-%j.out
 
 set -euo pipefail
@@ -50,10 +52,17 @@ export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 export PYTHONUNBUFFERED=1
 states="${CLOSED_LOOP_STATES:-20}"
+# Four of the eight training seeds. Job 1212 measured ~4 minutes per checkpoint
+# on this slice with both tasks sharing it -- 243 s for Transport, reward plus
+# goal -- so the full 48-checkpoint grid is 3.2 hours per task and does not fit.
+# 24 checkpoints keeps all three predictors and both regimes, which are the
+# comparisons, and spends the budget on those rather than on seeds 4104-4107.
+seeds="${CLOSED_LOOP_SEEDS:-4100,4101,4102,4103}"
 output="${SLURM_SUBMIT_DIR}/outputs/closed_loop_${SLURM_JOB_ID}"
 mkdir -p "$output"
 exec > >(tee -a "$output/batch.log") 2>&1
-printf 'Closed-loop MPC: job=%s states=%s\n' "$SLURM_JOB_ID" "$states"
+printf 'Closed-loop MPC: job=%s states=%s seeds=%s\n' \
+    "$SLURM_JOB_ID" "$states" "$seeds"
 printf 'CUDA_VISIBLE_DEVICES=%s\n' "${CUDA_VISIBLE_DEVICES:?}"
 git rev-parse HEAD > "$output/commit.txt"
 git status --short > "$output/git_status.txt"
@@ -94,6 +103,7 @@ run_task() {
     local name="$1" runs="$2" data="$3"
     .venv/bin/python -u -m examples.world_model.closed_loop \
         "$runs" --data "$data" --device cuda --states "$states" \
+        --seeds "$seeds" \
         --output "$output/${name}.json" > "$output/${name}.txt" 2>&1
 }
 

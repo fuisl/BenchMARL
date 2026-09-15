@@ -116,6 +116,35 @@ def achieved_goals(scratch_env, snapshot, candidates, action_block):
     return goals.to(scratch_env.device)
 
 
+def persist(args, manifest, states, chosen, cem_config, rows, timings):
+    """Write everything scored so far; return the summary.
+
+    Separated from ``main`` so the evaluation loop can call it after each policy
+    rather than only once at the end.
+    """
+    import json
+
+    summary = summarize(rows, seed=args.seed)
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(
+        json.dumps(
+            {
+                "task": manifest["task_name"],
+                "states": states,
+                "anchor_ids": chosen.tolist(),
+                "cem": vars(cem_config),
+                "summary": summary,
+                "timing": timings,
+                "rows": rows,
+            },
+            indent=2,
+            allow_nan=False,
+        )
+        + "\n"
+    )
+    return summary
+
+
 def summarize(rows, seed=0):
     """Per-policy episode summary, reusing the oracle pilot's interval helpers.
 
@@ -173,6 +202,12 @@ def main():
     parser.add_argument("--horizon", type=int, default=5)
     parser.add_argument("--goal-offset", type=int, default=5, help="blocks ahead")
     parser.add_argument("--skip-oracle", action="store_true")
+    parser.add_argument(
+        "--seeds",
+        default=None,
+        help="comma-separated training seeds to score; default all. Closed-loop "
+        "costs minutes per checkpoint, so the full grid rarely fits.",
+    )
     parser.add_argument(
         "--max-runs",
         type=int,
@@ -269,17 +304,32 @@ def main():
                 ),
             }
             print(f"  {label}: {timings[label]['seconds']:.1f}s", flush=True)
+            # Persist after every policy. These runs take hours, and writing
+            # only at the end means a wall-clock kill destroys all of it --
+            # which is how job 1212 would have ended.
+            persist(args, manifest, states, chosen, cem_config, rows, timings)
 
         print(f"task {manifest['task_name']}, {states} test states", flush=True)
         run("random", "random")
         if not args.skip_oracle:
             run("oracle", "mpc")
 
+        wanted = (
+            {int(s) for s in args.seeds.split(",")} if args.seeds else None
+        )
         checkpoints = [
             directory
             for directory in sorted(args.runs.glob("[0-9]*"))
             if (directory / "model.pt").exists()
+            and (
+                wanted is None
+                or yaml.safe_load((directory / "resolved_config.yaml").read_text())[
+                    "seed"
+                ]
+                in wanted
+            )
         ]
+        print(f"scoring {len(checkpoints)} checkpoints", flush=True)
         for directory in checkpoints[: args.max_runs]:
             config = yaml.safe_load((directory / "resolved_config.yaml").read_text())
             kind, regime, seed = (
@@ -299,24 +349,7 @@ def main():
         env.close()
         scratch.close()
 
-    summary = summarize(rows, seed=args.seed)
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(
-        json.dumps(
-            {
-                "task": manifest["task_name"],
-                "states": states,
-                "anchor_ids": chosen.tolist(),
-                "cem": vars(cem_config),
-                "summary": summary,
-                "timing": timings,
-                "rows": rows,
-            },
-            indent=2,
-            allow_nan=False,
-        )
-        + "\n"
-    )
+    summary = persist(args, manifest, states, chosen, cem_config, rows, timings)
 
     print(f"\n{'policy':34s}{'success':>12s}{'return':>10s}{'coll':>7s}{'timeout':>9s}")
     print("-" * 72)
