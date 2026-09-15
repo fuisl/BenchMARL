@@ -46,6 +46,7 @@ from examples.world_model.cem import CEMConfig
 from examples.world_model.goal_planning import goal_plan_costs, terminal_observations
 from examples.world_model.metrics import mean_interval, success_interval
 from examples.world_model.mpc import (
+    agent_observations,
     buzz_wire_outcome,
     evaluate_policy,
     MPCConfig,
@@ -168,6 +169,12 @@ def main():
     parser.add_argument("--horizon", type=int, default=5)
     parser.add_argument("--goal-offset", type=int, default=5, help="blocks ahead")
     parser.add_argument("--skip-oracle", action="store_true")
+    parser.add_argument(
+        "--max-runs",
+        type=int,
+        default=None,
+        help="score only the first N checkpoints, for a pre-sweep smoke",
+    )
     args = parser.parse_args()
 
     manifest = json.loads((args.data / "manifest.json").read_text())
@@ -264,9 +271,12 @@ def main():
         if not args.skip_oracle:
             run("oracle", "mpc")
 
-        for directory in sorted(args.runs.glob("[0-9]*")):
-            if not (directory / "model.pt").exists():
-                continue
+        checkpoints = [
+            directory
+            for directory in sorted(args.runs.glob("[0-9]*"))
+            if (directory / "model.pt").exists()
+        ]
+        for directory in checkpoints[: args.max_runs]:
             config = yaml.safe_load((directory / "resolved_config.yaml").read_text())
             kind, regime, seed = (
                 config["model"]["kind"],

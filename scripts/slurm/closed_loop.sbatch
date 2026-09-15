@@ -72,8 +72,21 @@ trap 'kill "$gpu_monitor_pid" 2>/dev/null || true' EXIT
 srun --ntasks=1 .venv/bin/python -m pytest test/test_world_model_closed_loop.py -q \
     | tee "$output/injection_tests.txt"
 
+# One tiny deterministic run before the real evaluation. Jobs 1206 and 1207 died
+# on a missing import inside the driver's main loop that the unit tests could not
+# see, because they exercise the helpers directly rather than through main().
+# This costs under a minute and exercises every policy path end to end.
+smoke() {
+    local runs="$1" data="$2"
+    srun --ntasks=1 .venv/bin/python -m examples.world_model.closed_loop \
+        "$runs" --data "$data" --device cuda --states 2 \
+        --num-samples 8 --num-iters 2 --max-runs 1 \
+        --output "$output/smoke.json" | tee "$output/smoke.txt"
+}
+
 run_task() {
     local name="$1" runs="$2" data="$3"
+    smoke "$runs" "$data"
     printf '\n===== %s =====\n' "$name"
     srun --ntasks=1 .venv/bin/python -m examples.world_model.closed_loop \
         "$runs" --data "$data" --device cuda --states "$states" \
