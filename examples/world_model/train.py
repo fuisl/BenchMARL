@@ -57,7 +57,12 @@ def loaders(cfg):
     splits = {}
     for split in ("train", "validation"):
         data = OfflineSequences(
-            cfg.data.root, cfg.data.regime, split, action_block=cfg.data.action_block
+            cfg.data.root,
+            cfg.data.regime,
+            split,
+            action_block=cfg.data.action_block,
+            state_input=cfg.data.state_input,
+            history_frames=cfg.data.history_frames,
         )
         splits[split] = DataLoader(
             data,
@@ -332,6 +337,12 @@ def run_training(cfg, output: Path):
     )["task_name"]
     environment_name, task_name = task_name.split("/")
     algorithm_name = f"{cfg.model.kind}_{cfg.data.regime}"
+    # The Stage 2 input condition is a third axis with no slot in the schema, so
+    # it joins the algorithm name exactly as the data regime does. Only when it
+    # is not the default, so the 192 already-logged baseline runs keep their
+    # identity and stay poolable with new ones.
+    if cfg.data.state_input != "observation":
+        algorithm_name = f"{algorithm_name}_{cfg.data.state_input}"
     experiment_name = generate_exp_name(
         f"{algorithm_name}_{task_name}_{MODEL_NAME}", ""
     )
@@ -350,6 +361,7 @@ def run_training(cfg, output: Path):
                     "algorithm": algorithm_name,
                     "kind": cfg.model.kind,
                     "regime": cfg.data.regime,
+                    "state_input": cfg.data.state_input,
                     "task": task_name,
                     "environment": environment_name,
                     "seed": cfg.seed,

@@ -178,3 +178,70 @@ def test_m4_batches_keep_episode_identity_and_masks(dataset_files):
     write()
     with pytest.raises(ValueError, match="precedence"):
         OfflineSequences(root, "correlated", "train")
+
+
+@pytest.mark.parametrize("state_input,frames", [("history", 3), ("physical", 1)])
+def test_state_input_preserves_the_dynamics_alignment(
+    dataset_files, state_input, frames
+):
+    """observation[t+1] must equal next_observation[t] under every condition.
+
+    The dynamics target is ``latent[:, 1:]`` against a prediction from
+    ``latent[:, :-1]``, so an input transform that broke this would train the
+    model to predict the wrong frame while every existing test still passed.
+    """
+    root, _anchors, _samples, _write = dataset_files
+    data = OfflineSequences(
+        root, "correlated", "train", action_block=3,
+        state_input=state_input, history_frames=frames,
+    )
+    samples = data.samples
+    adjacent = samples["valid"][:, 1:]
+    assert torch.equal(
+        samples["observation"][:, 1:][adjacent],
+        samples["next_observation"][:, :-1][adjacent],
+    )
+
+
+def test_history_input_stacks_actual_earlier_frames(dataset_files):
+    """History must be the frames really observed, clamped at the snippet start.
+
+    Buzz Wire hides the ball, so the whole point of this condition is that the
+    model can infer hidden state from real motion. Zeros or a repeated current
+    frame would carry no such information and the condition would silently
+    become the baseline with padding.
+    """
+    root, _anchors, _samples, _write = dataset_files
+    plain = OfflineSequences(root, "correlated", "train", action_block=3)
+    stacked = OfflineSequences(
+        root, "correlated", "train", action_block=3,
+        state_input="history", history_frames=3,
+    )
+    width = plain.samples["observation"].shape[-1]
+    raw, hist = plain.samples["observation"], stacked.samples["observation"]
+    assert hist.shape[-1] == 3 * width
+    # Frame 4 carries frames 4, 3 and 2.
+    for slot, source in enumerate((4, 3, 2)):
+        assert torch.equal(
+            hist[:, 4, :, slot * width : (slot + 1) * width], raw[:, source]
+        )
+    # At the snippet start there is no earlier frame, so it clamps to frame 0 --
+    # and frame 1 must still differ from frame 0 in its own slot, or the whole
+    # tensor is just the current frame repeated.
+    assert torch.equal(hist[:, 0, :, width : 2 * width], raw[:, 0])
+    assert not torch.equal(hist[:, 1, :, width : 2 * width], raw[:, 1])
+
+
+def test_physical_input_supplies_the_unobserved_entity_state(dataset_files):
+    """The appended block must be the recorded entity state, shared by agents."""
+    root, _anchors, _samples, _write = dataset_files
+    plain = OfflineSequences(root, "correlated", "train", action_block=3)
+    given = OfflineSequences(
+        root, "correlated", "train", action_block=3, state_input="physical"
+    )
+    width = plain.samples["observation"].shape[-1]
+    packages = plain.samples["package_state"]
+    appended = given.samples["observation"][..., width:]
+    assert torch.equal(appended[:, :, 0], packages.flatten(2))
+    # Every agent is given the same world state.
+    assert torch.equal(appended[:, :, 0], appended[:, :, 1])

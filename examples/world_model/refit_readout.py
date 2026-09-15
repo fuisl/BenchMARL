@@ -54,10 +54,17 @@ class Silent:
         pass
 
 
-def loaders(root, regime, block, batch_size):
+def loaders(root, regime, block, batch_size, state_input, history_frames):
     return {
         split: DataLoader(
-            OfflineSequences(root, regime, split, action_block=block),
+            OfflineSequences(
+                root,
+                regime,
+                split,
+                action_block=block,
+                state_input=state_input,
+                history_frames=history_frames,
+            ),
             batch_size=batch_size,
             shuffle=split == "train",
             collate_fn=torch.stack,
@@ -73,7 +80,14 @@ def refit(directory, data_root, output, device):
     model = load_model(directory / "model.pt", device)
     sigreg = SIGReg(cfg.train.sigreg_knots, cfg.train.sigreg_projections).to(device)
 
-    splits = loaders(data_root, cfg.data.regime, cfg.data.action_block, cfg.train.batch_size)
+    splits = loaders(
+        data_root,
+        cfg.data.regime,
+        cfg.data.action_block,
+        cfg.train.batch_size,
+        cfg.data.get("state_input", "observation"),
+        cfg.data.get("history_frames", 3),
+    )
     before = evaluate(model, sigreg, splits["validation"], cfg, device)
 
     # Dynamics stay exactly as trained; only the readout moves.

@@ -13,6 +13,13 @@ data:
   root: outputs/transport_data_1190
   regime: correlated
   action_block: 5
+  # Stage 2 (audit 2026-09-15 section 9): what the encoder is shown.
+  #   observation  what the agents actually see -- the baseline
+  #   history      the last `history_frames` observed frames, so hidden state
+  #                can be inferred from motion rather than supplied
+  #   physical     recorded entity states appended outright, the upper bound
+  state_input: observation
+  history_frames: 3
 
 model:
   kind: relational  # independent | joint | relational

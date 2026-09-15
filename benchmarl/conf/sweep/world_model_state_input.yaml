@@ -1,0 +1,23 @@
+# @package _global_
+# Stage 2 of the 2026-09-15 audit: isolate information from architecture.
+#
+# Buzz Wire agents see their own position, velocity and offset to the goal. The
+# task is defined on a ball jointed to both of them that nobody observes, and
+# the reward uses its displacement. Whether that missing state is what bounds
+# the learned models is unresolved -- the audit's geometric check ruled out the
+# ball being exactly the agents' midpoint (mean discrepancy 0.0408 over 908
+# anchors) but not all inference from joint observations and history.
+#
+# So `data.state_input` is the axis: what the agents see, versus the same plus
+# real observed history, versus the entity state handed over outright. Model
+# kind stays in the sweep because whether relational structure still helps once
+# the information is sufficient is exactly the open question.
+defaults:
+  - /world_model
+  - _self_
+
+hydra:
+  sweeper:
+    params:
+      data.state_input: observation,history,physical
+      model.kind: independent,joint,relational

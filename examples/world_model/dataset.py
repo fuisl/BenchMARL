@@ -12,6 +12,9 @@ from tensordict import TensorDict
 from torch.utils.data import Dataset
 
 
+STATE_INPUTS = ("observation", "history", "physical")
+
+
 class OfflineSequences(Dataset):
     """Read one controlled action regime and one episode split into CPU memory.
 
@@ -29,9 +32,23 @@ class OfflineSequences(Dataset):
     M4 and must be fitted using valid training transitions only.
     """
 
-    def __init__(self, root, regime, split, action_block=1):
+    def __init__(
+        self,
+        root,
+        regime,
+        split,
+        action_block=1,
+        state_input="observation",
+        history_frames=3,
+    ):
         if regime not in ("independent", "correlated"):
             raise ValueError("regime must be independent or correlated")
+        if state_input not in STATE_INPUTS:
+            raise ValueError(f"state_input must be one of {STATE_INPUTS}")
+        if state_input == "history" and (
+            not isinstance(history_frames, int) or history_frames < 2
+        ):
+            raise ValueError("history_frames must be an integer of at least 2")
         splits = {"train": 0, "validation": 1, "test": 2}
         if split not in splits:
             raise ValueError("split must be train, validation or test")
@@ -41,16 +58,82 @@ class OfflineSequences(Dataset):
         self.regime = regime
         self.split = split
         self.action_block = action_block
+        self.state_input = state_input
+        self.history_frames = history_frames
         self.manifest = json.loads((self.root / "manifest.json").read_text())
         if self.manifest["schema_version"] != 1:
             raise ValueError("Unsupported offline dataset schema_version")
         anchors = self._load("anchors.pt")
         self.samples = self._load(f"samples_{regime}.pt")
         self._validate(anchors)
+        self._apply_state_input()
         self.episode_id = anchors["episode_id"][self.samples["anchor_id"]]
         self.indices = (
             anchors["split"][self.samples["anchor_id"]] == splits[split]
         ).nonzero(as_tuple=True)[0]
+
+
+    def _apply_state_input(self):
+        """Rewrite observation/next_observation to the Stage 2 input condition.
+
+        Buzz Wire's agents see only their own position, velocity and offset to
+        the goal, while the task is defined on a ball jointed to both of them
+        that nobody observes. That is an information concern, not a proof of
+        irreducible failure: joint observations and history may infer the
+        hidden state (the audit's geometric check ruled out the ball being
+        exactly the agents' midpoint, mean discrepancy 0.0408, but not all
+        inference). These three conditions separate the possibilities.
+
+        ``observation``  what the agents actually see -- the established baseline
+        ``history``      the last ``history_frames`` observed frames, so hidden
+                         state can be inferred from motion rather than supplied
+        ``physical``     the recorded entity states appended outright, the upper
+                         bound where the hidden variable is simply given
+
+        Rewriting the stored keys rather than adding new ones keeps everything
+        downstream unchanged: normalisation is fitted from the loader, and the
+        model reads obs_dim off the sample.
+        """
+        if self.state_input == "observation":
+            return
+        observation = self.samples["observation"]
+        next_observation = self.samples["next_observation"]
+        count, steps, agents, _ = observation.shape
+
+        if self.state_input == "physical":
+            # One shared world state, given identically to every agent.
+            def entities(key):
+                flat = self.samples[key].reshape(count, steps, 1, -1)
+                return flat.expand(count, steps, agents, flat.shape[-1])
+
+            observation = torch.cat([observation, entities("package_state")], dim=-1)
+            next_observation = torch.cat(
+                [next_observation, entities("next_package_state")], dim=-1
+            )
+        else:
+            # Frame t carries [t, t-1, ..., t-k+1], clamped at the snippet start
+            # because an anchor's earlier frames are not stored. next_observation
+            # at t is the frame at t+1, so its tail is [t, t-1, ...]; that is what
+            # keeps observation[:, 1:] == next_observation[:, :-1] true, which the
+            # dynamics target relies on.
+            offsets = torch.arange(self.history_frames)
+            index = (torch.arange(steps)[:, None] - offsets[None, :]).clamp_min(0)
+            past = observation[:, index]  # (S,T,k,N,D)
+            flat = past.permute(0, 1, 3, 2, 4).reshape(count, steps, agents, -1)
+            tail = flat[..., : -observation.shape[-1]]
+            observation = flat
+            next_observation = torch.cat([next_observation, tail], dim=-1)
+
+        self.samples["observation"] = observation.contiguous()
+        self.samples["next_observation"] = next_observation.contiguous()
+        adjacent = self.samples["valid"][:, 1:]
+        if not torch.equal(
+            self.samples["observation"][:, 1:][adjacent],
+            self.samples["next_observation"][:, :-1][adjacent],
+        ):
+            raise ValueError(
+                f"state_input={self.state_input} broke observation alignment"
+            )
 
     def _load(self, filename):
         path = self.root / filename
