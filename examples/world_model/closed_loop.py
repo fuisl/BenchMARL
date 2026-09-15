@@ -14,7 +14,11 @@ This runs the same CEM-MPC loop the oracle already validated, on the same states
 with the same horizon and search budget, and changes exactly one thing: the
 dynamics the planner rolls. Five policies share those states:
 
-    random       the floor
+    random       the floor: uniform noise resampled every primitive step
+    heuristic    VMAS's own hand-written policy, where the scenario ships one --
+                 the baseline a learned model has to be worth more than. Only
+                 Transport and Wheel have one; on Buzz Wire and Dropout the
+                 column is absent rather than faked.
     oracle       the true simulator as dynamics, scoring task reward -- the
                  ceiling for ``reward``, and the oracle gap
     goal_oracle  the true simulator scoring goal distance -- the ceiling for
@@ -53,10 +57,12 @@ from examples.world_model.cem import CEMConfig
 from examples.world_model.goal_planning import goal_plan_costs
 from examples.world_model.metrics import mean_interval, success_interval
 from examples.world_model.mpc import (
+    action_bounds,
     buzz_wire_outcome,
     evaluate_policy,
     goal_oracle_costs,
     MPCConfig,
+    scenario_heuristic,
     transport_outcome,
 )
 from examples.world_model.plan_ranking import model_costs, select_anchor_states
@@ -373,7 +379,7 @@ def main():
         "num_iters": args.num_iters,
         "horizon": args.horizon,
         "goal_offset": args.goal_offset,
-        "references": "random,oracle,goal_oracle",
+        "references": "random,heuristic,oracle,goal_oracle",
     }
 
     env = task.get_env_fun(states, True, 0, args.device)()
@@ -485,6 +491,15 @@ def main():
             print(f"  reused {len(reference_rows)} cached reference episodes")
         elif not args.skip_references:
             run("random", "random")
+            heuristic = scenario_heuristic(manifest["task_name"], action_bounds(env)[1])
+            if heuristic is not None:
+                run("heuristic", heuristic)
+            else:
+                print(
+                    f"  {manifest['task_name']} ships no heuristic; "
+                    "random is the only non-planning reference",
+                    flush=True,
+                )
             if not args.skip_oracle:
                 run("oracle", "mpc")
                 run(

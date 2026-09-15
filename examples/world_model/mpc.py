@@ -59,6 +59,41 @@ def action_bounds(env):
     return float(low.flatten()[0]), float(high.flatten()[0])
 
 
+def scenario_heuristic(task_name, u_range):
+    """VMAS's own hand-written policy for a scenario, or None if it ships none.
+
+    ``random`` is uniform noise resampled every primitive step, which makes it a
+    floor rather than a comparator: beating it shows a planner does something,
+    not that it does something useful. Where VMAS ships a heuristic, that is the
+    baseline a learned model has to be worth more than.
+
+    Only Transport and Wheel have one. Buzz Wire and Dropout do not, so a
+    heuristic column is simply absent there rather than faked.
+    """
+    import importlib
+
+    module = importlib.import_module(f"vmas.scenarios.{task_name.split('/')[-1]}")
+    policy_class = getattr(module, "HeuristicPolicy", None)
+    if policy_class is None:
+        return None
+    # compute_action takes a u_range and clamps to it, so asymmetric or
+    # non-unit bounds would silently rescale the policy rather than fail.
+    if u_range <= 0:
+        raise ValueError(f"Heuristic needs a positive action range, got {u_range}")
+    policy = policy_class(continuous_action=True)
+
+    def actions(env):
+        """(B, 1, N*d_a) -- reactive, recomputed from the current observation."""
+        observation = agent_observations(env)
+        count, agents, features = observation.shape
+        joint = policy.compute_action(
+            observation.reshape(count * agents, features), u_range
+        )
+        return joint.reshape(count, 1, -1)
+
+    return actions
+
+
 def buzz_wire_outcome(env):
     scenario = env._env.scenario
     distance = torch.linalg.vector_norm(
@@ -229,6 +264,9 @@ def evaluate_policy(
     replacement episode. VMAS batch slots are independent. The horizon counts
     blocks, while reward, timeout and termination always count primitive steps.
 
+    ``policy`` is "random", "mpc", or a callable ``env -> (B,1,N*d_a)`` for a
+    reactive baseline such as a VMAS scenario heuristic.
+
     ``plan_costs(snapshot, observation, candidates) -> (B,K)`` scores candidate
     plans. It defaults to the simulator oracle, which needs the snapshot and
     ignores the observation; a learned model is the reverse, planning from what
@@ -236,7 +274,7 @@ def evaluate_policy(
     world model rather than of CEM.
     """
     mpc_config.validate(cem_config.horizon)
-    if policy not in ("random", "mpc"):
+    if policy not in ("random", "mpc") and not callable(policy):
         raise ValueError(f"Unknown policy: {policy}")
     if env._env.max_steps is None:
         raise ValueError("Evaluation requires a finite task max_steps")
@@ -324,7 +362,7 @@ def evaluate_policy(
                 if mpc_config.warm_start
                 else None
             )
-        else:
+        elif policy == "random":
             actions = (
                 torch.rand(
                     batch_size, 1, joint_dim, device=env.device, generator=generator
@@ -332,6 +370,15 @@ def evaluate_policy(
                 * (high - low)
                 + low
             )
+        else:
+            # A reactive baseline: one step from the current observation, not a
+            # plan. No snapshot, no search, so it costs nothing to run.
+            actions = policy(env)
+            if actions.shape != (batch_size, 1, joint_dim):
+                raise ValueError(
+                    f"Policy returned {tuple(actions.shape)}, expected "
+                    f"{(batch_size, 1, joint_dim)}"
+                )
 
         for action in actions.unbind(dim=1):
             alive = stats.alive.clone()
