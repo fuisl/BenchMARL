@@ -20,6 +20,7 @@ from examples.world_model.collect import (
     map_tensors,
     rollout_actions,
     sample_actions,
+    tracked_entities,
 )
 from examples.world_model.dataset import OfflineSequences
 from examples.world_model.evaluate import state_digest
@@ -301,3 +302,57 @@ def test_complete_hydra_collection_reloads_for_m4(tmp_path):
     )
     for regime in ("independent", "correlated"):
         assert len(OfflineSequences(tmp_path, regime, "train", action_block=5)) == 54
+
+
+def test_tracked_entities_keeps_a_body_that_only_rotates():
+    """Wheel's line is pinned at the origin, so a movable-only filter drops it.
+
+    It is the one body the task is about; selecting the static `center` instead
+    would record constant columns and read as "no interaction" for any diagnostic
+    built on them.
+    """
+    task = VmasTask.WHEEL.get_from_yaml()
+    env = task.get_env_fun(2, True, 0, "cpu")()
+    try:
+        env.reset()
+        assert [entity.name for entity in tracked_entities(env)] == ["line"]
+    finally:
+        env.close()
+
+
+def test_tracked_entities_is_unchanged_where_a_movable_body_exists():
+    """Admitting rotatable bodies must not re-select what the existing banks used."""
+    for task_enum, expected in (
+        (VmasTask.TRANSPORT, ["package 0"]),
+        (VmasTask.BUZZ_WIRE, ["ball", "joint agent_0 ball", "joint agent_1 ball"]),
+    ):
+        env = task_enum.get_from_yaml().get_env_fun(2, True, 0, "cpu")()
+        try:
+            env.reset()
+            assert [entity.name for entity in tracked_entities(env)] == expected
+        finally:
+            env.close()
+
+
+def test_effect_summary_sees_a_purely_rotational_effect():
+    """Position and velocity are identically zero for a pinned rotating body.
+
+    The historical keys must stay zero there -- they are measuring what they say
+    -- while the full-state keys must report the rotation the intervention caused.
+    """
+    shape = (3, 4, 1, 6)
+    reference = {
+        "valid": torch.ones(3, 4, dtype=torch.bool),
+        "action": torch.zeros(3, 4, 2, 2),
+        "next_agent_state": torch.zeros(shape),
+        "next_package_state": torch.zeros(shape),
+    }
+    counterfactual = {key: value.clone() for key, value in reference.items()}
+    # Rotation and angular velocity only; position and velocity stay identical.
+    counterfactual["next_package_state"][..., 4] = 0.5
+
+    effects = effect_summary(reference, counterfactual)
+    assert effects["package"]["anchors_with_effect"] == 0
+    assert effects["package"]["mean_position_velocity_l2"] == 0.0
+    assert effects["package_full_state"]["anchors_with_effect"] == 3
+    assert effects["package_full_state"]["mean_full_state_l2"] > 0.0

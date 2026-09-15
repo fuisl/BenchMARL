@@ -1,0 +1,15 @@
+# @package _global_
+# Matched to Transport job 1194 and Buzz Wire job 1196: 48 runs.
+defaults:
+  - /world_model
+  - _self_
+
+wandb:
+  group: m4-wheel-baselines
+
+hydra:
+  sweeper:
+    params:
+      model.kind: independent,joint,relational
+      data.regime: correlated,independent
+      seed: 4100,4101,4102,4103,4104,4105,4106,4107

@@ -40,6 +40,13 @@ The following records the initial scan, not a continuously updated environment i
 
 **Current task selection (2026-09-14):** Buzz Wire experiments are paused at the user's request. Transport replay and outcome semantics are validated. Jobs 1182 and 1183 completed 18 and 15 real runs, respectively, with **0 successes in 660 MPC episode evaluations on repeated versions of the same 20 development states**. The 300-step `replan1` and `horizon10` settings clear the return-vs-random gate on all three planner seeds (mean returns 2.791 and 3.661), but task-success objective validity remains unvalidated. At fixed one-block execution cadence and 100 steps, increasing H=5 to H=10 raises mean return from 0.515 to 0.722; comparison with `lewm`'s 0.259 also changes cadence. Nonzero reward occurs on four development states across job 1182 and ten across the 300-step `horizon10` runs. Poor useful-contact coverage is a working hypothesis, not an established cause. M3 will preserve the task reward and success definitions, measure interaction coverage explicitly, and keep these development states out of its datasets. See [Transport comparisons](experiments/02_transport_comparisons.md) for audited counts, results, confounds, and the invalid historical MIG memory measurements.
 
+**Wheel follow-up (2026-09-14):** the user requested a matched Wheel sweep on the
+20 GB MIG: three baselines × two regimes × eight training seeds, five concurrent
+workers, followed by counterfactual and plan-ranking evaluation. The
+[Wheel audit and protocol](experiments/06_wheel_sweep.md) records native reward
+semantics, rotation-aware interaction labels, validation and launch artifacts.
+This is the current task request; the Transport/Buzz Wire notes above are history.
+
 The VMAS task adapter currently returns `None` for `state_spec`. Agent observations must not be assumed to contain the full simulator state. Exact counterfactual replay needs explicit handling of relevant simulator and scenario state.
 
 ## Milestones

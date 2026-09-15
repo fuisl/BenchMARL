@@ -45,11 +45,19 @@ def tracked_entities(env):
     packages = getattr(scenario, "packages", None)
     if packages:
         return packages
-    # Prefer the movable landmarks -- Buzz Wire's ball is the reward-relevant
-    # body, while its walls, floors and joints are static and would only pad the
-    # diagnostic with constant columns.
-    movable = [e for e in env._env.world.landmarks if getattr(e, "movable", False)]
-    return movable or env._env.world.landmarks
+    # Prefer the bodies that can actually move -- Buzz Wire's ball is the
+    # reward-relevant one, while its walls and floors are static and would only
+    # pad the diagnostic with constant columns. Rotatable counts as moving:
+    # Wheel's line is pinned at the origin and *only* rotates, so a movable-only
+    # filter would drop the single body the task is about and silently record a
+    # constant. World order is preserved, so tasks that already have a movable
+    # body select exactly what they selected before.
+    dynamic = [
+        e
+        for e in env._env.world.landmarks
+        if getattr(e, "movable", False) or getattr(e, "rotatable", False)
+    ]
+    return dynamic or env._env.world.landmarks
 
 
 REGIMES = ("independent", "correlated")
@@ -235,6 +243,22 @@ def action_coverage(data, low, high):
         .float()
         .mean()
         .item(),
+        # Linear velocity is identically zero for a body that is pinned and only
+        # rotates, so the fraction above would read zero on Wheel however much
+        # the line turns. Compare the whole stored state across the step instead.
+        "changing_package_fraction": (
+            (
+                data["next_package_state"][data["valid"]]
+                - data["package_state"][data["valid"]]
+            )
+            .norm(dim=-1)
+            .max(-1)
+            .values
+            > 1e-6
+        )
+        .float()
+        .mean()
+        .item(),
         "task_terminations": int(data["terminated"].sum()),
         "timeouts": int(data["truncated"].sum()),
         "mean_snippet_return": data["reward"].sum((1, 2, 3)).mean().item()
@@ -286,6 +310,12 @@ def effect_summary(reference, counterfactual):
 
     Relative observation changes alone are not evidence of physical interaction.
     Comparisons stop once either branch has terminated.
+
+    Stored physical state is ``[pos, vel, rot, ang_vel]``. Position and velocity
+    alone is the historical metric and keeps its original keys, but it is
+    identically zero for a body that is pinned and only rotates, which would read
+    as "no interaction" on Wheel. The full six-column delta is reported beside it
+    under ``*_full_state``.
     """
     valid = reference["valid"] & counterfactual["valid"]
     other = [i for i in range(reference["action"].shape[2]) if i != 1]
@@ -294,22 +324,29 @@ def effect_summary(reference, counterfactual):
         ("other_agent", "next_agent_state", other),
         ("package", "next_package_state", slice(None)),
     ):
-        delta = (
-            (counterfactual[key][:, :, indices, :4] - reference[key][:, :, indices, :4])
-            .norm(dim=-1)
-            .max(-1)
-            .values
-        )
-        result[name] = {
-            "mean_position_velocity_l2": delta[valid].mean().item(),
-            "max_position_velocity_l2": delta[valid].max().item(),
-            "fraction_above_1e-6": (delta[valid] > 1e-6).float().mean().item(),
-            "anchors_with_effect": int(((delta > 1e-6) & valid).any(-1).sum()),
-            "anchors": len(delta),
-            "first_step_anchors_with_effect": int(
-                ((delta[:, 0] > 1e-6) & valid[:, 0]).sum()
-            ),
-        }
+        for suffix, columns, metric in (
+            ("", slice(0, 4), "position_velocity"),
+            ("_full_state", slice(None), "full_state"),
+        ):
+            delta = (
+                (
+                    counterfactual[key][:, :, indices, columns]
+                    - reference[key][:, :, indices, columns]
+                )
+                .norm(dim=-1)
+                .max(-1)
+                .values
+            )
+            result[name + suffix] = {
+                f"mean_{metric}_l2": delta[valid].mean().item(),
+                f"max_{metric}_l2": delta[valid].max().item(),
+                "fraction_above_1e-6": (delta[valid] > 1e-6).float().mean().item(),
+                "anchors_with_effect": int(((delta > 1e-6) & valid).any(-1).sum()),
+                "anchors": len(delta),
+                "first_step_anchors_with_effect": int(
+                    ((delta[:, 0] > 1e-6) & valid[:, 0]).sum()
+                ),
+            }
     return result
 
 
@@ -317,9 +354,14 @@ def run_collection(cfg, output, task_name):
     # Dropout is M1 Row 4's weak-interaction control: its agents have no
     # cross-agent dynamics, so a relational advantage there would show the
     # benefit is not interaction modelling.
-    if task_name not in ("vmas/transport", "vmas/dropout", "vmas/buzz_wire"):
+    if task_name not in (
+        "vmas/transport",
+        "vmas/dropout",
+        "vmas/buzz_wire",
+        "vmas/wheel",
+    ):
         raise ValueError(
-            "M3 collection validates Transport, Dropout and Buzz Wire only"
+            "M3 collection validates Transport, Dropout, Buzz Wire and Wheel only"
         )
     settings = cfg.dataset
     if (

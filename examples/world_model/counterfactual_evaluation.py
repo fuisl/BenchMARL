@@ -79,6 +79,7 @@ def main():
     parser.add_argument("--data", type=Path, required=True)
     parser.add_argument("--block", type=int, default=5)
     parser.add_argument("--device", default="cpu")
+    parser.add_argument("--full-state", action="store_true")
     args = parser.parse_args()
 
     load = lambda name: torch.load(  # noqa: E731
@@ -116,7 +117,7 @@ def main():
     if torch.equal(logged[live][:, :, INTERVENED], intervened[live][:, :, INTERVENED]):
         raise ValueError("The intervention did not change agent 1's action")
 
-    _, active = effect_labels(args.data, block)
+    _, active = effect_labels(args.data, block, full_state=args.full_state)
     active = active & live
     moved = (target_cf[:, non_intervened] - target_id[:, non_intervened]).abs().amax(
         dim=(1, 2)
@@ -126,6 +127,20 @@ def main():
         f"{int(live.sum())}   simulator says a cross-agent effect exists in "
         f"{int(active.sum())} (label) / {int((moved & live).sum())} (observation moved)"
     )
+    if not active.any():
+        print(
+            "C7 response is unmeasurable: no interaction-active anchors at this horizon."
+        )
+        print(
+            json.dumps(
+                {
+                    "anchors": int(ids.numel()),
+                    "active": 0,
+                    "status": "no_active_anchors",
+                }
+            )
+        )
+        return
 
     results = {}
     for directory in sorted(args.runs.glob("[0-9]*")):

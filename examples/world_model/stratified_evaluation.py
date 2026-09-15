@@ -40,14 +40,16 @@ from torch.utils.data import DataLoader
 BASELINES = ("independent", "joint", "relational")
 
 
-def effect_labels(data_root: Path, horizon: int):
+def effect_labels(data_root: Path, horizon: int, *, full_state: bool = False):
     """Anchor ids whose intervention moved another agent or the package.
 
     Mirrors the M3 audit: compare the logged correlated snippet against the
     counterfactual snippet in which only agent 1's x action was flipped, and
     look for a change in absolute position/velocity above 1e-6, masked once
     either branch ends. Relative-observation changes do not count; this is a
-    physical effect, not an observational one.
+    physical effect, not an observational one. ``full_state`` includes rotation
+    and angular velocity for pinned bodies such as Wheel's line; the default
+    preserves the published Transport/Buzz Wire position/velocity labels.
     """
     load = lambda name: torch.load(  # noqa: E731
         data_root / name, map_location="cpu", weights_only=True
@@ -62,14 +64,15 @@ def effect_labels(data_root: Path, horizon: int):
     n_agents = reference["next_agent_state"].shape[2]
     other_agents = [i for i in range(n_agents) if i != 1]
     labels = torch.zeros(ids.numel(), dtype=torch.bool)
+    columns = slice(None) if full_state else slice(0, 4)
     for key, entities in (
         ("next_agent_state", other_agents),
         ("next_package_state", slice(None)),
     ):
         delta = (
             (
-                reference[key][ids][:, :, entities, :4]
-                - counterfactual[key][:, :, entities, :4]
+                reference[key][ids][:, :, entities, columns]
+                - counterfactual[key][:, :, entities, columns]
             )
             .norm(dim=-1)
             .max(-1)
@@ -103,14 +106,35 @@ def main():
     parser.add_argument("--data", type=Path, required=True)
     parser.add_argument("--horizon", type=int, default=5)
     parser.add_argument("--device", default="cpu")
+    parser.add_argument("--full-state", action="store_true")
+    parser.add_argument("--output", type=Path, default=Path("stratified_scores.json"))
     args = parser.parse_args()
 
-    ids, labels = effect_labels(args.data, args.horizon)
+    ids, labels = effect_labels(args.data, args.horizon, full_state=args.full_state)
     label_of = {int(i): bool(v) for i, v in zip(ids, labels)}
     print(
         f"interaction-active test anchors at {args.horizon} primitive steps: "
         f"{int(labels.sum())}/{labels.numel()}"
     )
+    if not labels.any() or labels.all():
+        print(
+            "Stratified comparison is unmeasurable: one interaction stratum is empty."
+        )
+        args.output.write_text(
+            json.dumps(
+                {
+                    "status": "empty_stratum",
+                    "active": int(labels.sum()),
+                    "total": labels.numel(),
+                    "horizon": args.horizon,
+                    "full_state": args.full_state,
+                },
+                indent=2,
+                allow_nan=False,
+            )
+            + "\n"
+        )
+        return
 
     # (regime, kind, seed) -> {stratum: mean error}
     scores = {}
@@ -234,7 +258,7 @@ def main():
                 f"[{low:+.5f}, {high:+.5f}] -> {verdict}"
             )
 
-    Path("stratified_scores.json").write_text(
+    args.output.write_text(
         json.dumps({f"{r}|{k}|{s}": v for (r, k, s), v in scores.items()}, indent=2)
     )
 
