@@ -40,7 +40,7 @@
 #SBATCH --partition=gpu
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=28
+#SBATCH --cpus-per-task=16
 #SBATCH --mem=64G
 #SBATCH --gres=gpu:a100_3g.20gb:1
 #SBATCH --time=06:00:00
@@ -57,22 +57,27 @@ states="${CLOSED_LOOP_STATES:-20}"
 # goal -- so the full 48-checkpoint grid is 3.2 hours per task and does not fit.
 # 24 checkpoints keeps all three predictors and both regimes, which are the
 # comparisons, and spends the budget on those rather than on seeds 4104-4107.
-# Seed groups, one concurrent process each per task.
+# One process per task, which measurement says is the right number here.
 #
-# VRAM is not what limits concurrency here. Job 1214 ran four processes and
-# peaked at 6.9 GB of the 20 GB slice, barely above the 6.1 GB two processes
-# used -- but Buzz Wire's random policy went from 26 s to 200 s, because VMAS
-# steps the simulator on the CPU and Buzz Wire takes 15 substeps per step. Four
-# processes were splitting 12 cores. The allocation now takes 28 of the node's
-# 32, so each process gets more cores than it had when only two ran.
-groups="${CLOSED_LOOP_GROUPS:-4100,4101 4102,4103}"
-# The reference process also scores one seed group, so no work is duplicated.
-references_seed="${CLOSED_LOOP_REFERENCE_SEED:-4100}"
+# Four processes were tried, on the reasoning that two were using 6.1 GB of a
+# 20 GB slice. VRAM was never the limit -- four peaked at 6.9 GB -- but Buzz
+# Wire's random policy went from 26 s to 200 s, and raising the allocation from
+# 12 cores to 28 changed that by 0.1 s, so it was not CPU contention either.
+#
+# It is the slice itself. A MIG without MPS time-slices processes rather than
+# running their kernels concurrently, and Buzz Wire takes 15 physics substeps
+# per step for its rigid joints against Transport's 1, so it issues roughly
+# fifteen times the kernels and pays that switching cost fifteen times over.
+# Transport, measured in the same jobs, never degraded: 1.8-3.4 s throughout.
+#
+# The node's `a100_2g.10gb_mps` gres exists for genuine sharing, but two
+# Transport processes alone need more than its 10 GB.
+seeds="${CLOSED_LOOP_SEEDS:-4100,4101,4102,4103}"
 output="${SLURM_SUBMIT_DIR}/outputs/closed_loop_${SLURM_JOB_ID}"
 mkdir -p "$output"
 exec > >(tee -a "$output/batch.log") 2>&1
-printf 'Closed-loop MPC: job=%s states=%s groups=%s\n' \
-    "$SLURM_JOB_ID" "$states" "$groups"
+printf 'Closed-loop MPC: job=%s states=%s seeds=%s\n' \
+    "$SLURM_JOB_ID" "$states" "$seeds"
 printf 'CUDA_VISIBLE_DEVICES=%s\n' "${CUDA_VISIBLE_DEVICES:?}"
 git rev-parse HEAD > "$output/commit.txt"
 git status --short > "$output/git_status.txt"
@@ -142,12 +147,8 @@ smoke buzz_wire "$bw" "$bw_data"
 smoke transport "$tr" "$tr_data"
 
 pids=()
-first=with-references
-for group in $groups; do
-    run_group buzz_wire "$bw" "$bw_data" "$group" "$first" & pids+=($!)
-    run_group transport "$tr" "$tr_data" "$group" "$first" & pids+=($!)
-    first=skip-references
-done
+run_group buzz_wire "$bw" "$bw_data" "$seeds" with-references & pids+=($!)
+run_group transport "$tr" "$tr_data" "$seeds" with-references & pids+=($!)
 
 # Fail the job if any process fails, rather than reporting a partial experiment.
 status=0
