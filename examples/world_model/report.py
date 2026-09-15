@@ -107,6 +107,13 @@ def collect_closed_loop(root: Path):
     for task in CLOSED_LOOP_TASKS:
         rows = []
         for path in sorted(root.glob(CLOSED_LOOP_GLOB.format(task=task))):
+            # Results are written after every policy, so a cancelled job leaves
+            # a real but partial file behind. Aggregating those beside complete
+            # ones would mix different amounts of evidence into one number, so
+            # take only jobs whose batch log records that they finished.
+            log = path.parent / "batch.log"
+            if not (log.exists() and "Completed closed-loop MPC" in log.read_text()):
+                continue
             rows.extend(json.loads(path.read_text())["rows"])
         if not rows:
             continue
