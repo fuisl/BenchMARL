@@ -27,9 +27,13 @@
 # Sizing, from a measured Level-0 probe rather than an estimate: 33 s per
 # checkpoint for `reward` and 21 s for `goal`, so 48 checkpoints scored twice is
 # ~43 min, plus ~5 min of oracle and ~1 min of setup. One task per submission
-# keeps each job at roughly job 1194's hour rather than running one two-hour job
-# unattended on the dev node; the H100 `mig` partition is not reachable from
-# this cluster (`sinfo` shows only `local-a100`), so Level 2 cannot be used here.
+# ~43 min, plus ~5 min of oracle and ~1 min of setup. The two tasks run
+# concurrently on the one slice, so the job is about one task's wall-clock --
+# roughly job 1194's hour. The H100 `mig` partition is not reachable from this
+# cluster (`sinfo` shows only `local-a100`), so Level 2 cannot be used here.
+#
+# Note the timings above were measured on GPU 0, the full un-partitioned A100.
+# This slice has roughly 40% of its SMs, so treat them as a lower bound.
 #SBATCH --job-name=closed-loop
 #SBATCH --partition=gpu
 #SBATCH --nodes=1
@@ -46,12 +50,10 @@ export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 export PYTHONUNBUFFERED=1
 states="${CLOSED_LOOP_STATES:-20}"
-task="${CLOSED_LOOP_TASK:?Set CLOSED_LOOP_TASK to buzz_wire or transport}"
-output="${SLURM_SUBMIT_DIR}/outputs/closed_loop_${task}_${SLURM_JOB_ID}"
+output="${SLURM_SUBMIT_DIR}/outputs/closed_loop_${SLURM_JOB_ID}"
 mkdir -p "$output"
 exec > >(tee -a "$output/batch.log") 2>&1
-printf 'Closed-loop MPC: job=%s task=%s states=%s\n' \
-    "$SLURM_JOB_ID" "$task" "$states"
+printf 'Closed-loop MPC: job=%s states=%s\n' "$SLURM_JOB_ID" "$states"
 printf 'CUDA_VISIBLE_DEVICES=%s\n' "${CUDA_VISIBLE_DEVICES:?}"
 git rev-parse HEAD > "$output/commit.txt"
 git status --short > "$output/git_status.txt"
@@ -77,37 +79,48 @@ srun --ntasks=1 .venv/bin/python -m pytest test/test_world_model_closed_loop.py 
 # see, because they exercise the helpers directly rather than through main().
 # This costs under a minute and exercises every policy path end to end.
 smoke() {
-    local runs="$1" data="$2"
+    local name="$1" runs="$2" data="$3"
     srun --ntasks=1 .venv/bin/python -m examples.world_model.closed_loop \
         "$runs" --data "$data" --device cuda --states 2 \
         --num-samples 8 --num-iters 2 --max-runs 1 \
-        --output "$output/smoke.json" | tee "$output/smoke.txt"
+        --output "$output/smoke_${name}.json" | tee "$output/smoke_${name}.txt"
 }
 
+# No srun here. The two tasks run as background processes inside the allocation
+# this script already holds; wrapping each in its own srun step would have them
+# contend for the single task slot and serialise exactly what we want
+# concurrent.
 run_task() {
     local name="$1" runs="$2" data="$3"
-    smoke "$runs" "$data"
-    printf '\n===== %s =====\n' "$name"
-    srun --ntasks=1 .venv/bin/python -m examples.world_model.closed_loop \
+    .venv/bin/python -u -m examples.world_model.closed_loop \
         "$runs" --data "$data" --device cuda --states "$states" \
-        --output "$output/${name}.json" | tee "$output/${name}.txt"
+        --output "$output/${name}.json" > "$output/${name}.txt" 2>&1
 }
 
-case "$task" in
-  # Buzz Wire: the only task with a success criterion AND a demonstrated oracle
-  # ceiling (11/20), and the one whose readout the diagnostic condemned.
-  buzz_wire)
-    run_task buzz_wire outputs/buzz_wire_1196/baselines outputs/buzz_wire_1196/data
-    ;;
-  # Transport: the mirror image -- a working readout, a degenerate objective.
-  transport)
-    run_task transport outputs/interaction_control_1194/transport \
-        outputs/transport_data_1190
-    ;;
-  *)
-    printf 'Unknown CLOSED_LOOP_TASK: %s\n' "$task" >&2
-    exit 1
-    ;;
-esac
+# Both tasks run concurrently in the one allocation, the way the training
+# sweeps already pack several workers onto a slice. A single evaluator process
+# peaks near 3.3 GB of this 20 GB slice, so two fit with room to spare, and two
+# ~50 minute runs finish in one allocation rather than queueing behind each
+# other. Nothing in the driver changes: each is an ordinary invocation writing
+# its own results.
+#
+# Buzz Wire is the task with a success criterion AND a demonstrated oracle
+# ceiling (11/20), and the one whose readout job 1203 condemned. Transport is
+# the mirror image: a working readout over a degenerate objective.
+# Smoke each task's own pipeline first, sequentially, before committing the
+# allocation to the long runs. Separate output names: concurrent tasks sharing
+# one smoke file would race.
+smoke buzz_wire outputs/buzz_wire_1196/baselines outputs/buzz_wire_1196/data
+smoke transport outputs/interaction_control_1194/transport outputs/transport_data_1190
+
+run_task buzz_wire outputs/buzz_wire_1196/baselines outputs/buzz_wire_1196/data &
+buzz_wire_pid=$!
+run_task transport outputs/interaction_control_1194/transport \
+    outputs/transport_data_1190 &
+transport_pid=$!
+
+# Fail the job if either task fails, rather than reporting half an experiment.
+wait "$buzz_wire_pid"
+wait "$transport_pid"
 
 printf 'Completed closed-loop MPC: %s\n' "$output"
