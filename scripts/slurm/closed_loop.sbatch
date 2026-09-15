@@ -57,12 +57,18 @@ states="${CLOSED_LOOP_STATES:-20}"
 # goal -- so the full 48-checkpoint grid is 3.2 hours per task and does not fit.
 # 24 checkpoints keeps all three predictors and both regimes, which are the
 # comparisons, and spends the budget on those rather than on seeds 4104-4107.
-seeds="${CLOSED_LOOP_SEEDS:-4100,4101,4102,4103}"
+# Seed groups, one concurrent process each per task. Measured peaks are 5.7 GB
+# for a Transport process and roughly half that for Buzz Wire, so six processes
+# sit near 18 GB of the 20 GB slice -- the same fill the Buzz Wire training
+# sweep ran at -- against the 6.1 GB two processes were using.
+groups="${CLOSED_LOOP_GROUPS:-4100,4101 4102,4103}"
+# The reference process also scores one seed group, so no work is duplicated.
+references_seed="${CLOSED_LOOP_REFERENCE_SEED:-4100}"
 output="${SLURM_SUBMIT_DIR}/outputs/closed_loop_${SLURM_JOB_ID}"
 mkdir -p "$output"
 exec > >(tee -a "$output/batch.log") 2>&1
-printf 'Closed-loop MPC: job=%s states=%s seeds=%s\n' \
-    "$SLURM_JOB_ID" "$states" "$seeds"
+printf 'Closed-loop MPC: job=%s states=%s groups=%s\n' \
+    "$SLURM_JOB_ID" "$states" "$groups"
 printf 'CUDA_VISIBLE_DEVICES=%s\n' "${CUDA_VISIBLE_DEVICES:?}"
 git rev-parse HEAD > "$output/commit.txt"
 git status --short > "$output/git_status.txt"
@@ -95,42 +101,55 @@ smoke() {
         --output "$output/smoke_${name}.json" | tee "$output/smoke_${name}.txt"
 }
 
-# No srun here. The two tasks run as background processes inside the allocation
-# this script already holds; wrapping each in its own srun step would have them
-# contend for the single task slot and serialise exactly what we want
-# concurrent.
-run_task() {
-    local name="$1" runs="$2" data="$3"
+# No srun for these: they run as background processes inside the allocation this
+# script already holds, and wrapping each in its own srun step would have them
+# contend for the single task slot and serialise exactly what must be concurrent.
+#
+# One process per (task, seed group). Each writes its own results file, which
+# examples.world_model.report aggregates -- the same shape as every other sweep
+# here, where many per-run outputs are combined by a reader rather than merged
+# by the producer.
+#
+# The first group of each task also computes the random and oracle references,
+# which are per-state rather than per-checkpoint. Giving them their own process
+# would score some seed twice; giving them to every group would repeat the
+# oracle's expensive planning.
+run_group() {
+    local name="$1" runs="$2" data="$3" group="$4" references="$5"
+    local tag="${group//,/_}"
+    local extra=(--skip-oracle)
+    [ "$references" = "with-references" ] && extra=()
     .venv/bin/python -u -m examples.world_model.closed_loop \
         "$runs" --data "$data" --device cuda --states "$states" \
-        --seeds "$seeds" \
-        --output "$output/${name}.json" > "$output/${name}.txt" 2>&1
+        --seeds "$group" "${extra[@]}" \
+        --output "$output/${name}_${tag}.json" \
+        > "$output/${name}_${tag}.txt" 2>&1
 }
 
-# Both tasks run concurrently in the one allocation, the way the training
-# sweeps already pack several workers onto a slice. A single evaluator process
-# peaks near 3.3 GB of this 20 GB slice, so two fit with room to spare, and two
-# ~50 minute runs finish in one allocation rather than queueing behind each
-# other. Nothing in the driver changes: each is an ordinary invocation writing
-# its own results.
-#
-# Buzz Wire is the task with a success criterion AND a demonstrated oracle
-# ceiling (11/20), and the one whose readout job 1203 condemned. Transport is
-# the mirror image: a working readout over a degenerate objective.
-# Smoke each task's own pipeline first, sequentially, before committing the
-# allocation to the long runs. Separate output names: concurrent tasks sharing
-# one smoke file would race.
-smoke buzz_wire outputs/buzz_wire_1196/baselines outputs/buzz_wire_1196/data
-smoke transport outputs/interaction_control_1194/transport outputs/transport_data_1190
+bw=outputs/buzz_wire_1196/baselines
+bw_data=outputs/buzz_wire_1196/data
+tr=outputs/interaction_control_1194/transport
+tr_data=outputs/transport_data_1190
 
-run_task buzz_wire outputs/buzz_wire_1196/baselines outputs/buzz_wire_1196/data &
-buzz_wire_pid=$!
-run_task transport outputs/interaction_control_1194/transport \
-    outputs/transport_data_1190 &
-transport_pid=$!
+# Smoke each task's pipeline, sequentially, before committing the allocation to
+# the long runs. Separate output names: concurrent tasks sharing one smoke file
+# would race.
+smoke buzz_wire "$bw" "$bw_data"
+smoke transport "$tr" "$tr_data"
 
-# Fail the job if either task fails, rather than reporting half an experiment.
-wait "$buzz_wire_pid"
-wait "$transport_pid"
+pids=()
+first=with-references
+for group in $groups; do
+    run_group buzz_wire "$bw" "$bw_data" "$group" "$first" & pids+=($!)
+    run_group transport "$tr" "$tr_data" "$group" "$first" & pids+=($!)
+    first=skip-references
+done
+
+# Fail the job if any process fails, rather than reporting a partial experiment.
+status=0
+for pid in "${pids[@]}"; do
+    wait "$pid" || status=1
+done
+[ "$status" -eq 0 ]
 
 printf 'Completed closed-loop MPC: %s\n' "$output"
