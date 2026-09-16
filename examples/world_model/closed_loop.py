@@ -168,9 +168,14 @@ def reference_goals(
 
     So it comes from the strongest controller the task has: the scenario's own
     hand-written policy where one exists, and otherwise the reward oracle, which
-    on Buzz Wire moves the ball from 1.095 to 0.557 and succeeds 5/20. The
-    endpoint is latched at each episode's own terminal frame, so a slot that
-    finished early contributes the state it finished in.
+    on Buzz Wire moves the ball from 1.095 to 0.557 and succeeds 5/20.
+
+    The goal is the observation at each episode's *best* task frame rather than
+    its terminal one. That reward oracle collides in 35% of episodes, so its
+    terminal frames are the states it crashed in; a planner aimed at one would be
+    aimed at a crash. The best frame is reachable for exactly the same reason the
+    terminal frame is -- the policy was there, from this state, within this
+    budget -- and it is the most the trajectory ever achieved.
     """
     episodes, _timing, terminal = evaluate_policy(
         env,
@@ -182,11 +187,14 @@ def reference_goals(
         scratch_env=scratch_env,
         outcome_fn=outcome_fn,
     )
-    distance = np.mean([row["final_goal_distance"] for row in episodes])
+    best = np.mean([row["best_goal_distance"] for row in episodes])
+    final = np.mean([row["final_goal_distance"] for row in episodes])
     reached = sum(row["success"] for row in episodes)
+    collided = sum(row["collision"] for row in episodes)
     print(
         f"  goals from {'the scenario heuristic' if callable(policy) else 'the reward oracle'}: "
-        f"task distance {distance:.4f}, {reached}/{len(episodes)} native successes",
+        f"task distance {best:.4f} at the best frame, {final:.4f} at the last; "
+        f"{reached}/{len(episodes)} native successes, {collided} collided",
         flush=True,
     )
     return terminal

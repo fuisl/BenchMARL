@@ -148,11 +148,16 @@ class EpisodeStats:
         self.collision = torch.zeros_like(self.alive)
         self.timeout = torch.zeros_like(self.alive)
         self.final_distance = torch.zeros_like(env._env.steps)
-        # The observation at each episode's own terminal frame. A goal drawn
-        # from a competent policy needs exactly this, and reading it after the
-        # loop would take whichever state a finished slot drifted to while its
-        # neighbours kept running.
-        self.terminal_observation = agent_observations(env)
+        # The observation at the frame where this episode came closest to the
+        # task goal, and the distance there. A goal drawn from a competent policy
+        # needs this rather than the terminal frame: the Buzz Wire reward oracle
+        # collides in 35% of episodes, so its terminal frames are the states it
+        # crashed in, and aiming a planner at one would aim it at a crash. The
+        # best frame is reachable for the same reason the terminal one is -- the
+        # policy was there -- and it is the best that trajectory ever achieved.
+        _reached, _collided, distance = outcome_fn(env)
+        self.best_observation = agent_observations(env)
+        self.best_distance = distance.clone()
         self.goal_distance = torch.full_like(env._env.steps, float("nan"))
         self.goal_reached = torch.zeros_like(self.alive)
 
@@ -175,10 +180,14 @@ class EpisodeStats:
         self.collision |= ended & collided
         self.timeout |= ended & ~collided & ~goal & timed_out
         self.final_distance = torch.where(ended, distance, self.final_distance)
-        self.terminal_observation = torch.where(
-            self.alive.reshape(-1, 1, 1),
+        # Only live frames are candidates: a finished slot keeps stepping beside
+        # its neighbours and must not contribute the state it drifted to.
+        improved = self.alive & (distance < self.best_distance)
+        self.best_distance = torch.where(improved, distance, self.best_distance)
+        self.best_observation = torch.where(
+            improved.reshape(-1, 1, 1),
             agent_observations(env),
-            self.terminal_observation,
+            self.best_observation,
         )
         if self.goal_observation is not None:
             # Latched at the terminal frame, and refreshed while still running
@@ -204,6 +213,9 @@ class EpisodeStats:
                 "timeout": bool(self.timeout[i]),
                 "length": int(self.length[i]),
                 "final_goal_distance": float(self.final_distance[i]),
+                # The closest this episode ever came, which is what a goal is
+                # drawn from and is worth reporting beside where it ended.
+                "best_goal_distance": float(self.best_distance[i]),
                 # Only when a goal was actually supplied. A NaN placeholder
                 # would make identical rows compare unequal and would fail the
                 # results write, which forbids non-finite JSON.
@@ -413,4 +425,4 @@ def evaluate_policy(
     timing = {"seconds": perf_counter() - start, "decisions": decisions}
     if diagnostics_path is not None:
         torch.save(trajectory, diagnostics_path / f"{policy}_trajectory.pt")
-    return stats.rows(policy, n_agents), timing, stats.terminal_observation
+    return stats.rows(policy, n_agents), timing, stats.best_observation
