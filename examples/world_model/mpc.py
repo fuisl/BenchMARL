@@ -103,6 +103,40 @@ def buzz_wire_outcome(env):
     return (distance <= 0.01) & ~collided, collided, distance
 
 
+def goal_dimension_weight(task_name, obs_dim, device):
+    """Which observation components a goal distance should score: (O,) of 0/1.
+
+    Job 1229 measured why this is needed. Given a goal taken from the reward
+    oracle -- the best controller Buzz Wire has -- the goal oracle reached it
+    12/20 and ended at task distance 0.9536 with a 0.90 collision rate, against
+    random's 1.0852 and 0.70. Pursuing the goal was worse than acting randomly.
+
+    The reason is velocity. The goal is a full observation, so reaching it means
+    arriving at that position *carrying that speed*, and on Buzz Wire that means
+    driving hard through a narrow corridor. The agents observe their own
+    position, velocity and offset to their goal; they never observe the ball or
+    the wire, so nothing in the objective penalises the crash it causes. The
+    planner follows the objective faithfully and destroys the task.
+
+    Dropping velocity leaves the part of the goal that says *where to be* and
+    removes the part that says *how fast to be going when you get there*, which
+    the task never asked for.
+    """
+    if task_name == "vmas/buzz_wire":
+        # [pos(2), vel(2), pos - goal_pos(2)]
+        velocity = [2, 3]
+    elif task_name == "vmas/transport":
+        # [pos(2), vel(2)] then, per package, [pos - goal(2), pos - agent(2),
+        # vel(2), on_goal(1)]
+        packages = (obs_dim - 4) // 7
+        velocity = [2, 3] + [4 + 7 * p + 4 + i for p in range(packages) for i in (0, 1)]
+    else:
+        raise ValueError(f"No goal dimension layout recorded for {task_name}")
+    weight = torch.ones(obs_dim, device=device)
+    weight[velocity] = 0.0
+    return weight
+
+
 def transport_outcome(env):
     """All packages must overlap their goal; contacts are not terminal failures."""
     scenario = env._env.scenario
@@ -127,7 +161,7 @@ class EpisodeStats:
     """Latch first terminal outcomes; never count post-terminal rewards or goals."""
 
     def __init__(self, env, outcome_fn=buzz_wire_outcome, goal_observation=None,
-                 goal_threshold=None):
+                 goal_threshold=None, goal_weight=None):
         """``goal_observation`` (B,N,O) scores a goal-reaching objective.
 
         The native ``success`` flag is the scenario's own ``done()``; goal
@@ -139,6 +173,10 @@ class EpisodeStats:
         self.outcome_fn = outcome_fn
         self.goal_observation = goal_observation
         self.goal_threshold = goal_threshold
+        # (O,) of 0/1, or None to score every component. The goal oracle must
+        # optimize whatever this scores or it bounds nothing, so the same weight
+        # goes to `GoalDistance`.
+        self.goal_weight = goal_weight
         self.alive = ~env._env.done()
         if not self.alive.all():
             raise ValueError("Evaluation states must be nonterminal")
@@ -162,8 +200,10 @@ class EpisodeStats:
         self.goal_reached = torch.zeros_like(self.alive)
 
     def _goal_distance(self, env):
-        reached = agent_observations(env)
-        return (reached - self.goal_observation).flatten(1).norm(dim=-1)
+        difference = agent_observations(env) - self.goal_observation
+        if self.goal_weight is not None:
+            difference = difference * self.goal_weight
+        return difference.flatten(1).norm(dim=-1)
 
     def update(self, env, td):
         reward = td["agents", "reward"].sum(dim=1).squeeze(-1)
@@ -241,7 +281,7 @@ def oracle_costs(scratch_env):
     return costs
 
 
-def goal_oracle_costs(scratch_env, goal_observation):
+def goal_oracle_costs(scratch_env, goal_observation, goal_weight=None):
     """Plan cost for the goal objective, with the true simulator as dynamics.
 
     Same planner and same goals as the learned goal policies; only the world
@@ -249,7 +289,7 @@ def goal_oracle_costs(scratch_env, goal_observation):
     reward oracle optimizes a different objective and is not one.
     """
 
-    objective = GoalDistance(goal_observation)
+    objective = GoalDistance(goal_observation, goal_weight)
 
     def costs(snapshot, observation, candidates):
         return oracle_plan_costs(
@@ -279,6 +319,7 @@ def evaluate_policy(
     plan_costs=None,
     goal_observation=None,
     goal_threshold=None,
+    goal_weight=None,
 ):
     """Evaluate exactly one episode per slot; return episode rows and timing.
 
@@ -305,7 +346,9 @@ def evaluate_policy(
             raise ValueError("Oracle MPC requires a separate scratch environment")
         plan_costs = oracle_costs(scratch_env)
     restore_state(env, initial_state)
-    stats = EpisodeStats(env, outcome_fn, goal_observation, goal_threshold)
+    stats = EpisodeStats(
+        env, outcome_fn, goal_observation, goal_threshold, goal_weight
+    )
     batch_size = env.batch_size[0]
     n_agents = len(env._env.world.agents)
     action_dim = env.full_action_spec_unbatched["agents", "action"].shape[-1]

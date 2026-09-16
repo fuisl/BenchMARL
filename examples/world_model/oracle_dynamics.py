@@ -127,10 +127,13 @@ class GoalDistance:
     targets every learned policy is scored against.
     """
 
-    def __init__(self, goal_observation: torch.Tensor):
+    def __init__(self, goal_observation: torch.Tensor, weight=None):
         if goal_observation.ndim != 3:
             raise ValueError("Goal observation must be (B,N,O)")
         self.goal_observation = goal_observation
+        # (O,) of 0/1, or None. Must be the same weight EpisodeStats scores, or
+        # this oracle bounds a different quantity than the one reported.
+        self.weight = weight
 
     def __call__(self, rollout: dict) -> torch.Tensor:
         endpoint = rollout["endpoint"]
@@ -142,6 +145,8 @@ class GoalDistance:
         # (B,K,N,O) against (B,1,N,O), flattened over agents and observation
         # so the distance matches EpisodeStats' own goal metric exactly.
         difference = endpoint - self.goal_observation.unsqueeze(1)
+        if self.weight is not None:
+            difference = difference * self.weight
         return difference.flatten(2).norm(dim=-1)
 
 

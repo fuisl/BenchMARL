@@ -72,6 +72,7 @@ from examples.world_model.mpc import (
     action_bounds,
     buzz_wire_outcome,
     evaluate_policy,
+    goal_dimension_weight,
     goal_oracle_costs,
     MPCConfig,
     scenario_heuristic,
@@ -208,6 +209,64 @@ def zero_policy(env):
     return torch.zeros(
         env.batch_size[0], 1, n_agents * action_dim, device=env.device
     )
+
+
+@torch.no_grad()
+def solved_states(task, anchors, pool, args, manifest, cem_config, mpc_config, outcome_fn):
+    """Anchor indices the reference controller actually solves, and the goal it
+    reached on each: (M,), (M,N,O), with M <= args.states.
+
+    Job 1229 ruled out the alternative. Taking the goal from wherever the
+    reference controller *ended* gives, on Buzz Wire, seven goals out of twenty
+    that are the states it crashed in -- the oracle approaches monotonically
+    until it collides, so its best frame is its crash frame in 20/20 episodes.
+    Aiming a planner at those is aiming it at a crash, and the goal oracle duly
+    collided in 90% of episodes and finished worse on the task than random.
+
+    A goal taken from an episode the controller *solved* cannot have that
+    problem: the ball is at its target and nothing has collided. The cost is that
+    only some states yield one -- the Buzz Wire reward oracle succeeds 5/20 -- so
+    a larger pool is run and the states it fails are dropped. Dropping them
+    changes what the evaluation set is, which is why it is reported: these are
+    the states a competent controller can solve, not a random sample of states.
+    """
+    pool_env = task.get_env_fun(pool.numel(), True, 0, args.device)()
+    pool_env.reset()
+    scratch = task.get_env_fun(
+        pool.numel() * args.num_samples, True, 0, args.device
+    )()
+    scratch.reset()
+    heuristic = scenario_heuristic(manifest["task_name"], action_bounds(pool_env)[1])
+    try:
+        episodes, _timing, best = evaluate_policy(
+            pool_env,
+            select_anchor_states(anchors, pool, args.device),
+            policy=heuristic or "mpc",
+            generator=torch.Generator(device=args.device).manual_seed(args.seed),
+            cem_config=cem_config,
+            mpc_config=mpc_config,
+            scratch_env=scratch,
+            outcome_fn=outcome_fn,
+        )
+    finally:
+        pool_env.close()
+        scratch.close()
+
+    solved = torch.tensor(
+        [row["success"] for row in episodes], device=best.device
+    ).nonzero(as_tuple=True)[0][: args.states]
+    distance = np.mean([episodes[i]["best_goal_distance"] for i in solved.tolist()])
+    print(
+        f"  reference controller solved {len(solved)} of {pool.numel()} pooled "
+        f"states; goals at task distance {distance:.4f}",
+        flush=True,
+    )
+    if solved.numel() == 0:
+        raise ValueError(
+            f"The reference controller solved none of {pool.numel()} states, so "
+            "there is no task-relevant goal to plan toward on this task"
+        )
+    return pool[solved.cpu()], best[solved]
 
 
 def log_policy(args, manifest, label, episodes, timing):
@@ -383,7 +442,7 @@ def main():
     parser.add_argument("--goal-offset", type=int, default=5, help="blocks ahead")
     parser.add_argument(
         "--goal-source",
-        choices=("reference", "arbitrary"),
+        choices=("reference", "success", "arbitrary"),
         default="reference",
         help="where the goal comes from. `reference`: where the strongest "
         "controller the task has actually ends up. `arbitrary`: the endpoint of "
@@ -397,6 +456,24 @@ def main():
         help="observation-space L2 within which a goal counts as reached. A "
         "declared parameter, not a calibrated one: the graded distance is the "
         "primary number and this only names a cut through it.",
+    )
+    parser.add_argument(
+        "--goal-metric",
+        choices=("full", "position"),
+        default="full",
+        help="which observation components the goal distance scores. `full`: "
+        "every component, including velocity -- what jobs 1218-1229 used. "
+        "`position`: velocity dropped. Job 1229 measured why that matters: "
+        "matching a goal's velocity means arriving at speed, and on Buzz Wire "
+        "that means driving through the wire, which the objective cannot see.",
+    )
+    parser.add_argument(
+        "--state-pool",
+        type=int,
+        default=None,
+        help="with --goal-source success: how many candidate states to run the "
+        "reference controller over before keeping the ones it solved. The Buzz "
+        "Wire reward oracle succeeds 5/20, so ~4x the wanted states.",
     )
     parser.add_argument("--skip-oracle", action="store_true")
     parser.add_argument("--project", default="counterfactual-wm")
@@ -454,7 +531,24 @@ def main():
     )
     test = (anchors["split"] == 2).nonzero(as_tuple=True)[0]
     generator = torch.Generator().manual_seed(args.seed)
-    chosen = test[torch.randperm(test.numel(), generator=generator)[: args.states]]
+    shuffled = test[torch.randperm(test.numel(), generator=generator)]
+    chosen = shuffled[: args.states]
+    solved_goals = None
+    if args.goal_source == "success":
+        # The evaluation set becomes the states a competent controller can
+        # solve, so it is chosen by running one rather than by sampling.
+        chosen, solved_goals = solved_states(
+            task,
+            anchors,
+            shuffled[: args.state_pool or 4 * args.states],
+            args,
+            manifest,
+            cem_config,
+            mpc_config,
+            transport_outcome
+            if manifest["task_name"] == "vmas/transport"
+            else buzz_wire_outcome,
+        )
     states = chosen.numel()
     initial_state = select_anchor_states(anchors, chosen, args.device)
 
@@ -470,6 +564,8 @@ def main():
         "horizon": args.horizon,
         "goal_offset": args.goal_offset,
         "goal_source": args.goal_source,
+        "goal_metric": args.goal_metric,
+        "state_pool": args.state_pool,
         "references": "random,zero,heuristic,oracle,goal_oracle",
     }
 
@@ -485,6 +581,15 @@ def main():
     # source needs it: where a scenario ships a hand-written policy, that is the
     # strongest controller the task has.
     heuristic = scenario_heuristic(manifest["task_name"], action_bounds(env)[1])
+    goal_weight = (
+        None
+        if args.goal_metric == "full"
+        else goal_dimension_weight(
+            manifest["task_name"],
+            env.observation_spec["agents", "observation"].shape[-1],
+            args.device,
+        )
+    )
 
     # The scratch simulator exists only for the oracle and for generating goals:
     # states x num_samples environments, which is the bulk of a process's
@@ -534,7 +639,9 @@ def main():
             reference_rows = stored["rows"]
             print(f"loaded reference cache for {states} states", flush=True)
         else:
-            if args.goal_source == "arbitrary":
+            if solved_goals is not None:
+                goal_observation = solved_goals
+            elif args.goal_source == "arbitrary":
                 goal_observation = achieved_goals(
                     scratch, initial_state, goal_plans, block
                 )
@@ -573,6 +680,7 @@ def main():
                 plan_costs=plan_costs,
                 goal_observation=goal_observation,
                 goal_threshold=args.goal_threshold,
+                goal_weight=goal_weight,
             )
             # Goal distance and goal reaching are latched inside EpisodeStats
             # at each episode's own terminal frame. Reading them here, after the
@@ -622,7 +730,7 @@ def main():
                 run(
                     "goal_oracle",
                     "mpc",
-                    goal_oracle_costs(scratch, goal_observation),
+                    goal_oracle_costs(scratch, goal_observation, goal_weight),
                 )
             if cache is not None:
                 cache.parent.mkdir(parents=True, exist_ok=True)
