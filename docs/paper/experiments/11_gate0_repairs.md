@@ -142,6 +142,31 @@ Per review §3, without changing any number:
 
 A common-coordinate physical response is Gate 2, not a labelling change.
 
+## 5b. One hypothesis closed off cheaply
+
+Review §4 also raises a search risk: `cem_plan` returns `elites.mean(dim=1)`
+computed **after** the final `cost_fn` call, so the plan that actually executes
+is never scored at that update, and averaging two good but different plans can
+produce one that is neither.
+
+Measured on Balance with the true simulator and the native reward cost, 8 train
+roots at the real budget (300 samples, 30 iterations), rescoring the returned
+plan with the planner's own cost:
+
+| | value |
+|---|---:|
+| states where the executed mean is worse than the best sample | **8 / 8** |
+| mean gap | +0.4348 (**1.2%** of mean \|best cost\|) |
+| max gap | +0.8262 |
+
+The direction the review predicted is real and unanimous. The magnitude is 1.2%,
+and the executed mean sits **between** the previous incumbent and the best sample
+in every state — each update improves the plan that runs. Elite averaging is not
+what is stopping Balance control, and this does not justify changing the planner.
+Worth rerunning on an objective with genuinely multi-modal elites before
+concluding it never matters.
+[Probe and output](../../../outputs/search_diagnostics/results.txt)
+
 ## 6. What Gate 0 does not fix
 
 * `include_heuristic=true` adds heuristic **anchor states**; the training loader
