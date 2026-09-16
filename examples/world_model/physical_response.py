@@ -286,6 +286,16 @@ def main():
         if not checkpoint.exists():
             continue
         config = yaml.safe_load((directory / "resolved_config.yaml").read_text())
+        # Stage 2's `history` and `physical` conditions rewrite the observation
+        # before training, so their encoders do not accept the bank's raw
+        # frames. Scoring them here needs that transform applied identically to
+        # both branches; until it is, say so rather than crash on a shape.
+        state_input = config["data"].get("state_input", "observation")
+        if state_input != "observation":
+            raise ValueError(
+                f"{directory} trained on state_input={state_input}; "
+                "physical_response only handles raw observations so far"
+            )
         key = (config["data"]["regime"], config["model"]["kind"], config["seed"])
         model = load_model(checkpoint, args.device)
         model.eval()
