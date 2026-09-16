@@ -4,10 +4,11 @@ Every job that produced a result, where its artifacts live, and which note
 documents it. Written 2026-09-16 because the results had spread across
 `outputs/`, wandb and three levels of `docs/` with no single place to look.
 
-**Reading order for someone new:** [`../outline.md`](../outline.md) for what the
-project claims and where it stands, then
-[`../audit_2026-09-15.md`](../audit_2026-09-15.md) for what was wrong with the
-measurements, then the notes below.
+**Start here:** [`../status_2026-09-16.md`](../status_2026-09-16.md) — where the
+project stands after jobs 1217-1233, with every claim's current confidence and
+what must not be claimed. Then [`../outline.md`](../outline.md) for which paper
+gets written, [`../audit_2026-09-15.md`](../audit_2026-09-15.md) for what was
+wrong with the measurements, then the notes below.
 
 Every `outputs/<name>_<job>/` directory carries `commit.txt`, `git_status.txt`,
 `working_tree.patch` and a `source/` copy of `examples/world_model/*.py` as they
@@ -34,7 +35,7 @@ without trusting the current tree.
 | 1229 | `goal_repair_1229/` | Reference-controller goals. **Cancelled**: goal oracle collided 90% and finished worse than random | [`10_goal_objective.md`](10_goal_objective.md) §2 |
 | 1230 | `goal_gate_position_1230/` | Gate: velocity dropped from the goal distance. **Rejected** | [`10_goal_objective.md`](10_goal_objective.md) §3 |
 | 1231 | `goal_gate_success_1231/` | Gate: goals from solved episodes only. **Partial pass** | [`10_goal_objective.md`](10_goal_objective.md) §4 |
-| 1233 | `balance_1233/` | Balance bank, 48-run grid, open-loop evaluators | **missing** (running) |
+| 1233 | `balance_1233/` | Balance bank, 48-run grid, open-loop evaluators. 48/48, no OOM | **missing** |
 | — | — | Rollout error against horizon, out to 20 blocks | [`09_horizon_rollout.md`](09_horizon_rollout.md) |
 
 Failed and cancelled jobs are listed because the audit requires failed-run
