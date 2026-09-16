@@ -12,7 +12,7 @@ wrong with the measurements, then the notes below.
 
 **Follow-up review:** [`../review_2026-09-16.md`](../review_2026-09-16.md)
 reproduced three defects and set the gate structure the work now follows. Its
-Gate 0 is complete (commit `43432b1`, job 1235); §§3, 5–8 of the status report
+Gate 0 is complete (commit `43432b1`, jobs 1235 and 1236); §§3, 5–8 of the status report
 are rewritten or narrowed against it. Read it before any pre-1235 horizon number
 or any description of job 1233's bank as competent Balance behaviour.
 
@@ -43,6 +43,7 @@ without trusting the current tree.
 | 1231 | `goal_gate_success_1231/` | Gate: goals from solved episodes only. **Partial pass** | [`10_goal_objective.md`](10_goal_objective.md) §4 |
 | 1233 | `balance_1233/` | Balance bank, 48-run grid, open-loop evaluators. 48/48, no OOM. **Heuristic branch is Transport's policy** — see `balance_1233/DEFECT.md` | **missing** |
 | 1235 | `horizon_rescore_1235/` | Horizon curves re-derived at the trained context length, 4 checkpoint sets. Withdraws the h=6 cliff and the ordering reversal | [`09_horizon_rollout.md`](09_horizon_rollout.md) |
+| 1236 | `balance_repair_1236/` | Balance recollected on the fixed collector; identical design to 1233 | [`11_gate0_repairs.md`](11_gate0_repairs.md) §1 |
 | — | `review_20260916/` | The review's own CPU diagnostics: policy identity, positional gradients, both rollout windows | [`../review_2026-09-16.md`](../review_2026-09-16.md) |
 
 Failed and cancelled jobs are listed because the audit requires failed-run
@@ -68,6 +69,7 @@ their directories remain on disk.
 | `08_stage1_rescoring.md` | Stage 1 salvage, job 1217 |
 | `09_horizon_rollout.md` | Rollout error vs horizon (**rewritten at the corrected context, job 1235**) |
 | `10_goal_objective.md` | Why the goal objective measured nothing, and the one design that partly works |
+| `11_gate0_repairs.md` | The review's three defects: what each cost, and the checks that now catch them |
 
 Two notes share the number `02` and three share `05`. They are not renumbered
 here because other documents link to them by filename; new notes continue from
