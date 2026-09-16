@@ -66,6 +66,7 @@ import numpy as np
 import torch
 
 from examples.world_model.cem import CEMConfig
+from examples.world_model.collect import SPLITS
 from examples.world_model.goal_planning import goal_plan_costs
 from examples.world_model.metrics import mean_interval, success_interval
 from examples.world_model.mpc import (
@@ -486,7 +487,32 @@ def main():
         "reference controller over before keeping the ones it solved. The Buzz "
         "Wire reward oracle succeeds 5/20, so ~4x the wanted states.",
     )
-    parser.add_argument("--skip-oracle", action="store_true")
+    parser.add_argument(
+        "--roots-split",
+        choices=SPLITS,
+        default=None,
+        help="evaluate from episode STARTS in `initial_states.pt` of this "
+        "split, instead of the mid-episode anchors of the test split. Anchors "
+        "are not independent: Balance's 197 test anchors come from 16 root "
+        "episodes sampled at steps 0/20/40/60/80, so an interval over anchors "
+        "understates uncertainty, and an anchor at step 80 has 20 steps of "
+        "episode left rather than 100. Roots give one independent full-length "
+        "episode each. Use `train` for development and keep `test` frozen for "
+        "the final comparison -- no learned model is involved in a "
+        "true-simulator reference, so a train root leaks nothing.",
+    )
+    parser.add_argument(
+        "--oracles",
+        choices=("both", "reward", "goal", "none"),
+        default="both",
+        help="which true-simulator planners to score. `reward` optimises the "
+        "native task reward; `goal` optimises observation-space distance to a "
+        "goal. They answer different questions and each costs a full CEM "
+        "search at every decision, so a run that needs only one should say so: "
+        "one Balance decision at 300 samples and 30 iterations measured 132s "
+        "for 8 states, which is hours per cadence. Replaces --skip-oracle, "
+        "which could only turn both off at once.",
+    )
     parser.add_argument("--project", default="counterfactual-wm")
     parser.add_argument("--entity", default="cair-traffic")
     parser.add_argument(
@@ -541,12 +567,19 @@ def main():
 
     # Evaluation states come from the bank's test split, so no learned model has
     # trained on the states it is asked to control.
-    anchors = torch.load(
-        args.data / "anchors.pt", map_location="cpu", weights_only=True
-    )
-    test = (anchors["split"] == 2).nonzero(as_tuple=True)[0]
+    if args.roots_split is None:
+        anchors = torch.load(
+            args.data / "anchors.pt", map_location="cpu", weights_only=True
+        )
+        wanted_split = SPLITS.index("test")
+    else:
+        anchors = torch.load(
+            args.data / "initial_states.pt", map_location="cpu", weights_only=True
+        )
+        wanted_split = SPLITS.index(args.roots_split)
+    available = (anchors["split"] == wanted_split).nonzero(as_tuple=True)[0]
     generator = torch.Generator().manual_seed(args.seed)
-    shuffled = test[torch.randperm(test.numel(), generator=generator)]
+    shuffled = available[torch.randperm(available.numel(), generator=generator)]
     chosen = shuffled[: args.states]
     solved_goals = None
     if args.goal_source == "success":
@@ -580,7 +613,14 @@ def main():
         "goal_source": args.goal_source,
         "goal_metric": args.goal_metric,
         "state_pool": args.state_pool,
-        "references": "random,zero,heuristic,oracle,goal_oracle",
+        "roots_split": args.roots_split,
+        "oracles": args.oracles,
+        "references": "random,zero,heuristic" + {
+            "both": ",oracle,goal_oracle",
+            "reward": ",oracle",
+            "goal": ",goal_oracle",
+            "none": "",
+        }[args.oracles],
     }
 
     env = task.get_env_fun(states, True, 0, args.device)()
@@ -733,8 +773,9 @@ def main():
                     "random is the only non-planning reference",
                     flush=True,
                 )
-            if not args.skip_oracle:
+            if args.oracles in ("both", "reward"):
                 run("oracle", "mpc")
+            if args.oracles in ("both", "goal"):
                 run(
                     "goal_oracle",
                     "mpc",

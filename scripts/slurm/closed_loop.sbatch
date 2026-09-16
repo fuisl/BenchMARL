@@ -126,7 +126,7 @@ smoke() {
 run_group() {
     local name="$1" runs="$2" data="$3" group="$4" references="$5"
     local tag="${group//,/_}"
-    local extra=(--skip-oracle)
+    local extra=(--oracles none)
     [ "$references" = "with-references" ] && extra=()
     .venv/bin/python -u -m examples.world_model.closed_loop \
         "$runs" --data "$data" --device cuda --states "$states" \
