@@ -25,6 +25,7 @@ from examples.world_model.closed_loop import (
 )
 from examples.world_model.mpc import (
     agent_observations,
+    buzz_wire_outcome,
     evaluate_policy,
     MPCConfig,
     oracle_costs,
@@ -60,6 +61,7 @@ def run(env, scratch, initial, plan_costs=None):
         mpc_config=MPC,
         scratch_env=scratch,
         plan_costs=plan_costs,
+        outcome_fn=buzz_wire_outcome,
     )[:2]
 
 

@@ -29,7 +29,6 @@ from omegaconf import DictConfig, OmegaConf
 from tensordict import TensorDict
 from torchrl.record.loggers import get_logger
 from torchrl.record.loggers.wandb import WandbLogger
-from vmas.scenarios import transport as transport_scenario
 
 
 def tracked_entities(env):
@@ -360,7 +359,7 @@ def run_collection(cfg, output, task_name):
     # observation-space goal cannot express the task or see its failure mode, and
     # Transport's own heuristic closes 0.032 of the starting 0.9006 across a full
     # episode. Balance observes the package, its goal offset, its velocity and the
-    # line, and its shipped heuristic scores +43.44 against random's -22.09.
+    # line, and has a shipped heuristic that lifts (see the return above).
     # `tracked_entities` needs no change: the package and line are both movable.
     supported = (
         "vmas/transport",
@@ -394,9 +393,11 @@ def run_collection(cfg, output, task_name):
     if cfg.experiment.render:
         raise ValueError("Offline data collection does not render")
     # Only where the shipped heuristic has been measured to be worth including.
-    # Transport's scores 3.179 against random's 0.175; Balance's scores +43.44
-    # against random's -22.09 and zero-action's -5.75, which is the widest margin
-    # of any task in this suite and the reason Balance was added.
+    # Transport's scores 3.179 against random's 0.175. Balance's was admitted on
+    # a probe whose number is not recoverable from a saved artifact; the
+    # reproducible comparison is outputs/review_20260916/evidence.json, which
+    # replays Balance's own policy from 64 of job 1233's roots for +9.5601
+    # per agent against the -15.6391 those roots stored under Transport's.
     if settings.include_heuristic and task_name not in (
         "vmas/transport",
         "vmas/balance",
@@ -460,12 +461,17 @@ def run_collection(cfg, output, task_name):
             policy = None
             if regime == "heuristic":
                 # Shipped VMAS baseline; its competence is measured, not assumed.
-                heuristic = transport_scenario.HeuristicPolicy(continuous_action=True)
+                # It must come from the scenario being collected: this named
+                # `vmas.scenarios.transport` directly until 2026-09-16, so job
+                # 1233's Balance heuristic trajectories are Transport's policy
+                # driving Balance agents. `scenario_module` is the task's own
+                # module, already resolved above for the provenance hash.
+                heuristic = scenario_module.HeuristicPolicy(continuous_action=True)
                 if not torch.equal(low, -torch.ones_like(low)) or not torch.equal(
                     high, torch.ones_like(high)
                 ):
                     raise ValueError(
-                        "Transport heuristic requires native [-1,1] actions"
+                        f"{task_name} heuristic requires native [-1,1] actions"
                     )
 
                 def policy(observation, heuristic=heuristic):
@@ -668,6 +674,9 @@ def run_collection(cfg, output, task_name):
             "action_block": settings.action_block,
             "regimes": list(REGIMES),
             "source_regimes": source_regimes,
+            "heuristic_policy": f"{scenario_module.__name__}.HeuristicPolicy"
+            if settings.include_heuristic
+            else None,
             "splits": list(SPLITS),
             "anchors": count,
             "initial_states_sha256": state_digest(initial),

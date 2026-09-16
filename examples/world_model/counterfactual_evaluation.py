@@ -285,7 +285,10 @@ def main():
     print("Spearman between each model's predicted response magnitude and the")
     print("simulator's true response in observation space, over active anchors.")
     print("One common target for every model, so this is comparable across them")
-    print("in a way a latent-space ratio is not.\n")
+    print("in a way a latent-space ratio is not. It ranks the MAGNITUDE of the")
+    print("response only: it decodes no physical vector and checks no direction,")
+    print("so a prediction pointing the wrong way can still rank perfectly. It")
+    print("does not substitute for a common-coordinate physical response.\n")
     probe_header = f"{'regime':12s} {'kind':12s} {'spearman':>10s}"
     print(probe_header)
     print("-" * len(probe_header))
@@ -308,7 +311,10 @@ def main():
             )
             print(f"{regime:12s} {kind:12s} {value:10.4f}")
 
-    print("\npaired response vs independent (negative = captured more of the effect):")
+    print("\npaired response vs independent (negative = captured more of the effect).")
+    print("Each term is an error in its own model's latent space, so the")
+    print("difference is a within-pair sign test, not a physical margin: the")
+    print("magnitude is not comparable across the two rows below it.")
     header = f"{'regime':12s} {'kind':12s} {'mean':>12s} {'95% CI':>28s} {'seeds better':>13s}"
     print(header)
     print("-" * len(header))

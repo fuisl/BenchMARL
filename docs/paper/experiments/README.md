@@ -10,6 +10,10 @@ what must not be claimed. Then [`../outline.md`](../outline.md) for which paper
 gets written, [`../audit_2026-09-15.md`](../audit_2026-09-15.md) for what was
 wrong with the measurements, then the notes below.
 
+**Follow-up review:** [`../review_2026-09-16.md`](../review_2026-09-16.md)
+documents the reproduced Balance source-policy and horizon-context defects,
+the remaining measurement limits, and the recommended control experiments.
+
 Every `outputs/<name>_<job>/` directory carries `commit.txt`, `git_status.txt`,
 `working_tree.patch` and a `source/` copy of `examples/world_model/*.py` as they
 were at submit time, so any table can be reproduced from its own directory

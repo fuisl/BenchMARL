@@ -105,7 +105,7 @@ def test_terminal_reward_and_block_execution_match_oracle(make_env):
     rollout = oracle_rollout(make_env(2, max_steps=3), snapshot, actions)
     assert rollout["live"][:, 0].sum(-1).tolist() == [3, 2]
     expected = NegativeTaskReward()(rollout)[:, 0]
-    stats = mpc.EpisodeStats(env)
+    stats = mpc.EpisodeStats(env, mpc.buzz_wire_outcome)
     td = TensorDict({}, [2])
     for action in actions[:, 0].unbind(1):
         td.set(("agents", "action"), action.reshape(2, 2, 2))
@@ -122,7 +122,7 @@ def test_terminal_reward_and_block_execution_match_oracle(make_env):
 
 def test_first_outcome_latches_with_collision_precedence(make_env):
     env = make_env(3)
-    stats = mpc.EpisodeStats(env)
+    stats = mpc.EpisodeStats(env, mpc.buzz_wire_outcome)
     scenario = env._env.scenario
     scenario.ball.state.pos[:2] = scenario.goal.state.pos[:2]
     scenario.collided[1] = True
@@ -176,6 +176,7 @@ def test_loop_order_warm_start_and_mixed_endings(make_env, monkeypatch, tmp_path
         mpc_config=mpc.MPCConfig(receding_horizon=1, action_block=2),
         scratch_env=make_env(2, max_steps=5),
         diagnostics_path=tmp_path,
+        outcome_fn=mpc.buzz_wire_outcome,
     )
     assert len(starts) == 3 and starts[0] is None
     torch.testing.assert_close(starts[1][:, 0], plan[:, 1])
@@ -287,7 +288,7 @@ def test_real_termination_inside_block_matches_oracle(make_env, cause):
     rollout = oracle_rollout(make_env(2), initial, actions)
     expected_length = 1 if cause == "goal" else 2
     assert rollout["live"][:, 0].sum(-1).tolist() == [expected_length] * 2
-    stats = mpc.EpisodeStats(env)
+    stats = mpc.EpisodeStats(env, mpc.buzz_wire_outcome)
     for action in actions[:, 0].unbind(1):
         td.set(("agents", "action"), action.reshape(2, 2, 2))
         td = env.step(td)["next"]

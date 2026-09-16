@@ -70,13 +70,12 @@ from examples.world_model.goal_planning import goal_plan_costs
 from examples.world_model.metrics import mean_interval, success_interval
 from examples.world_model.mpc import (
     action_bounds,
-    buzz_wire_outcome,
     evaluate_policy,
     goal_dimension_weight,
     goal_oracle_costs,
     MPCConfig,
     scenario_heuristic,
-    transport_outcome,
+    task_outcome,
 )
 from examples.world_model.plan_ranking import model_costs, select_anchor_states
 from examples.world_model.snapshot_restore import agent_observations, broadcast_state
@@ -336,6 +335,7 @@ def log_policy(args, manifest, label, episodes, timing):
                 "num_samples": args.num_samples,
                 "num_iters": args.num_iters,
                 "horizon": args.horizon,
+                "execute_blocks": args.execute_blocks,
             },
         },
     )
@@ -438,7 +438,18 @@ def main():
         default=None,
         help="default: LeWM's 10%% of num_samples (30 of 300)",
     )
-    parser.add_argument("--horizon", type=int, default=5)
+    parser.add_argument("--horizon", type=int, default=5, help="blocks planned")
+    parser.add_argument(
+        "--execute-blocks",
+        type=int,
+        default=1,
+        help="blocks executed per decision, of --horizon planned. Jobs up to "
+        "1233 tied this to --horizon, so at H=5 and block 5 all 25 primitive "
+        "actions ran before the next observation and a 100-step episode held "
+        "at most four decisions. One block gives feedback every five steps, "
+        "which is what a contact task needs; it also multiplies planning calls "
+        "per episode, so report episode compute alongside per-decision budget.",
+    )
     parser.add_argument("--goal-offset", type=int, default=5, help="blocks ahead")
     parser.add_argument(
         "--goal-source",
@@ -514,6 +525,7 @@ def main():
     block = manifest["action_block"]
     joint_dim = torch.as_tensor(manifest["action_low"]).numel()
     task = VmasTask[manifest["task_name"].split("/")[-1].upper()].get_from_yaml()
+    outcome_fn = task_outcome(manifest["task_name"])
     cem_config = CEMConfig(
         horizon=args.horizon,
         num_samples=args.num_samples,
@@ -522,7 +534,10 @@ def main():
         # smaller version of the same search rather than a greedier one.
         num_elites=args.num_elites or max(1, round(0.1 * args.num_samples)),
     )
-    mpc_config = MPCConfig(receding_horizon=args.horizon, action_block=block)
+    mpc_config = MPCConfig(
+        receding_horizon=args.execute_blocks, action_block=block
+    )
+    mpc_config.validate(cem_config.horizon)
 
     # Evaluation states come from the bank's test split, so no learned model has
     # trained on the states it is asked to control.
@@ -545,9 +560,7 @@ def main():
             manifest,
             cem_config,
             mpc_config,
-            transport_outcome
-            if manifest["task_name"] == "vmas/transport"
-            else buzz_wire_outcome,
+            outcome_fn,
         )
     states = chosen.numel()
     initial_state = select_anchor_states(anchors, chosen, args.device)
@@ -562,18 +575,13 @@ def main():
         "num_samples": args.num_samples,
         "num_iters": args.num_iters,
         "horizon": args.horizon,
+        "execute_blocks": args.execute_blocks,
         "goal_offset": args.goal_offset,
         "goal_source": args.goal_source,
         "goal_metric": args.goal_metric,
         "state_pool": args.state_pool,
         "references": "random,zero,heuristic,oracle,goal_oracle",
     }
-
-    outcome_fn = (
-        transport_outcome
-        if manifest["task_name"] == "vmas/transport"
-        else buzz_wire_outcome
-    )
 
     env = task.get_env_fun(states, True, 0, args.device)()
     env.reset()

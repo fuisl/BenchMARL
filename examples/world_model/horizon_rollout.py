@@ -84,21 +84,39 @@ def simulator_truth(task, snapshot, blocks, action_block, regime, seed, device):
     return torch.stack(frames, dim=1), blocked, torch.stack(valid, dim=1)
 
 
+def trained_frames(model):
+    """How many context positions ever received a prediction gradient.
+
+    `dynamics_losses` predicts from `latent[:, :-1]` over a snippet of
+    `pos_embedding.shape[1]` frames, so the last allocated position is never a
+    predictor input and its embedding is only ever decayed. A gradient probe on
+    a trained checkpoint gives nonzero norms for positions 0-4 and exactly 0.0
+    for position 5 (outputs/review_20260916/evidence.json).
+
+    Rolling through that position is what produced the h>=6 cliff first reported
+    in docs/paper/experiments/09_horizon_rollout.md: at a 6-position window
+    Transport's error jumps 0.0565 -> 0.2731 at h=6, while the same checkpoint
+    on the same actions stays at 0.0595 with the trained 5. The cliff was the
+    untrained slot, not the horizon.
+    """
+    return model.predictor.pos_embedding.shape[1] - 1
+
+
 @torch.no_grad()
 def windowed_rollout(model, latent, actions):
     """Autoregressive rollout past the trained context length.
 
-    `MultiAgentWorldModel.rollout` grows its history without bound and indexes a
-    positional embedding of exactly `frames` entries, so it raises at block
-    `frames` -- 6 here, which is why every rollout number in this project stops
-    at 5 blocks. That is a property of the architecture, not of the task.
+    `MultiAgentWorldModel.rollout` grows its history without bound and indexes
+    `pos_embedding`, so with 6 allocated positions it raises at block 7 -- but
+    block 6 already reads the untrained position, so only 5 blocks are ever
+    supported by training.
 
-    Beyond that the only honest thing a model like this can do is slide its
+    Past that the only honest thing a model like this can do is slide its
     context, which is what any deployment past the training length would do. The
-    window is re-indexed from position 0 each step, so blocks past `frames - 1`
-    are extrapolation and are marked as such wherever they are reported.
+    window is re-indexed from position 0 each step, so blocks past
+    `trained_frames` are extrapolation and are marked as such where reported.
     """
-    frames = model.predictor.pos_embedding.shape[1]
+    frames = trained_frames(model)
     history, window, outputs = latent, actions[:, :0], []
     for step in range(actions.size(1)):
         # Both windows are trimmed to the same length before the call: `predict`
@@ -154,6 +172,12 @@ def main():
               f"{truth[regime][2].shape[0]} episodes still live at block "
               f"{args.blocks}", flush=True)
 
+    # Every checkpoint in a sweep shares an architecture, so one read states the
+    # context the whole table was rolled at.
+    trained = trained_frames(
+        load_model(next(args.sweep.rglob("model.pt")), args.device)
+    )
+
     grouped = defaultdict(list)
     for config_path in sorted(args.sweep.rglob("resolved_config.yaml")):
         run = config_path.parent
@@ -169,14 +193,12 @@ def main():
 
     shown = [h for h in (1, 2, 3, 5, 8, 10, 15, 20) if h <= args.blocks]
     live = truth["correlated"][2].sum(dim=0).tolist()
-    trained = yaml.safe_load(
-        (next(args.sweep.rglob("resolved_config.yaml"))).read_text()
-    )
     print("\nepisodes still live: " + "  ".join(
         f"h={h}:{int(live[h - 1])}" for h in shown))
     header = "".join(f"{f'h={h}':>9s}" for h in shown)
     print(f"\n{manifest['task_name']} -- latent rollout error, {args.blocks} blocks "
-          f"({args.blocks * block} primitive steps)")
+          f"({args.blocks * block} primitive steps); context slides over the "
+          f"trained positions only, so h>{trained} is extrapolation")
     print(f"{'regime':12s}{'predictor':13s}{header}{'h20/h1':>9s}{'seeds':>7s}")
     print("-" * (25 + 9 * len(shown) + 16))
     for regime in ("correlated", "independent"):

@@ -16,10 +16,9 @@ from benchmarl.hydra_config import load_task_config_from_hydra
 from examples.world_model.cem import CEMConfig
 from examples.world_model.metrics import summarize
 from examples.world_model.mpc import (
-    buzz_wire_outcome,
     evaluate_policy,
     MPCConfig,
-    transport_outcome,
+    task_outcome,
 )
 from examples.world_model.snapshot_restore import snapshot_state
 from hydra.core.hydra_config import HydraConfig
@@ -55,13 +54,9 @@ def write_json(path, value):
 def run_evaluation(cfg, output: Path):
     """Use task/logging defaults without constructing a training Experiment."""
     task_name = HydraConfig.get().runtime.choices.task
-    if task_name not in ("vmas/buzz_wire", "vmas/transport"):
-        raise ValueError(
-            "Oracle evaluation supports validated Buzz Wire and Transport tasks"
-        )
-    outcome_fn = (
-        buzz_wire_outcome if task_name == "vmas/buzz_wire" else transport_outcome
-    )
+    # Raises for a task with no recorded success/failure contract rather than
+    # scoring it with another task's.
+    outcome_fn = task_outcome(task_name)
     cem = CEMConfig(**OmegaConf.to_container(cfg.cem, resolve=True))
     mpc = MPCConfig(**OmegaConf.to_container(cfg.mpc, resolve=True))
     mpc.validate(cem.horizon)

@@ -130,6 +130,10 @@ def goal_dimension_weight(task_name, obs_dim, device):
         # vel(2), on_goal(1)]
         packages = (obs_dim - 4) // 7
         velocity = [2, 3] + [4 + 7 * p + 4 + i for p in range(packages) for i in (0, 1)]
+    elif task_name == "vmas/balance":
+        # [pos(2), vel(2), pos - package(2), pos - line(2), package - goal(2),
+        # package.vel(2), line.vel(2), line.ang_vel(1), line.rot(1)]
+        velocity = [2, 3, 10, 11, 12, 13, 14]
     else:
         raise ValueError(f"No goal dimension layout recorded for {task_name}")
     weight = torch.ones(obs_dim, device=device)
@@ -157,10 +161,52 @@ def transport_outcome(env):
     return goal, torch.zeros_like(goal), distance
 
 
+def balance_outcome(env):
+    """Package on its goal is success; line or package on the floor is failure.
+
+    The scenario's ``done()`` is the union of the two, so reading it as success
+    would score every fall as a completion. ``compute_on_the_ground`` is the
+    scenario's own definition of the failure and is what ``reward`` calls each
+    step, so calling it here reads the current state rather than a stale flag.
+    """
+    scenario = env._env.scenario
+    distance = torch.linalg.vector_norm(
+        scenario.package.state.pos - scenario.package.goal.state.pos, dim=-1
+    )
+    scenario.compute_on_the_ground()
+    grounded = scenario.on_the_ground.bool()
+    reached = scenario.world.is_overlapping(scenario.package, scenario.package.goal)
+    # Failure takes precedence where both land on the same frame, as in Buzz
+    # Wire: a package that arrives on the floor has not completed the task.
+    return reached & ~grounded, grounded, distance
+
+
+TASK_OUTCOMES = {
+    "vmas/buzz_wire": buzz_wire_outcome,
+    "vmas/transport": transport_outcome,
+    "vmas/balance": balance_outcome,
+}
+
+
+def task_outcome(task_name):
+    """The (success, failure, progress) reading a task is scored by.
+
+    Every caller used to pick with `transport if ... else buzz_wire`, which gave
+    Balance Buzz Wire's reading and an AttributeError on `scenario.ball`. A task
+    with no recorded contract must fail here rather than inherit another's.
+    """
+    if task_name not in TASK_OUTCOMES:
+        raise ValueError(
+            f"No outcome contract recorded for {task_name}; "
+            f"have {', '.join(sorted(TASK_OUTCOMES))}"
+        )
+    return TASK_OUTCOMES[task_name]
+
+
 class EpisodeStats:
     """Latch first terminal outcomes; never count post-terminal rewards or goals."""
 
-    def __init__(self, env, outcome_fn=buzz_wire_outcome, goal_observation=None,
+    def __init__(self, env, outcome_fn, goal_observation=None,
                  goal_threshold=None, goal_weight=None):
         """``goal_observation`` (B,N,O) scores a goal-reaching objective.
 
@@ -315,7 +361,7 @@ def evaluate_policy(
     mpc_config: MPCConfig,
     scratch_env=None,
     diagnostics_path: Path | None = None,
-    outcome_fn=buzz_wire_outcome,
+    outcome_fn,
     plan_costs=None,
     goal_observation=None,
     goal_threshold=None,
