@@ -116,13 +116,17 @@ def fit_mlp(features, targets, strength, device, seed=0):
     return net
 
 
-def fit_probes(model, samples, rows, device, kind="linear"):
+def fit_probes(model, samples, rows, device, kind="linear", shaped=None):
     """Fit both heads on `rows`; choose the regularisation on a held-out quarter.
 
     Returns (agent_weights, object_weights, validation errors), all in the raw
     physical units the simulator stores.
     """
-    observation = samples["observation"][rows, 0]
+    observation = (
+        samples["observation"][rows, 0]
+        if shaped is None
+        else shaped(samples, rows, 0, False)
+    )
     agent_target = samples["agent_state"][rows, 0][..., MOTION].double()
     object_target = samples["package_state"][rows, 0][..., MOTION].double()
     per_agent, global_latent = probe_features(model, observation, device)
@@ -193,6 +197,36 @@ def true_physical(source, index, step, witnesses):
         [agents.reshape(agents.shape[0], -1), shared.reshape(shared.shape[0], -1)],
         dim=1,
     ).double()
+
+
+def state_input_frames(source, index, step, state_input, history_frames, following):
+    """The observation a Stage 2 model expects, at `step`, for rows `index`.
+
+    Mirrors `OfflineSequences._apply_state_input` exactly. Applied to BOTH
+    counterfactual branches from each branch's own stored frames, so the
+    intervention is the only thing that differs between them.
+
+    `following` selects `next_observation` over `observation`, which is what the
+    dynamics target and the probe floor read.
+    """
+    key = "next_observation" if following else "observation"
+    base = source[key][index][:, step]  # (B, N, D)
+    if state_input == "observation":
+        return base
+    if state_input == "physical":
+        # One shared world state, given identically to every agent.
+        entity_key = "next_package_state" if following else "package_state"
+        entities = source[entity_key][index][:, step]
+        flat = entities.reshape(entities.shape[0], 1, -1)
+        return torch.cat([base, flat.expand(-1, base.shape[1], -1)], dim=-1)
+    # history: frame t carries [t, t-1, ..., t-k+1], clamped at the snippet
+    # start because an anchor's earlier frames are not stored.
+    offsets = torch.arange(history_frames)
+    past = source["observation"][index][:, (step - offsets).clamp_min(0)]
+    stacked = past.permute(0, 2, 1, 3).reshape(base.shape[0], base.shape[1], -1)
+    if not following:
+        return stacked
+    return torch.cat([base, stacked[..., : -base.shape[-1]]], dim=-1)
 
 
 def main():
@@ -269,10 +303,8 @@ def main():
     scale = scale.clamp_min(1e-6)
 
     truth_id = true_physical(samples, ids, steps, witnesses)
-    truth_cf = true_physical(counterfactual, torch.arange(ids.numel()), steps, witnesses)
-    # Observations of those same two states, for the probe-floor read below.
-    logged_next = samples["next_observation"][ids, steps - 1]
-    reference_next = counterfactual["next_observation"][:, steps - 1]
+    every = torch.arange(ids.numel())
+    truth_cf = true_physical(counterfactual, every, steps, witnesses)
     true_delta = (truth_cf - truth_id) / scale
     informative = active & (true_delta.square().sum(dim=1) > args.min_response)
     print(
@@ -287,19 +319,32 @@ def main():
             continue
         config = yaml.safe_load((directory / "resolved_config.yaml").read_text())
         # Stage 2's `history` and `physical` conditions rewrite the observation
-        # before training, so their encoders do not accept the bank's raw
-        # frames. Scoring them here needs that transform applied identically to
-        # both branches; until it is, say so rather than crash on a shape.
+        # before training, so each checkpoint is fed the frames its own encoder
+        # was fitted on. Y, the scale and the anchors are untouched by this, so
+        # all three input widths are still scored against the SAME physical
+        # target -- which is the whole point of the comparison.
         state_input = config["data"].get("state_input", "observation")
-        if state_input != "observation":
-            raise ValueError(
-                f"{directory} trained on state_input={state_input}; "
-                "physical_response only handles raw observations so far"
-            )
-        key = (config["data"]["regime"], config["model"]["kind"], config["seed"])
+        frames = config["data"].get("history_frames", 3)
+        shaped = lambda src, idx, stp, follow: state_input_frames(  # noqa: E731
+            src, idx, stp, state_input, frames, follow
+        )
+        start_frames = shaped(samples, ids, 0, False)
+        logged_frames = shaped(samples, ids, steps - 1, True)
+        reference_frames = shaped(counterfactual, every, steps - 1, True)
+        # state_input must be part of the key: Stage 2 trains the same
+        # regime/kind/seed under three input conditions, and collapsing them
+        # silently keeps only whichever directory sorted last.
+        key = (
+            config["data"]["regime"],
+            config["model"]["kind"],
+            config["seed"],
+            state_input,
+        )
         model = load_model(checkpoint, args.device)
         model.eval()
-        probes = fit_probes(model, samples, train_rows, args.device, args.probe)
+        probes = fit_probes(
+            model, samples, train_rows, args.device, args.probe, shaped
+        )
 
         # The probe's own ceiling, measured on the SAME quantity as the models:
         # encode both true branches and read the response straight off them. A
@@ -307,14 +352,14 @@ def main():
         # probe's absolute state error against a response magnitude instead
         # would be two different scales.
         floor_delta = (
-            readout(probes, encoded(model, reference_next, args.device), witnesses)
-            - readout(probes, encoded(model, logged_next, args.device), witnesses)
+            readout(probes, encoded(model, reference_frames, args.device), witnesses)
+            - readout(probes, encoded(model, logged_frames, args.device), witnesses)
         ) / scale
         probe_floor = (floor_delta - true_delta).square().sum(dim=1)
 
         predicted = {
-            "id": predicted_latent(model, observation, logged, args.device),
-            "cf": predicted_latent(model, observation, intervened, args.device),
+            "id": predicted_latent(model, start_frames, logged, args.device),
+            "cf": predicted_latent(model, start_frames, intervened, args.device),
         }
         y_id = readout(probes, predicted["id"], witnesses)
         y_cf = readout(probes, predicted["cf"], witnesses)
@@ -328,7 +373,7 @@ def main():
         )
         results[key] = {
             "reconstruction": (
-                readout(probes, encoded(model, logged_next, args.device), witnesses)
+                readout(probes, encoded(model, logged_frames, args.device), witnesses)
                 - truth_id
             ).norm(dim=1),
             "residual": residual,
@@ -339,9 +384,11 @@ def main():
             "probe_strengths": {n: probes[n][1] for n in probes},
         }
 
-    regimes = sorted({r for r, _, _ in results})
-    seeds = sorted({s for _, _, s in results})
-    print(f"scored {len(results)} checkpoints over {len(seeds)} seeds\n")
+    regimes = sorted({r for r, _, _, _ in results})
+    seeds = sorted({s for _, _, s, _ in results})
+    conditions = sorted({i for _, _, _, i in results})
+    print(f"scored {len(results)} checkpoints over {len(seeds)} seeds")
+    print(f"input conditions: {', '.join(conditions)}\n")
 
     mask = informative
     # Whether the instrument can resolve the thing at all. The response is a
@@ -349,6 +396,20 @@ def main():
     # reconstruction error is the same size as the response, no comparison
     # built on that probe means anything, however many seeds it averages.
     print("=== CAN THE PROBE RESOLVE THE RESPONSE? ===")
+    for condition in conditions:
+        rec = mean(
+            [
+                float(v["reconstruction"][mask].mean())
+                for (_, _, _, i), v in results.items()
+                if i == condition
+            ]
+        )
+        size = float((true_delta[mask] * scale).norm(dim=1).mean())
+        verdict = "  -- the probe cannot resolve it" if rec > size else ""
+        print(
+            f"  {condition:12s} |true response| {size:.5f}   "
+            f"|probe error| {rec:.5f}   {rec / size:.2f}x{verdict}"
+        )
     reconstruction = mean(
         [float(v["reconstruction"][mask].mean()) for v in results.values()]
     )
@@ -360,70 +421,73 @@ def main():
         + ("  -- the probe cannot resolve it" if reconstruction > response_size else "")
     )
 
-    print("\n=== PHYSICAL RESPONSE RATIO, common coordinates ===")
-    print("sum||predicted dY - true dY||^2 / sum||true dY||^2, both scaled by the")
-    print("same training std. 1.0 = no better than predicting no response.")
-    print("`probe floor` is the same ratio computed from the TRUE encodings of")
-    print("both branches: the readout's own error, which bounds what follows.\n")
-    header = (
-        f"{'regime':12s} {'kind':12s} {'ratio':>9s} {'probe floor':>13s} "
-        f"{'|abs err|':>11s} {'cos(dY)':>9s}"
-    )
-    print(header)
-    print("-" * len(header))
-    for regime in regimes:
-        for kind in BASELINES:
-            rows = [v for (r, k, _), v in results.items() if (r, k) == (regime, kind)]
-            if not rows:
-                continue
-            ratio = mean(
-                [
-                    float(v["residual"][mask].sum() / v["denominator"][mask].sum())
-                    for v in rows
-                ]
-            )
-            floor = mean(
-                [
-                    float(v["probe_floor"][mask].sum() / v["denominator"][mask].sum())
-                    for v in rows
-                ]
-            )
-            absolute = mean([float(v["absolute"][mask].mean()) for v in rows])
-            direction = mean([float(v["cosine"][mask].mean()) for v in rows])
-            print(
-                f"{regime:12s} {kind:12s} {ratio:9.4f} {floor:13.4f} "
-                f"{absolute:11.5f} {direction:9.4f}"
-            )
+    for condition in conditions:
+        print(f"\n########## input condition: {condition} ##########")
+        print("\n=== PHYSICAL RESPONSE RATIO, common coordinates ===")
+        print("sum||predicted dY - true dY||^2 / sum||true dY||^2, both scaled by the")
+        print("same training std. 1.0 = no better than predicting no response.")
+        print("`probe floor` is the same ratio computed from the TRUE encodings of")
+        print("both branches: the readout's own error, which bounds what follows.\n")
+        header = (
+            f"{'regime':12s} {'kind':12s} {'ratio':>9s} {'probe floor':>13s} "
+            f"{'|abs err|':>11s} {'cos(dY)':>9s}"
+        )
+        print(header)
+        print("-" * len(header))
+        for regime in regimes:
+            for kind in BASELINES:
+                rows = [v for (r, k, _, i), v in results.items()
+                        if (r, k) == (regime, kind) and i == condition]
+                if not rows:
+                    continue
+                ratio = mean(
+                    [
+                        float(v["residual"][mask].sum() / v["denominator"][mask].sum())
+                        for v in rows
+                    ]
+                )
+                floor = mean(
+                    [
+                        float(v["probe_floor"][mask].sum() / v["denominator"][mask].sum())
+                        for v in rows
+                    ]
+                )
+                absolute = mean([float(v["absolute"][mask].mean()) for v in rows])
+                direction = mean([float(v["cosine"][mask].mean()) for v in rows])
+                print(
+                    f"{regime:12s} {kind:12s} {ratio:9.4f} {floor:13.4f} "
+                    f"{absolute:11.5f} {direction:9.4f}"
+                )
 
-    print("\npaired ratio vs independent (negative = captured more of the response):")
-    paired = f"{'regime':12s} {'kind':12s} {'mean':>10s} {'95% CI':>24s} {'seeds':>8s}"
-    print(paired)
-    print("-" * len(paired))
-    for regime in regimes:
-        for kind in ("joint", "relational"):
-            pairs = []
-            for seed in seeds:
-                base = results.get((regime, "independent", seed))
-                other = results.get((regime, kind, seed))
-                if base and other:
-                    pairs.append(
-                        float(
-                            other["residual"][mask].sum()
-                            / other["denominator"][mask].sum()
+        print("\npaired ratio vs independent (negative = captured more of the response):")
+        paired = f"{'regime':12s} {'kind':12s} {'mean':>10s} {'95% CI':>24s} {'seeds':>8s}"
+        print(paired)
+        print("-" * len(paired))
+        for regime in regimes:
+            for kind in ("joint", "relational"):
+                pairs = []
+                for seed in seeds:
+                    base = results.get((regime, "independent", seed, condition))
+                    other = results.get((regime, kind, seed, condition))
+                    if base and other:
+                        pairs.append(
+                            float(
+                                other["residual"][mask].sum()
+                                / other["denominator"][mask].sum()
+                            )
+                            - float(
+                                base["residual"][mask].sum()
+                                / base["denominator"][mask].sum()
+                            )
                         )
-                        - float(
-                            base["residual"][mask].sum()
-                            / base["denominator"][mask].sum()
-                        )
-                    )
-            if not pairs:
-                continue
-            low, high = bootstrap_interval(pairs, mean)
-            print(
-                f"{regime:12s} {kind:12s} {mean(pairs):+10.4f} "
-                f"{f'[{low:+.4f}, {high:+.4f}]':>24s} "
-                f"{f'{sum(1 for v in pairs if v < 0)}/{len(pairs)}':>8s}"
-            )
+                if not pairs:
+                    continue
+                low, high = bootstrap_interval(pairs, mean)
+                print(
+                    f"{regime:12s} {kind:12s} {mean(pairs):+10.4f} "
+                    f"{f'[{low:+.4f}, {high:+.4f}]':>24s} "
+                    f"{f'{sum(1 for v in pairs if v < 0)}/{len(pairs)}':>8s}"
+                )
 
     print(
         "\n"
