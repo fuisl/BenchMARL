@@ -11,8 +11,10 @@ gets written, [`../audit_2026-09-15.md`](../audit_2026-09-15.md) for what was
 wrong with the measurements, then the notes below.
 
 **Follow-up review:** [`../review_2026-09-16.md`](../review_2026-09-16.md)
-documents the reproduced Balance source-policy and horizon-context defects,
-the remaining measurement limits, and the recommended control experiments.
+reproduced three defects and set the gate structure the work now follows. Its
+Gate 0 is complete (commit `43432b1`, job 1235); §§3, 5–8 of the status report
+are rewritten or narrowed against it. Read it before any pre-1235 horizon number
+or any description of job 1233's bank as competent Balance behaviour.
 
 Every `outputs/<name>_<job>/` directory carries `commit.txt`, `git_status.txt`,
 `working_tree.patch` and a `source/` copy of `examples/world_model/*.py` as they
@@ -39,8 +41,9 @@ without trusting the current tree.
 | 1229 | `goal_repair_1229/` | Reference-controller goals. **Cancelled**: goal oracle collided 90% and finished worse than random | [`10_goal_objective.md`](10_goal_objective.md) §2 |
 | 1230 | `goal_gate_position_1230/` | Gate: velocity dropped from the goal distance. **Rejected** | [`10_goal_objective.md`](10_goal_objective.md) §3 |
 | 1231 | `goal_gate_success_1231/` | Gate: goals from solved episodes only. **Partial pass** | [`10_goal_objective.md`](10_goal_objective.md) §4 |
-| 1233 | `balance_1233/` | Balance bank, 48-run grid, open-loop evaluators. 48/48, no OOM | **missing** |
-| — | — | Rollout error against horizon, out to 20 blocks | [`09_horizon_rollout.md`](09_horizon_rollout.md) |
+| 1233 | `balance_1233/` | Balance bank, 48-run grid, open-loop evaluators. 48/48, no OOM. **Heuristic branch is Transport's policy** — see `balance_1233/DEFECT.md` | **missing** |
+| 1235 | `horizon_rescore_1235/` | Horizon curves re-derived at the trained context length, 4 checkpoint sets. Withdraws the h=6 cliff and the ordering reversal | [`09_horizon_rollout.md`](09_horizon_rollout.md) |
+| — | `review_20260916/` | The review's own CPU diagnostics: policy identity, positional gradients, both rollout windows | [`../review_2026-09-16.md`](../review_2026-09-16.md) |
 
 Failed and cancelled jobs are listed because the audit requires failed-run
 evidence to be retained (coding rule 12). Jobs 1206–1215, 1219–1220, 1225 and
@@ -63,7 +66,7 @@ their directories remain on disk.
 | `06_wheel_sweep.md` | Wheel |
 | `07_reporting.md` | `report.py`, marl-eval schema |
 | `08_stage1_rescoring.md` | Stage 1 salvage, job 1217 |
-| `09_horizon_rollout.md` | Rollout error vs horizon; the 6-frame context limit |
+| `09_horizon_rollout.md` | Rollout error vs horizon (**rewritten at the corrected context, job 1235**) |
 | `10_goal_objective.md` | Why the goal objective measured nothing, and the one design that partly works |
 
 Two notes share the number `02` and three share `05`. They are not renumbered
