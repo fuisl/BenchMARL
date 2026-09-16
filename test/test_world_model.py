@@ -167,7 +167,7 @@ def test_loop_order_warm_start_and_mixed_endings(make_env, monkeypatch, tmp_path
         )
 
     monkeypatch.setattr(mpc, "cem_plan", planner)
-    rows, timing = mpc.evaluate_policy(
+    rows, timing, _terminal = mpc.evaluate_policy(
         env,
         initial,
         policy="mpc",

@@ -41,11 +41,23 @@ there and ``goal``, needing no readout, does not. That is a real prediction this
 run can falsify.
 
 Goal semantics follow LeWM rather than the task: the goal is an *achieved*
-observation, reached by rolling a random plan from the same state, so it is
-reachable by construction. ``goal`` therefore measures goal-reaching, not task
-success, and its success column is distance-thresholded rather than the
-scenario's ``done()``. Only ``reward`` and ``oracle`` are comparable on task
-success; ``goal`` belongs against ``goal_oracle`` and ``random``.
+observation, reached by rolling a plan from the same state, so it is reachable by
+construction. ``goal`` therefore measures goal-reaching, not task success, and
+its success column is distance-thresholded rather than the scenario's ``done()``.
+Only ``reward``, ``heuristic`` and ``oracle`` are comparable on task success;
+``goal`` belongs against ``goal_oracle`` and ``random``.
+
+Which plan supplies that goal decides whether any of it means anything. Taking
+candidate 0 -- an arbitrary random plan, LeWM's own convention -- produces a goal
+the goal oracle reaches in 20/20 episodes on both tasks while ending no closer to
+the task than random behaviour does (jobs 1218/1221/1226; 0.8993 against 0.8988
+on Transport, 1.0937 against 1.0852 on Buzz Wire). So ``--goal-source task``
+selects the candidate endpoint that gets furthest on the task's own distance
+instead, which leaves reachability untouched and makes the goal worth reaching.
+``--goal-source arbitrary`` restores the old behaviour for reproduction only.
+Every table must therefore carry the task distance beside the goal distance:
+without it, a planner that perfectly solves a meaningless goal reads as a
+success.
 """
 
 from pathlib import Path
@@ -66,8 +78,10 @@ from examples.world_model.mpc import (
     transport_outcome,
 )
 from examples.world_model.plan_ranking import model_costs, select_anchor_states
+from examples.world_model.snapshot_restore import agent_observations, broadcast_state
 from examples.world_model.train import MARL_EVAL_FILE, MODEL_NAME
 from examples.world_model.readout_diagnostic import simulate
+from tensordict import TensorDict
 
 
 def reward_costs(model, action_block, device):
@@ -127,6 +141,65 @@ def achieved_goals(scratch_env, snapshot, candidates, action_block):
     # is then differenced against live observations, so hand it back on the
     # environment's device rather than leaving that to every caller.
     return endpoint[:, 0].to(scratch_env.device)
+
+
+@torch.no_grad()
+def reference_goals(
+    env, initial_state, policy, *, generator, cem_config, mpc_config, scratch_env,
+    outcome_fn,
+):
+    """Goal observation per evaluation state: (B,N,O) -- where a competent
+    controller ends up, having started from the same state with the same budget.
+
+    A goal must be *reachable*, or the planning question is ill posed, and it
+    must carry *task content*, or reaching it means nothing. LeWM's convention --
+    the endpoint of an arbitrary random plan, `achieved_goals` -- satisfies only
+    the first, and jobs 1218/1221/1226 measured what that costs: the goal oracle
+    reaches such a goal in 20/20 episodes on both tasks and still ends at exactly
+    the task distance random behaviour reaches (0.8993 against 0.8988 on
+    Transport, 1.0937 against 1.0852 on Buzz Wire). Every "fraction of the oracle
+    gap closed" measured against it is a fraction of nothing.
+
+    Choosing the best of the random bank by task distance does not repair it:
+    over 300 candidates and 25 steps the best endpoint improves task distance by
+    0.0012 on Transport and 0.045 on Buzz Wire, because random action sequences
+    make almost no task progress at all. The goal has to come from something that
+    can actually do the task.
+
+    So it comes from the strongest controller the task has: the scenario's own
+    hand-written policy where one exists, and otherwise the reward oracle, which
+    on Buzz Wire moves the ball from 1.095 to 0.557 and succeeds 5/20. The
+    endpoint is latched at each episode's own terminal frame, so a slot that
+    finished early contributes the state it finished in.
+    """
+    episodes, _timing, terminal = evaluate_policy(
+        env,
+        initial_state,
+        policy=policy,
+        generator=generator,
+        cem_config=cem_config,
+        mpc_config=mpc_config,
+        scratch_env=scratch_env,
+        outcome_fn=outcome_fn,
+    )
+    distance = np.mean([row["final_goal_distance"] for row in episodes])
+    reached = sum(row["success"] for row in episodes)
+    print(
+        f"  goals from {'the scenario heuristic' if callable(policy) else 'the reward oracle'}: "
+        f"task distance {distance:.4f}, {reached}/{len(episodes)} native successes",
+        flush=True,
+    )
+    return terminal
+
+
+def zero_policy(env):
+    """Do nothing. The baseline the audit's contract asks for and the project
+    never ran: a goal that a motionless agent already satisfies is not a goal."""
+    n_agents = len(env._env.world.agents)
+    action_dim = env.full_action_spec_unbatched["agents", "action"].shape[-1]
+    return torch.zeros(
+        env.batch_size[0], 1, n_agents * action_dim, device=env.device
+    )
 
 
 def log_policy(args, manifest, label, episodes, timing):
@@ -301,6 +374,15 @@ def main():
     parser.add_argument("--horizon", type=int, default=5)
     parser.add_argument("--goal-offset", type=int, default=5, help="blocks ahead")
     parser.add_argument(
+        "--goal-source",
+        choices=("reference", "arbitrary"),
+        default="reference",
+        help="where the goal comes from. `reference`: where the strongest "
+        "controller the task has actually ends up. `arbitrary`: the endpoint of "
+        "a random plan, LeWM's own convention and what jobs 1218-1226 used -- "
+        "reachable but task-orthogonal, kept only to reproduce them.",
+    )
+    parser.add_argument(
         "--goal-threshold",
         type=float,
         default=0.05,
@@ -379,11 +461,22 @@ def main():
         "num_iters": args.num_iters,
         "horizon": args.horizon,
         "goal_offset": args.goal_offset,
-        "references": "random,heuristic,oracle,goal_oracle",
+        "goal_source": args.goal_source,
+        "references": "random,zero,heuristic,oracle,goal_oracle",
     }
+
+    outcome_fn = (
+        transport_outcome
+        if manifest["task_name"] == "vmas/transport"
+        else buzz_wire_outcome
+    )
 
     env = task.get_env_fun(states, True, 0, args.device)()
     env.reset()
+    # Resolved here rather than beside the reference runs because the goal
+    # source needs it: where a scenario ships a hand-written policy, that is the
+    # strongest controller the task has.
+    heuristic = scenario_heuristic(manifest["task_name"], action_bounds(env)[1])
 
     # The scratch simulator exists only for the oracle and for generating goals:
     # states x num_samples environments, which is the bulk of a process's
@@ -433,21 +526,34 @@ def main():
             reference_rows = stored["rows"]
             print(f"loaded reference cache for {states} states", flush=True)
         else:
-            goal_observation = achieved_goals(
-                scratch, initial_state, goal_plans, block
-            )
+            if args.goal_source == "arbitrary":
+                goal_observation = achieved_goals(
+                    scratch, initial_state, goal_plans, block
+                )
+            else:
+                # The heuristic where the scenario ships one, the reward oracle
+                # otherwise. On Transport the heuristic is the only policy that
+                # has ever scored a native success; on Buzz Wire the reward
+                # oracle is, at 5/20.
+                goal_observation = reference_goals(
+                    env,
+                    initial_state,
+                    heuristic or "mpc",
+                    generator=torch.Generator(device=args.device).manual_seed(
+                        args.seed
+                    ),
+                    cem_config=cem_config,
+                    mpc_config=mpc_config,
+                    scratch_env=scratch,
+                    outcome_fn=outcome_fn,
+                )
             reference_rows = None
 
-        outcome_fn = (
-            transport_outcome
-            if manifest["task_name"] == "vmas/transport"
-            else buzz_wire_outcome
-        )
         rows, timings = [], {}
 
         def run(label, policy, plan_costs=None):
             planner = torch.Generator(device=args.device).manual_seed(args.seed)
-            episodes, timing = evaluate_policy(
+            episodes, timing, terminal = evaluate_policy(
                 env,
                 initial_state,
                 policy=policy,
@@ -491,7 +597,10 @@ def main():
             print(f"  reused {len(reference_rows)} cached reference episodes")
         elif not args.skip_references:
             run("random", "random")
-            heuristic = scenario_heuristic(manifest["task_name"], action_bounds(env)[1])
+            # A goal a motionless agent already satisfies is not a goal. The
+            # audit's contract asks for this baseline and the project has never
+            # run it.
+            run("zero", zero_policy)
             if heuristic is not None:
                 run("heuristic", heuristic)
             else:
@@ -558,13 +667,24 @@ def main():
 
     summary = persist(args, manifest, states, chosen, cem_config, rows, timings)
 
-    print(f"\n{'policy':34s}{'success':>12s}{'return':>10s}{'coll':>7s}{'timeout':>9s}")
-    print("-" * 72)
+    # `task_dist` is the scenario's own distance and is the only column
+    # comparable across every row: a goal planner ignores task reward and the
+    # heuristic ignores the goal, but both move the task or they do not. Reading
+    # the goal column alone is what let a task-orthogonal goal look like control
+    # for three jobs (1218/1221/1226).
+    print(
+        f"\n{'policy':34s}{'success':>12s}{'return':>10s}{'task_dist':>11s}"
+        f"{'goal_dist':>11s}{'coll':>7s}{'timeout':>9s}"
+    )
+    print("-" * 94)
     for policy, values in summary.items():
         success = values["success"]
+        goal = values.get("goal_observation_distance")
+        goal_column = f"{goal['mean']:.4f}" if goal else "--"
         print(
             f"{policy:34s}{success['count']:>4d}/{values['episodes']:<3d}"
             f"{success['rate']:>5.0%}{values['return']['mean']:>10.3f}"
+            f"{values['final_goal_distance']['mean']:>11.4f}{goal_column:>11s}"
             f"{values['collision_rate']:>7.2f}{values['timeout_rate']:>9.2f}"
         )
 

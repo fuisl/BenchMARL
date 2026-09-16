@@ -148,6 +148,11 @@ class EpisodeStats:
         self.collision = torch.zeros_like(self.alive)
         self.timeout = torch.zeros_like(self.alive)
         self.final_distance = torch.zeros_like(env._env.steps)
+        # The observation at each episode's own terminal frame. A goal drawn
+        # from a competent policy needs exactly this, and reading it after the
+        # loop would take whichever state a finished slot drifted to while its
+        # neighbours kept running.
+        self.terminal_observation = agent_observations(env)
         self.goal_distance = torch.full_like(env._env.steps, float("nan"))
         self.goal_reached = torch.zeros_like(self.alive)
 
@@ -170,6 +175,11 @@ class EpisodeStats:
         self.collision |= ended & collided
         self.timeout |= ended & ~collided & ~goal & timed_out
         self.final_distance = torch.where(ended, distance, self.final_distance)
+        self.terminal_observation = torch.where(
+            self.alive.reshape(-1, 1, 1),
+            agent_observations(env),
+            self.terminal_observation,
+        )
         if self.goal_observation is not None:
             # Latched at the terminal frame, and refreshed while still running
             # so an episode that never terminates is scored at its last state.
@@ -403,4 +413,4 @@ def evaluate_policy(
     timing = {"seconds": perf_counter() - start, "decisions": decisions}
     if diagnostics_path is not None:
         torch.save(trajectory, diagnostics_path / f"{policy}_trajectory.pt")
-    return stats.rows(policy, n_agents), timing
+    return stats.rows(policy, n_agents), timing, stats.terminal_observation

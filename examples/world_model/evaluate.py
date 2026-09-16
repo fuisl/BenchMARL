@@ -157,7 +157,7 @@ def run_evaluation(cfg, output: Path):
         rows, timings = [], {}
         # Full-budget MPC runs first; random restores the identical saved states.
         for policy, seed in (("mpc", cfg.seed), ("random", cfg.evaluation.random_seed)):
-            episodes, timing = evaluate_policy(
+            episodes, timing, _terminal = evaluate_policy(
                 env,
                 bank["snapshot"],
                 policy=policy,

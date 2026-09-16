@@ -1,0 +1,29 @@
+# @package _global_
+# The headline Buzz Wire grid at the regulariser weight job 1224 selected.
+#
+# Every result in the project so far used LeWM's default sigreg weight, 0.09.
+# Job 1224 rescored the six width/regularisation settings from job 1201 on a
+# shared physical target and found that default is suppressing the effect the
+# paper is about: at dim 192, dropping to 0.009 takes the relational model from
+# 0.731x to 0.612x intervention response -- from 27% of the cross-agent effect
+# captured to 39% -- while `joint` moves 0.766x to 0.762x. The regulariser
+# penalises the relational model specifically, and it also lowers latent rollout
+# error for all three.
+#
+# So this is the baseline grid re-run at 0.009, with nothing else changed, to
+# make the selected setting the one the headline numbers are reported at rather
+# than a footnote against a worse default. Eight seeds, both regimes, all three
+# predictors; dim stays at the 192 default, which is the only width at which
+# `joint` captures anything at all.
+defaults:
+  - /world_model
+  - _self_
+
+train:
+  sigreg_weight: 0.009
+
+hydra:
+  sweeper:
+    params:
+      model.kind: independent,joint,relational
+      data.regime: correlated,independent

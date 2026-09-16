@@ -60,7 +60,7 @@ def run(env, scratch, initial, plan_costs=None):
         mpc_config=MPC,
         scratch_env=scratch,
         plan_costs=plan_costs,
-    )
+    )[:2]
 
 
 def test_explicit_oracle_cost_matches_the_default_path():
