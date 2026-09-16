@@ -1,0 +1,32 @@
+# @package _global_
+# Balance, matched to Transport job 1194, Buzz Wire job 1196 and Wheel job 1205:
+# 48 runs, nothing varied but the predictor, the data regime and the seed.
+#
+# Why Balance joins the suite. Every control result so far is bounded by a task
+# property rather than by the world model. Buzz Wire's agents never observe the
+# ball or the wire, so an observation-space goal cannot express the task and
+# cannot see the failure mode -- measured in jobs 1229/1230/1231, where a planner
+# with true dynamics chasing a real task goal still collided 85% of the time.
+# Transport is uncontrollable from its evaluation anchors: its own heuristic
+# closes 0.032 of the starting 0.9006 in a full episode.
+#
+# Balance has neither defect. The package position, its offset to the goal, its
+# velocity and the line's state are all in the agent observation, so the task is
+# expressible as a goal; and the shipped heuristic scores +43.44 against random's
+# -22.09 and zero-action's -5.75, so a competent reference exists to generate
+# goals from and to bound results against. Four agents jointly balancing one
+# package keeps the physical coupling that makes the relational question worth
+# asking.
+defaults:
+  - /world_model
+  - _self_
+
+wandb:
+  group: m4-balance-baselines
+
+hydra:
+  sweeper:
+    params:
+      model.kind: independent,joint,relational
+      data.regime: correlated,independent
+      seed: 4100,4101,4102,4103,4104,4105,4106,4107
