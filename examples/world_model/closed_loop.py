@@ -502,16 +502,23 @@ def main():
         "true-simulator reference, so a train root leaks nothing.",
     )
     parser.add_argument(
-        "--oracles",
-        choices=("both", "reward", "goal", "none"),
+        "--objectives",
+        choices=("both", "reward", "goal"),
         default="both",
-        help="which true-simulator planners to score. `reward` optimises the "
-        "native task reward; `goal` optimises observation-space distance to a "
-        "goal. They answer different questions and each costs a full CEM "
-        "search at every decision, so a run that needs only one should say so: "
-        "one Balance decision at 300 samples and 30 iterations measured 132s "
-        "for 8 states, which is hours per cadence. Replaces --skip-oracle, "
-        "which could only turn both off at once.",
+        help="which cost functions are scored, for the true-simulator "
+        "references AND for every checkpoint. `reward` optimises the native "
+        "task reward; `goal` optimises observation-space distance to a goal. "
+        "Each costs a full CEM search at every decision, so scoring both "
+        "doubles a sweep. Job 1237 measured the goal objective to be worse "
+        "than doing nothing on Balance even with true dynamics, so a run "
+        "asking about control should usually say `reward`.",
+    )
+    parser.add_argument(
+        "--skip-oracle",
+        action="store_true",
+        help="skip the true-simulator planners but keep random/zero/heuristic. "
+        "Orthogonal to --objectives: this is about cost, that is about which "
+        "question is being asked.",
     )
     parser.add_argument("--project", default="counterfactual-wm")
     parser.add_argument("--entity", default="cair-traffic")
@@ -614,13 +621,18 @@ def main():
         "goal_metric": args.goal_metric,
         "state_pool": args.state_pool,
         "roots_split": args.roots_split,
-        "oracles": args.oracles,
-        "references": "random,zero,heuristic" + {
-            "both": ",oracle,goal_oracle",
-            "reward": ",oracle",
-            "goal": ",goal_oracle",
-            "none": "",
-        }[args.oracles],
+        "objectives": args.objectives,
+        "skip_oracle": args.skip_oracle,
+        "references": "random,zero,heuristic"
+        + (
+            ""
+            if args.skip_oracle
+            else {
+                "both": ",oracle,goal_oracle",
+                "reward": ",oracle",
+                "goal": ",goal_oracle",
+            }[args.objectives]
+        ),
     }
 
     env = task.get_env_fun(states, True, 0, args.device)()
@@ -773,9 +785,9 @@ def main():
                     "random is the only non-planning reference",
                     flush=True,
                 )
-            if args.oracles in ("both", "reward"):
+            if not args.skip_oracle and args.objectives in ("both", "reward"):
                 run("oracle", "mpc")
-            if args.oracles in ("both", "goal"):
+            if not args.skip_oracle and args.objectives in ("both", "goal"):
                 run(
                     "goal_oracle",
                     "mpc",
@@ -819,12 +831,14 @@ def main():
             )
             model = load_model(directory / "model.pt", args.device)
             tag = f"{kind}|{regime}|{seed}"
-            run(f"reward|{tag}", "mpc", reward_costs(model, block, args.device))
-            run(
-                f"goal|{tag}",
-                "mpc",
-                goal_costs(model, goal_observation, block, args.device),
-            )
+            if args.objectives in ("both", "reward"):
+                run(f"reward|{tag}", "mpc", reward_costs(model, block, args.device))
+            if args.objectives in ("both", "goal"):
+                run(
+                    f"goal|{tag}",
+                    "mpc",
+                    goal_costs(model, goal_observation, block, args.device),
+                )
     finally:
         env.close()
         if scratch is not None:

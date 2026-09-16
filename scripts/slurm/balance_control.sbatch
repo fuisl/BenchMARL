@@ -24,7 +24,7 @@
 #    leaves the 16 test roots frozen for the final comparison; nothing here is
 #    learned, so a train root leaks nothing.
 #
-# Objective is the native task reward (--oracles reward). The observation-space
+# Objective is the native task reward (--objectives reward). The observation-space
 # goal is a separate question and a separate run: the review asks for the native
 # objective first, and scoring both would double a multi-hour job.
 #
@@ -97,7 +97,7 @@ cadence() {
         --states "$roots" --roots-split train \
         --horizon 5 --execute-blocks "$blocks" \
         --num-samples 300 --num-iters 30 \
-        --oracles reward --max-runs 0 \
+        --objectives reward --max-runs 0 \
         --output "$output/execute${blocks}.json" \
         2>&1 | tee "$output/execute${blocks}.txt"
 }
