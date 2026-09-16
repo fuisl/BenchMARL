@@ -24,16 +24,17 @@ without trusting the current tree.
 | 1205 | `wheel_1205/` | Wheel bank and baselines | `06_wheel_sweep.md` |
 | 1216 | `closed_loop_1216/` | First full closed-loop run | `05_closed_loop_control.md` |
 | 1217 | `stage1_refit_1217/` | Readout refit on frozen dynamics; the terminal-mask repair | `08_stage1_rescoring.md` |
-| 1218 | `closed_loop_sweep_1218/` | Closed loop, 4 seeds; 3 Transport shards lost to OOM | **missing** |
-| 1221 | `goal_ceiling_1221/` | Goal oracle; Transport seeds 4100/4102/4103. `transport_seed4101.json` is **partial (7 of 15 policies)** — do not read | **missing** |
+| 1218 | `closed_loop_sweep_1218/` | Closed loop, 4 seeds; 3 Transport shards lost to OOM | partly [`10_goal_objective.md`](10_goal_objective.md) §1; full note **missing** |
+| 1221 | `goal_ceiling_1221/` | Goal oracle; Transport seeds 4100/4102/4103. `transport_seed4101.json` is **partial (7 of 15 policies)** — do not read | partly [`10_goal_objective.md`](10_goal_objective.md) §1; full note **missing** |
 | 1222 | `heuristic_ref_1222/` | Full-budget references incl. the Transport heuristic | **missing** |
 | 1223 | `state_input_1223/` | Stage 2: observation / history / physical × 3 predictors × 8 seeds, 144 runs | **missing** |
 | 1224 | `c7_rescore_1224/` | C7 re-derived on every checkpoint with the repaired evaluator (F6) | **missing** |
 | 1226 | `closed_loop_recover_1226/` | Transport seed 4101, recovered sequentially | **missing** |
 | 1228 | `sigreg_selected_1228/` | Headline grid retrained at the selected regulariser weight, 48 runs + C7 | **missing** |
-| 1229 | `goal_repair_1229/` | Reference-controller goals. **Cancelled**: goal oracle collided 90% and finished worse than random | `09_horizon_rollout.md` §4 context; full note **missing** |
-| 1230 | `goal_gate_position_1230/` | Gate: velocity dropped from the goal distance. **Rejected** | **missing** |
-| 1231 | `goal_gate_success_1231/` | Gate: goals from solved episodes only. **Partial pass** | **missing** |
+| 1229 | `goal_repair_1229/` | Reference-controller goals. **Cancelled**: goal oracle collided 90% and finished worse than random | [`10_goal_objective.md`](10_goal_objective.md) §2 |
+| 1230 | `goal_gate_position_1230/` | Gate: velocity dropped from the goal distance. **Rejected** | [`10_goal_objective.md`](10_goal_objective.md) §3 |
+| 1231 | `goal_gate_success_1231/` | Gate: goals from solved episodes only. **Partial pass** | [`10_goal_objective.md`](10_goal_objective.md) §4 |
+| 1233 | `balance_1233/` | Balance bank, 48-run grid, open-loop evaluators | **missing** (running) |
 | — | — | Rollout error against horizon, out to 20 blocks | [`09_horizon_rollout.md`](09_horizon_rollout.md) |
 
 Failed and cancelled jobs are listed because the audit requires failed-run
@@ -58,6 +59,7 @@ their directories remain on disk.
 | `07_reporting.md` | `report.py`, marl-eval schema |
 | `08_stage1_rescoring.md` | Stage 1 salvage, job 1217 |
 | `09_horizon_rollout.md` | Rollout error vs horizon; the 6-frame context limit |
+| `10_goal_objective.md` | Why the goal objective measured nothing, and the one design that partly works |
 
 Two notes share the number `02` and three share `05`. They are not renumbered
 here because other documents link to them by filename; new notes continue from
@@ -66,7 +68,7 @@ here because other documents link to them by filename; new notes continue from
 ## Known documentation debt
 
 The outline calls this the project's largest correctness risk
-([`../outline.md`](../outline.md) §6.2 E0). Eleven jobs above have no note, and
+([`../outline.md`](../outline.md) §6.2 E0). Nine jobs above have no note, and
 they include every closed-loop control result, all of Stage 2, and the repaired
 C7 numbers — that is, most of what the paper's results section would cite.
 
@@ -76,7 +78,7 @@ Results that exist **only** as JSON in `outputs/` and in wandb, cited by nothing
 * Stage 2's information-vs-architecture reversal (1223)
 * the repaired C7 numbers that replace the withdrawn F6 ratios (1224)
 * the regulariser selection and its retrained grid (1228)
-* the three failed goal-objective designs (1227/1229/1230) and the partial pass (1231)
+* ~~the three failed goal-objective designs and the partial pass~~ — now `10_goal_objective.md`
 
 ## Where results live outside this directory
 

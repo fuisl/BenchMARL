@@ -354,14 +354,24 @@ def run_collection(cfg, output, task_name):
     # Dropout is M1 Row 4's weak-interaction control: its agents have no
     # cross-agent dynamics, so a relational advantage there would show the
     # benefit is not interaction modelling.
-    if task_name not in (
+    # Balance is the fourth coupled task, added after Buzz Wire and Transport were
+    # each shown to be bounded by a task property rather than by the world model:
+    # Buzz Wire's agents observe neither the ball nor the wire, so an
+    # observation-space goal cannot express the task or see its failure mode, and
+    # Transport's own heuristic closes 0.032 of the starting 0.9006 across a full
+    # episode. Balance observes the package, its goal offset, its velocity and the
+    # line, and its shipped heuristic scores +43.44 against random's -22.09.
+    # `tracked_entities` needs no change: the package and line are both movable.
+    supported = (
         "vmas/transport",
         "vmas/dropout",
         "vmas/buzz_wire",
         "vmas/wheel",
-    ):
+        "vmas/balance",
+    )
+    if task_name not in supported:
         raise ValueError(
-            "M3 collection validates Transport, Dropout, Buzz Wire and Wheel only"
+            f"M3 collection validates {', '.join(supported)} only, not {task_name}"
         )
     settings = cfg.dataset
     if (
