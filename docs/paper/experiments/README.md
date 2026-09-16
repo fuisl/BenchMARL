@@ -44,7 +44,7 @@ without trusting the current tree.
 | 1233 | `balance_1233/` | Balance bank, 48-run grid, open-loop evaluators. 48/48, no OOM. **Heuristic branch is Transport's policy** — see `balance_1233/DEFECT.md` | **missing** |
 | 1235 | `horizon_rescore_1235/` | Horizon curves re-derived at the trained context length, 4 checkpoint sets. Withdraws the h=6 cliff and the ordering reversal | [`09_horizon_rollout.md`](09_horizon_rollout.md) |
 | 1236 | `balance_repair_1236/` | Balance recollected on the fixed collector; identical design to 1233. COMPLETED 37:50, 48/48 | [`12_balance_corrected.md`](12_balance_corrected.md) |
-| 1237 | `balance_control_1237/` | Gate 1: simulator MPC on Balance, execute-5 vs execute-1, 32 independent train roots | **running** |
+| 1237 | `balance_control_1237/` | Gate 1: simulator MPC on Balance, execute-5 vs execute-1, 32 independent train roots. COMPLETED 5:30 | [`13_balance_control_gate.md`](13_balance_control_gate.md) |
 | — | `review_20260916/` | The review's own CPU diagnostics: policy identity, positional gradients, both rollout windows | [`../review_2026-09-16.md`](../review_2026-09-16.md) |
 
 Failed and cancelled jobs are listed because the audit requires failed-run
@@ -72,6 +72,7 @@ their directories remain on disk.
 | `10_goal_objective.md` | Why the goal objective measured nothing, and the one design that partly works |
 | `11_gate0_repairs.md` | The review's three defects: what each cost, and the checks that now catch them |
 | `12_balance_corrected.md` | Balance on a correctly collected bank; the ranking/response dissociation |
+| `13_balance_control_gate.md` | Gate 1: Balance IS controllable; cadence was worth 2.4x and all the failures |
 
 Two notes share the number `02` and three share `05`. They are not renumbered
 here because other documents link to them by filename; new notes continue from
