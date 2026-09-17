@@ -84,6 +84,11 @@ Two notes share the number `02` and three share `05`. They are not renumbered
 here because other documents link to them by filename; new notes continue from
 `09`.
 
+## Project-level summary
+
+[`../project_report_2026-09-17.md`](../project_report_2026-09-17.md) — the whole
+arc in one document, for readers who have not followed the job numbers.
+
 ## Known documentation debt
 
 The outline calls this the project's largest correctness risk
