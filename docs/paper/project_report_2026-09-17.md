@@ -236,53 +236,86 @@ contract tests in `test/test_world_model_contracts.py`.
 
 ---
 
-## 7. What is running today
+## 7. The observability repair — and what it bought
 
-The diagnosis in §5.4 is testable without training anything, because job 1223
-already trained 48 checkpoints whose encoder sees the ball (24-d physical input),
-at matched capacity, on the same seeds.
-
-They had never been planned with — `closed_loop` sized its observation from the
-environment spec, so a 24-d encoder could not be fed. Today we built
+§5.4 said the failure was information, not dynamics. That was testable without
+training anything, because job 1223 had already trained 48 checkpoints whose
+encoder sees the ball (24-d physical input) at matched capacity on the same
+seeds. They had never been *planned* with — `closed_loop` sized its observation
+from the environment spec, so a 24-d encoder could not be fed — so we built
 `model_input.py`, which constructs all three input conditions from a live
 simulator and from recorded trajectories, with contract tests asserting both
-constructions match the dataset's own transform value-for-value.
+match the dataset's own transform value-for-value.
 
-**Job 1273** re-runs Gate 4 with all three input conditions in a single job
-against one set of references, so `observation` is an in-job control that should
-reproduce the failure and `physical` tests the fix. **Job 1276** re-measures the
-readout's plan-ranking correlation across all 192 checkpoints, which says whether
-seeing the ball repairs the −0.25 anti-correlation at the root of §5.4.
+**Job 1273** then scored all 18 checkpoints of one seed against one set of
+references, making `observation` an in-job control rather than a separate run.
 
-Early and *not* a result: at a toy search budget the physical-input model finished
-every episode with **zero collisions**, against 0.84–0.94 for the models that
-cannot see the ball.
+| input | return | task distance | **collisions** | timeouts |
+|---|---:|---:|---:|---:|
+| `observation` (6-d) — the condition that failed | −9.91 | 0.9615 | **0.94** | 0.06 |
+| `history` (18-d) | −5.20 | 0.9409 | **0.49** | 0.51 |
+| `physical` (24-d) — the ball supplied | −1.81 | 0.9920 | **0.17** | 0.83 |
+| random | −6.25 | 0.9526 | 0.62 | 0.38 |
+| do-nothing | 0.00 | 0.9528 | 0.00 | 1.00 |
+| **oracle** | **+0.83** | **0.1259** | 0.00 | 0.22 |
+
+**The mechanism is confirmed.** Collisions fall five-fold, ordered exactly by how
+much true state the encoder receives. Job 1276 finds plan-ranking quality moving
+the same way — Spearman 0.03–0.06 for `observation` against **0.146–0.212** for
+`physical`. The failure was information, and it is repairable without retraining.
+
+**It is still not control.** `physical` times out in 83% of episodes and ends
+*further* from the goal than doing nothing (0.9920 against 0.9528). **Zero of
+eighteen cells beat the do-nothing baseline**, and every cell is 0/32. The entire
+return gain is the removal of collision penalties, not task progress: the planner
+went from actively harmful to inert.
+
+**Observability, not architecture, is what moves this pipeline.** Across both
+experiments the input condition produces 3–5× effects where the predictor
+produces none that order consistently — within `physical`, `independent` ranks
+best at plan ranking and `relational` worst, reversing the physical-response
+result on the same bank.
+
+### One correction to §5.4
+
+§5.4 cited job 1203's readout Spearman of ≈ −0.25 as evidence. That number is not
+valid as stated: `train.py:120-125` fits the readout on **predicted** latents by
+design, so the simulator's true latents are off-distribution for it, and the
+diagnostic measures that mismatch rather than readout quality. The diagnosis
+survives — §7's two experiments confirm it directly — but that particular
+supporting number needs re-measuring with a readout fitted on true latents.
 
 ---
 
 ## 8. Where this leaves the paper
 
-**Solid today.** Cross-agent response is measurable in coordinates that do not
-depend on which model produced them; relational conditioning captures more of it
-than a matched single-agent model, on two independent datasets, 8 seeds each; and
-the benefit scales with state observability in a controlled within-task
-intervention.
+**Solid.** Cross-agent response is measurable in coordinates that do not depend
+on which model produced them; relational conditioning captures more of it than a
+matched single-agent model, on two independent datasets, 8 seeds each; and the
+benefit scales with state observability in a controlled within-task intervention.
 
-**Falsified today.** That better cross-agent prediction yields better joint
-planning. Tested directly, on the one task where both ends are measurable, and it
-failed — 0/32 everywhere, worse than random.
+**Falsified.** That better cross-agent prediction yields better joint planning.
+Tested directly on the one task where both ends are measurable, then re-tested
+after repairing the information defect that caused the first failure. Both times:
+0/32 successes, and nothing beating an agent that does not act.
 
-Two honest endings, and job 1273 chooses between them:
+So the paper is **a measurement paper**, and §7 makes it a stronger one than it
+was yesterday. Cross-agent response is measurable; conditioning captures it; the
+benefit scales with observability; **and none of it transfers to control** — now
+demonstrated twice, with the intermediate failure diagnosed, repaired, and shown
+to move the mechanism by 5× without moving the outcome at all. That last clause
+is the contribution: it is a much harder result to dismiss than a single negative.
 
-1. **The chain is repairable.** If the constraint enters the input and control
-   follows, the paper is the original story plus a diagnosed and fixed failure —
-   a stronger result than if it had simply worked.
-2. **It is a measurement paper.** Cross-agent response is measurable, conditioning
-   captures it, it scales with observability, **and it does not transfer to
-   control** — demonstrated rather than asserted, with the mechanism identified.
+What it is *not* is a variance problem. Eighteen cells at 0/32, twice over, will
+not be rescued by more seeds, so the 8-seed expansion has not been scheduled.
 
-What it is *not* is a variance problem. 18 cells at 0/32 with returns below random
-will not be rescued by more seeds, so the 8-seed expansion has not been scheduled.
+### The one open measurement
+
+The planner is not the limit — the same CEM with true dynamics solves 25/32. The
+`physical` model now avoids the constraint but cannot find progress, so the
+narrowed question is whether it represents the *goal-directed* dynamics at all,
+or only enough to keep the ball off the wire. The measurement is job 1276's, with
+the readout refitted on true latents per the correction above. It is cheap.
 
 ---
 
@@ -295,6 +328,7 @@ will not be rescued by more seeds, so the 8-seed expansion has not been schedule
 | The failure in full | [`experiments/16_gate4_buzz_wire.md`](experiments/16_gate4_buzz_wire.md) |
 | Measurability | [`experiments/14_gate2_gate4.md`](experiments/14_gate2_gate4.md) |
 | Conventions | [`coding_rules.md`](coding_rules.md) |
+| Figures | `outputs/horizon_curves/` — rollout-error curves and imagined-rollout filmstrips; regenerate with `scripts/horizon_curves.sh` and `scripts/imagination_figures.sh` (`outputs/` is gitignored, so only the code is versioned) |
 
 **Known debt:** nine jobs still have no written note, including several
 closed-loop control results. The outline calls this the project's largest
