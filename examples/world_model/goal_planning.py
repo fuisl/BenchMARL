@@ -264,7 +264,7 @@ def main():
     )()
     scratch.reset()
     try:
-        _, _complete, _block_valid, _observation, endpoint = simulate(
+        _, _complete, _block_valid, _observation, endpoint, _entities = simulate(
             scratch,
             select_anchor_states(anchors, chosen, args.device),
             candidates.to(args.device),

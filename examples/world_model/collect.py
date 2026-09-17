@@ -22,6 +22,15 @@ import torch
 
 from benchmarl.hydra_config import load_task_config_from_hydra
 from examples.world_model.evaluate import state_digest, write_json
+
+# `tracked_entities` and `physical_state` live in `snapshot_restore` so that the
+# planner can build the same entity frame from a live simulator without
+# importing this module, which pulls in the whole evaluation stack. Re-exported
+# here because this is where they are documented and where the bank is written.
+from examples.world_model.snapshot_restore import (  # noqa: F401
+    physical_state,
+    tracked_entities,
+)
 from examples.world_model.snapshot_restore import restore_state, snapshot_state
 from hydra.core.hydra_config import HydraConfig
 from hydra.utils import to_absolute_path
@@ -29,34 +38,6 @@ from omegaconf import DictConfig, OmegaConf
 from tensordict import TensorDict
 from torchrl.record.loggers import get_logger
 from torchrl.record.loggers.wandb import WandbLogger
-
-
-def tracked_entities(env):
-    """Landmarks whose physics we record as an interaction diagnostic.
-
-    Transport exposes ``scenario.packages`` (the shared object agents push);
-    tasks without one fall back to the world's landmarks, so the stored schema
-    is identical across tasks. These states are diagnostics only and are never
-    model inputs, so the stored key keeps its ``package_state`` name rather than
-    breaking the schema that the existing Transport bank was written with.
-    """
-    scenario = env._env.scenario
-    packages = getattr(scenario, "packages", None)
-    if packages:
-        return packages
-    # Prefer the bodies that can actually move -- Buzz Wire's ball is the
-    # reward-relevant one, while its walls and floors are static and would only
-    # pad the diagnostic with constant columns. Rotatable counts as moving:
-    # Wheel's line is pinned at the origin and *only* rotates, so a movable-only
-    # filter would drop the single body the task is about and silently record a
-    # constant. World order is preserved, so tasks that already have a movable
-    # body select exactly what they selected before.
-    dynamic = [
-        e
-        for e in env._env.world.landmarks
-        if getattr(e, "movable", False) or getattr(e, "rotatable", False)
-    ]
-    return dynamic or env._env.world.landmarks
 
 
 REGIMES = ("independent", "correlated")
@@ -105,16 +86,6 @@ def sample_actions(shape, low, high, regime, seed):
         sign = torch.where(unit[..., :1, :] >= 0, 1.0, -1.0)
         unit = unit.abs() * sign
     return low.cpu() + (unit + 1) * 0.5 * (high - low).cpu()
-
-
-def physical_state(entities):
-    return torch.stack(
-        [
-            torch.cat([e.state.pos, e.state.vel, e.state.rot, e.state.ang_vel], -1)
-            for e in entities
-        ],
-        dim=1,
-    )
 
 
 @torch.no_grad()

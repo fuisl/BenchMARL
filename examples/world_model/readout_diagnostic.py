@@ -43,6 +43,7 @@ from examples.world_model.plan_ranking import (
     select_anchor_states,
     spearman,
 )
+from examples.world_model.model_input import compose_frames, entity_frame
 from examples.world_model.snapshot_restore import broadcast_state
 from examples.world_model.train import load_model
 from tensordict import TensorDict
@@ -57,9 +58,15 @@ def simulate(scratch_env, snapshot, candidates, action_block):
     Returns true per-candidate cost (B,K), that cost restricted to complete
     blocks (B,K) for comparison with block-boundary scorers, block validity
     (B,K,L), the
-    observations at every block boundary (B,K,L+1,N,O), and the endpoint each
+    observations at every block boundary (B,K,L+1,N,O), the endpoint each
     candidate actually reached (B,K,N,O) -- its first terminal frame, or its
-    final frame when it never terminates.
+    final frame when it never terminates -- and the tracked entity states at the
+    same block boundaries (B,K,L+1,E*6).
+
+    The entity frames are recorded because a model trained on `physical` inputs
+    cannot be handed the agents' observations alone: its encoder was fitted on
+    the world state appended. Tasks whose models use the default `observation`
+    condition simply ignore them.
     """
     batch, n_candidates, horizon, joint_dim = candidates.shape
     count = batch * n_candidates
@@ -92,6 +99,7 @@ def simulate(scratch_env, snapshot, candidates, action_block):
     endpoint = frames[0].clone()
     ended = torch.zeros(count, dtype=torch.bool, device=candidates.device)
 
+    entity_frames = [entity_frame(scratch_env).clone()]
     rewards, lives = [], []
     for step in range(horizon):
         td.set(("agents", "action"), actions[:, step])
@@ -106,6 +114,7 @@ def simulate(scratch_env, snapshot, candidates, action_block):
         live = live & ~done
         if (step + 1) % action_block == 0:
             frames.append(observation.clone())
+            entity_frames.append(entity_frame(scratch_env).clone())
 
     reward = torch.stack(rewards, dim=-1)
     alive = torch.stack(lives, dim=-1)
@@ -135,12 +144,16 @@ def simulate(scratch_env, snapshot, candidates, action_block):
     observation = torch.stack(frames, dim=1).reshape(
         batch, n_candidates, blocks + 1, agents, -1
     )
+    entities = torch.stack(entity_frames, dim=1).reshape(
+        batch, n_candidates, blocks + 1, -1
+    )
     return (
         cost.cpu(),
         cost_complete.cpu(),
         block_valid.cpu(),
         observation.cpu(),
         endpoint.reshape(batch, n_candidates, *endpoint.shape[-2:]).cpu(),
+        entities.cpu(),
     )
 
 
@@ -198,7 +211,7 @@ def main():
     scratch = task.get_env_fun(chosen.numel() * args.candidates, True, 0, args.device)()
     scratch.reset()
     try:
-        truth, truth_complete, block_valid, observation, _endpoint = simulate(
+        truth, truth_complete, block_valid, observation, _endpoint, entities = simulate(
             scratch,
             select_anchor_states(anchors, chosen, args.device),
             candidates.to(args.device),
@@ -215,6 +228,24 @@ def main():
         f"complete-block rankable {int(rankable_complete.sum())}/{rankable.numel()}"
     )
 
+    # Block boundaries, reshaped so `compose_frames` sees one (B,T,...) record
+    # per candidate. The composition is per input condition and identical for
+    # every checkpoint sharing one, so it is built once and reused.
+    states, n_candidates, boundaries = observation.shape[:3]
+    flat_observation = observation.reshape(
+        states * n_candidates, boundaries, *observation.shape[3:]
+    )
+    flat_entities = entities.reshape(states * n_candidates, boundaries, -1)
+    composed = {}
+
+    def boundary_frames(state_input, history_frames):
+        key = (state_input, history_frames)
+        if key not in composed:
+            composed[key] = compose_frames(
+                state_input, flat_observation, flat_entities, history_frames
+            ).reshape(states, n_candidates, boundaries, observation.shape[3], -1)
+        return composed[key]
+
     rows = {}
     samples = None
     for directory in sorted(args.runs.glob("[0-9]*")):
@@ -223,19 +254,31 @@ def main():
             continue
         config = yaml.safe_load((directory / "resolved_config.yaml").read_text())
         regime, kind = config["data"]["regime"], config["model"]["kind"]
+        state_input = config["data"].get("state_input", "observation")
+        history_frames = config["data"].get("history_frames", 3)
         if samples is None or samples[0] != regime:
             loaded = torch.load(
                 args.data / f"samples_{regime}.pt",
                 map_location="cpu",
                 weights_only=True,
             )
-            samples = (regime, loaded["observation"])
+            samples = (regime, loaded["observation"], loaded["package_state"])
         model = load_model(checkpoint, args.device)
-        predicted = model_costs(
-            model, samples[1][chosen, 0], candidates, block, args.device
+        # The anchor frame in this checkpoint's own input format. Taking the
+        # stored 6-dimension observation for a model fitted on 24 would feed the
+        # encoder a vector it never saw, which is the defect this whole module
+        # exists to measure -- so it must not be reintroduced here.
+        start = compose_frames(
+            state_input,
+            samples[1][chosen, :1],
+            samples[2][chosen, :1].flatten(2),
+            history_frames,
+        )[:, 0]
+        predicted = model_costs(model, start, candidates, block, args.device)
+        on_true = readout_costs(
+            model, boundary_frames(state_input, history_frames), block_valid, args.device
         )
-        on_true = readout_costs(model, observation, block_valid, args.device)
-        rows.setdefault((regime, kind), []).append(
+        rows.setdefault((state_input, regime, kind), []).append(
             (
                 rank_against(truth, predicted, rankable),
                 # Scored against the complete-block truth, which is the set of
@@ -246,19 +289,19 @@ def main():
 
     print("\nSpearman against the simulator's own plan costs:")
     header = (
-        f"{'regime':12s} {'kind':12s} {'J_model':>10s} {'J_readout':>11s} "
-        f"{'recovered':>11s}"
+        f"{'input':12s} {'regime':12s} {'kind':12s} {'J_model':>10s} "
+        f"{'J_readout':>11s} {'recovered':>11s} {'seeds':>6s}"
     )
     print(header)
     print("-" * len(header))
-    for (regime, kind), values in sorted(rows.items()):
+    for (state_input, regime, kind), values in sorted(rows.items()):
         if kind not in BASELINES:
             continue
         model_rho = mean([v[0] for v in values])
         readout_rho = mean([v[1] for v in values])
         print(
-            f"{regime:12s} {kind:12s} {model_rho:10.4f} {readout_rho:11.4f} "
-            f"{readout_rho - model_rho:+11.4f}"
+            f"{state_input:12s} {regime:12s} {kind:12s} {model_rho:10.4f} "
+            f"{readout_rho:11.4f} {readout_rho - model_rho:+11.4f} {len(values):6d}"
         )
 
     print(

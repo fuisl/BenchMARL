@@ -69,6 +69,7 @@ from examples.world_model.cem import CEMConfig
 from examples.world_model.collect import SPLITS
 from examples.world_model.goal_planning import goal_plan_costs
 from examples.world_model.metrics import mean_interval, success_interval
+from examples.world_model.model_input import ObservationBuilder
 from examples.world_model.mpc import (
     action_bounds,
     evaluate_policy,
@@ -135,7 +136,7 @@ def achieved_goals(scratch_env, snapshot, candidates, action_block):
     the goal is fixed before planning starts and the learned planner never touches
     the simulator.
     """
-    _, _complete, _block_valid, _observation, endpoint = simulate(
+    _, _complete, _block_valid, _observation, endpoint, _entities = simulate(
         scratch_env, snapshot, candidates, action_block
     )
     # `simulate` returns on CPU because its own caller compares on CPU. The goal
@@ -726,8 +727,12 @@ def main():
 
         rows, timings = [], {}
 
-        def run(label, policy, plan_costs=None):
+        def run(label, policy, plan_costs=None, observe=None):
             planner = torch.Generator(device=args.device).manual_seed(args.seed)
+            if observe is not None:
+                # Stateful for `history`; a stale buffer would carry the previous
+                # checkpoint's frames into this episode set.
+                observe.reset()
             episodes, timing, terminal = evaluate_policy(
                 env,
                 initial_state,
@@ -738,6 +743,7 @@ def main():
                 scratch_env=scratch,
                 outcome_fn=outcome_fn,
                 plan_costs=plan_costs,
+                observe=agent_observations if observe is None else observe,
                 goal_observation=goal_observation,
                 goal_threshold=args.goal_threshold,
                 goal_weight=goal_weight,
@@ -830,10 +836,41 @@ def main():
                 config["seed"],
             )
             model = load_model(directory / "model.pt", args.device)
+            # The checkpoint's own recorded data config decides what it is fed.
+            # Job 1223 trained three input conditions on this bank, and a model
+            # whose encoder was fitted on 24 dimensions cannot be planned with
+            # from the agents' 6. `state_input` defaults to `observation`, so
+            # every bank collected before Stage 2 keeps its existing behaviour.
+            state_input = config["data"].get("state_input", "observation")
+            observe = ObservationBuilder(
+                state_input,
+                config["data"].get("history_frames", 3),
+                int(model.obs_mean.shape[-1]),
+                action_block_stride=mpc_config.receding_horizon,
+            )
+            # The input condition is part of the model's identity, so it belongs
+            # in the label: without it three conditions collapse into one row.
             tag = f"{kind}|{regime}|{seed}"
+            if state_input != "observation":
+                tag = f"{state_input}|{tag}"
             if args.objectives in ("both", "reward"):
-                run(f"reward|{tag}", "mpc", reward_costs(model, block, args.device))
+                run(
+                    f"reward|{tag}",
+                    "mpc",
+                    reward_costs(model, block, args.device),
+                    observe=observe,
+                )
             if args.objectives in ("both", "goal"):
+                if state_input != "observation":
+                    # The goal is an achieved *agent* observation. Encoding it
+                    # with a model fitted on another input would need the entity
+                    # frame at that same step, which is not captured. Fail here
+                    # rather than silently pad or truncate the goal.
+                    raise ValueError(
+                        "The goal objective needs goals in the model's own input "
+                        f"format; state_input={state_input} has none recorded. "
+                        "Use --objectives reward."
+                    )
                 run(
                     f"goal|{tag}",
                     "mpc",

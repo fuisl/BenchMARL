@@ -363,6 +363,7 @@ def evaluate_policy(
     diagnostics_path: Path | None = None,
     outcome_fn,
     plan_costs=None,
+    observe=agent_observations,
     goal_observation=None,
     goal_threshold=None,
     goal_weight=None,
@@ -381,6 +382,14 @@ def evaluate_policy(
     ignores the observation; a learned model is the reverse, planning from what
     the agents can actually see. Passing it is what makes this a test of the
     world model rather than of CEM.
+
+    ``observe(env) -> (B,N,obs_dim)`` builds what the planner's model is handed.
+    It defaults to the agents' own observations, which is what every result
+    before job 1265 used. A checkpoint trained on another input condition must
+    override it with `model_input.builder_for`, or its encoder is fed a vector
+    it was never fitted on. Only the *planner's* view changes: episode
+    statistics and goal distances stay in agent observation space so that
+    conditions remain comparable.
     """
     mpc_config.validate(cem_config.horizon)
     if policy not in ("random", "mpc") and not callable(policy):
@@ -411,7 +420,7 @@ def evaluate_policy(
         if policy == "mpc":
             snapshot = snapshot_state(env)
 
-            observation = agent_observations(env)
+            observation = observe(env)
 
             def cost_fn(candidates, snapshot=snapshot, observation=observation):
                 return plan_costs(

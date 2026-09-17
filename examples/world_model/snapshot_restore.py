@@ -123,6 +123,44 @@ def broadcast_state(env, snapshot, env_index: int = 0, *, source_indices=None) -
     env._env.steps = spread(snapshot["steps"])
 
 
+def tracked_entities(env):
+    """Landmarks whose physics we record as an interaction diagnostic.
+
+    Transport exposes ``scenario.packages`` (the shared object agents push);
+    tasks without one fall back to the world's landmarks, so the stored schema
+    is identical across tasks. These states are diagnostics only and are never
+    model inputs, so the stored key keeps its ``package_state`` name rather than
+    breaking the schema that the existing Transport bank was written with.
+    """
+    scenario = env._env.scenario
+    packages = getattr(scenario, "packages", None)
+    if packages:
+        return packages
+    # Prefer the bodies that can actually move -- Buzz Wire's ball is the
+    # reward-relevant one, while its walls and floors are static and would only
+    # pad the diagnostic with constant columns. Rotatable counts as moving:
+    # Wheel's line is pinned at the origin and *only* rotates, so a movable-only
+    # filter would drop the single body the task is about and silently record a
+    # constant. World order is preserved, so tasks that already have a movable
+    # body select exactly what they selected before.
+    dynamic = [
+        e
+        for e in env._env.world.landmarks
+        if getattr(e, "movable", False) or getattr(e, "rotatable", False)
+    ]
+    return dynamic or env._env.world.landmarks
+
+
+def physical_state(entities):
+    return torch.stack(
+        [
+            torch.cat([e.state.pos, e.state.vel, e.state.rot, e.state.ang_vel], -1)
+            for e in entities
+        ],
+        dim=1,
+    )
+
+
 def agent_observations(env):
     """(B, N, obs_dim) -- what the agents themselves see at the current state.
 

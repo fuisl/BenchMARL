@@ -20,6 +20,7 @@ contract, or a second predictor with different supervision, fails here.
 """
 
 import importlib
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -164,3 +165,144 @@ def test_rollout_context_covers_only_supervised_positions():
     ]
     assert reached == list(range(frames - 1))
     assert trained_frames(model) == frames - 1
+
+
+# ---------------------------------------------------------------------------
+# The planner's input construction must match the one training was fitted on.
+#
+# Job 1261-1263 planned with models that cannot see the ball, and every learned
+# policy collided more often than random actions. `model_input` lets a
+# checkpoint be planned with in the condition it was trained on, which is only
+# sound if the live construction reproduces the stored one exactly. These check
+# that it does, and that the two cases where it cannot fail loudly instead.
+# ---------------------------------------------------------------------------
+
+
+def _dataset_view(samples, state_input, history_frames=3):
+    """Run the real `Dataset._apply_state_input` over an in-memory sample dict."""
+    from examples.world_model.dataset import OfflineSequences
+
+    view = OfflineSequences.__new__(OfflineSequences)
+    view.samples = dict(samples)
+    view.state_input = state_input
+    view.history_frames = history_frames
+    view._apply_state_input()
+    return view.samples["observation"]
+
+
+def _fake_samples(steps=4, agents=2, obs_dim=6, entities=3):
+    generator = torch.Generator().manual_seed(0)
+    observation = torch.randn(1, steps, agents, obs_dim, generator=generator)
+    package = torch.randn(1, steps, entities, 6, generator=generator)
+    return {
+        "observation": observation,
+        # `next_observation[t]` is the frame at `t+1`; the dataset asserts this
+        # alignment, so the fixture has to honour it.
+        "next_observation": torch.cat(
+            [observation[:, 1:], torch.randn(1, 1, agents, obs_dim, generator=generator)],
+            dim=1,
+        ),
+        "package_state": package,
+        "next_package_state": torch.cat(
+            [package[:, 1:], torch.randn(1, 1, entities, 6, generator=generator)], dim=1
+        ),
+        "valid": torch.ones(1, steps, dtype=torch.bool),
+    }
+
+
+def test_physical_input_matches_the_dataset_construction():
+    """Live `physical` observations equal the dataset's, value for value."""
+    from examples.world_model.model_input import ObservationBuilder
+
+    samples = _fake_samples()
+    expected = _dataset_view(samples, "physical")
+
+    builder = ObservationBuilder("physical", 3, expected.shape[-1])
+    for step in range(samples["observation"].shape[1]):
+        agent_obs = samples["observation"][0, step]
+        entities = samples["package_state"][0, step].flatten(0)
+        env = _StubEnv(agent_obs, entities)
+        assert torch.equal(builder(env)[0], expected[0, step])
+
+
+def test_history_input_matches_the_dataset_clamping():
+    """The first decisions repeat the opening frame, as the dataset clamps."""
+    from examples.world_model.model_input import ObservationBuilder
+
+    samples = _fake_samples()
+    expected = _dataset_view(samples, "history")
+
+    builder = ObservationBuilder("history", 3, expected.shape[-1])
+    for step in range(samples["observation"].shape[1]):
+        env = _StubEnv(samples["observation"][0, step], None)
+        assert torch.equal(builder(env)[0], expected[0, step])
+
+
+@pytest.mark.parametrize("state_input", ["observation", "history", "physical"])
+def test_recorded_frames_compose_exactly_as_the_dataset_does(state_input):
+    """`compose_frames` is the offline twin of the builder and must agree too."""
+    from examples.world_model.model_input import compose_frames
+
+    samples = _fake_samples()
+    expected = _dataset_view(samples, state_input)
+    composed = compose_frames(
+        state_input,
+        samples["observation"],
+        samples["package_state"].flatten(2),
+    )
+    assert torch.equal(composed, expected)
+
+
+def test_history_refuses_a_cadence_it_was_not_trained_at():
+    """Stacking frames five blocks apart is a different input, not a detail."""
+    from examples.world_model.model_input import ObservationBuilder
+
+    with pytest.raises(ValueError, match="execute-blocks 1"):
+        ObservationBuilder("history", 3, 18, action_block_stride=5)
+
+
+def test_a_mismatched_input_width_is_not_silently_accepted():
+    """Feeding a 24-dimension encoder 6 dimensions must raise, not broadcast."""
+    from examples.world_model.model_input import ObservationBuilder
+
+    builder = ObservationBuilder("observation", 3, 24)
+    with pytest.raises(ValueError, match="trained on 24"):
+        builder(_StubEnv(torch.zeros(1, 2, 6), None))
+
+
+class _StubEnv:
+    """The smallest thing `agent_observations` and `entity_frame` can read.
+
+    Built against the real accessors rather than around them: the point of these
+    checks is that the live path -- `scenario.observation` per agent, plus
+    `tracked_entities` over the world's movable landmarks -- reproduces the
+    stored bank, so faking that path would test nothing.
+    """
+
+    def __init__(self, agent_obs, entities):
+        if agent_obs.dim() == 2:
+            agent_obs = agent_obs.unsqueeze(0)
+        self._agent_obs = agent_obs
+        agents = [SimpleNamespace(name=f"agent_{i}") for i in range(agent_obs.shape[1])]
+        landmarks = []
+        if entities is not None:
+            for row in entities.reshape(-1, 6):
+                landmarks.append(
+                    SimpleNamespace(
+                        movable=True,
+                        rotatable=False,
+                        state=SimpleNamespace(
+                            pos=row[0:2].reshape(1, 2),
+                            vel=row[2:4].reshape(1, 2),
+                            rot=row[4:5].reshape(1, 1),
+                            ang_vel=row[5:6].reshape(1, 1),
+                        ),
+                    )
+                )
+        index = {agent.name: position for position, agent in enumerate(agents)}
+        self._env = SimpleNamespace(
+            scenario=SimpleNamespace(
+                observation=lambda agent: self._agent_obs[:, index[agent.name]]
+            ),
+            world=SimpleNamespace(agents=agents, landmarks=landmarks),
+        )

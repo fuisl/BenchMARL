@@ -112,7 +112,7 @@ def test_simulate_endpoint_is_the_frame_actually_reached():
     scratch.reset()
     try:
         plans = torch.rand(states, candidates, blocks * block, 4) * 2 - 1
-        _cost, _complete, block_valid, observation, endpoint = simulate(
+        _cost, _complete, block_valid, observation, endpoint, _entities = simulate(
             scratch, snapshot_state(env), plans, block
         )
     finally:
