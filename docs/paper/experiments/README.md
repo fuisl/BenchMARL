@@ -80,6 +80,7 @@ their directories remain on disk.
 | `15_buzz_wire_control_gate.md` | Buzz Wire solves 78% at the fixed cadence; it can carry prediction AND control alone |
 | `16_gate4_buzz_wire.md` | Gate 4 fails: 17/18 cells worse than random. Prediction replicates on a second bank; observability orders as predicted |
 | `17_observability_control.md` | Seeing the ball cuts collisions 0.94->0.17 and plan ranking 4x, and still beats nothing 0/18 |
+| `18_readout_refit.md` | A fairly fitted reward head predicts 2x better and ranks plans worse; job 1203's rho ~ -0.25 withdrawn |
 
 Two notes share the number `02` and three share `05`. They are not renumbered
 here because other documents link to them by filename; new notes continue from
