@@ -73,6 +73,7 @@ def test_action_blocks_preserve_agent_and_primitive_order(dataset_files):
     assert len(dataset) == 2
     assert item["observation"].shape == (3, 2, 3)
     assert item["agent_state"].shape == (3, 2, 6)
+    assert item["package_state"].shape == (3, 1, 6)
     assert item["action"].shape == (2, 2, 6)
     assert item["episode_id"].item() == 10
     assert "snapshot" not in item
@@ -85,6 +86,9 @@ def test_action_blocks_preserve_agent_and_primitive_order(dataset_files):
     )
     torch.testing.assert_close(
         item["agent_state"][1:], samples["next_agent_state"][0, [2, 5]]
+    )
+    torch.testing.assert_close(
+        item["package_state"][1:], samples["next_package_state"][0, [2, 5]]
     )
     for block in range(2):
         for agent in range(2):

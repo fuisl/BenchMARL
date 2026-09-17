@@ -77,6 +77,7 @@ class CEMResult:
     elite_idx: torch.Tensor  # (B, num_elites) indices into candidates
     elite_cost_history: torch.Tensor  # (num_iters, B) mean elite cost per iteration
     best_cost_history: torch.Tensor  # (num_iters, B) best cost seen so far
+    candidate_history: torch.Tensor | None = None  # (I,B,S,H,A), optional
 
 
 @torch.no_grad()
@@ -91,6 +92,7 @@ def cem_plan(
     init_mean: torch.Tensor | None = None,
     device: str | torch.device = "cpu",
     generator: torch.Generator | None = None,
+    record_candidates: bool = False,
 ) -> CEMResult:
     """Optimise a joint action sequence by the cross-entropy method.
 
@@ -125,6 +127,7 @@ def cem_plan(
     batch_idx = torch.arange(batch_size, device=device).unsqueeze(1)
     elite_cost_history = []
     best_cost_history = []
+    candidate_history = []
     best_cost = torch.full((batch_size,), float("inf"), device=device)
 
     for _ in range(config.num_iters):
@@ -139,6 +142,8 @@ def cem_plan(
         candidates = noise * std.unsqueeze(1) + mean.unsqueeze(1)
         candidates[:, 0] = mean  # keep the incumbent (reference convention)
         candidates = candidates.clamp(action_low, action_high)
+        if record_candidates:
+            candidate_history.append(candidates.detach().cpu())
 
         costs = cost_fn(candidates)  # (B, S)
         if costs.shape != (batch_size, config.num_samples):
@@ -168,6 +173,9 @@ def cem_plan(
         elite_idx=elite_idx,
         elite_cost_history=torch.stack(elite_cost_history),
         best_cost_history=torch.stack(best_cost_history),
+        candidate_history=(
+            torch.stack(candidate_history) if record_candidates else None
+        ),
     )
 
 

@@ -270,6 +270,12 @@ class OfflineSequences(Dataset):
                         samples["next_agent_state"][row, block - 1 :: block],
                     ]
                 ),
+                "package_state": torch.cat(
+                    [
+                        samples["package_state"][row, :1],
+                        samples["next_package_state"][row, block - 1 :: block],
+                    ]
+                ),
                 "action": primitive_action.permute(0, 2, 1, 3).reshape(
                     length, agents, block * action_dim
                 ),

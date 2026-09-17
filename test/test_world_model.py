@@ -209,6 +209,17 @@ def test_cem_batch_reproducibility_and_validation():
     torch.testing.assert_close(result.plan, target, atol=1e-3, rtol=0)
     assert torch.equal(result.plan, run().plan)
     assert (result.best_cost_history.diff(dim=0) <= 0).all()
+    traced = cem_plan(
+        lambda actions: (actions - target[:, None]).square().sum((-2, -1)),
+        action_dim=3,
+        action_low=-1,
+        action_high=1,
+        config=CEMConfig(horizon=2, num_samples=20, num_elites=5, num_iters=4),
+        batch_size=3,
+        generator=torch.Generator().manual_seed(4),
+        record_candidates=True,
+    )
+    assert traced.candidate_history.shape == (4, 3, 20, 2, 3)
     with pytest.raises(ValueError, match="non-finite"):
         cem_plan(
             lambda c: torch.full(c.shape[:2], float("nan")),
