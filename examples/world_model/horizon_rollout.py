@@ -19,6 +19,7 @@ asked about the action distribution it was fitted on.
 """
 
 import argparse
+import json
 import statistics as st
 from collections import defaultdict
 from pathlib import Path
@@ -131,7 +132,17 @@ def windowed_rollout(model, latent, actions):
 
 @torch.no_grad()
 def errors(run, frames, actions, valid, device):
-    """Masked mean squared latent error per block: (blocks,)."""
+    """Masked mean squared latent error per block, and this model's own latent
+    variance: ``(blocks,)``, float.
+
+    The variance is returned alongside because it is the only honest scale for
+    the error. Each model learns its own latent geometry, so a raw MSE means
+    nothing on its own; the comparable reference is the error a constant
+    mean-predictor would make in that same space, which is exactly the mean
+    per-dimension variance of the encoded truth over the scored population.
+    Computing it here reuses the encode this function already performs, and
+    keeps the calibration in the same file as the number it calibrates.
+    """
     model = load_model(run / "model.pt", device)
     model.eval()
     truth = model.encode(frames)[:, 1:]
@@ -139,12 +150,15 @@ def errors(run, frames, actions, valid, device):
     squared = (rolled - truth).square().mean(dim=(-1, -2))  # (B, blocks)
     mask = valid.float()
     counts = mask.sum(dim=0)
+    live = valid.unsqueeze(-1).unsqueeze(-1).expand_as(truth)
+    variance = float(truth[live].reshape(-1, truth.size(-1)).var(dim=0).mean())
     # A block no episode survives to has no error, not an error of zero.
-    return torch.where(
+    curve = torch.where(
         counts > 0,
         (squared * mask).sum(dim=0) / counts.clamp_min(1),
         torch.full_like(counts, float("nan")),
     )
+    return curve, variance
 
 
 def main():
@@ -154,6 +168,14 @@ def main():
     ap.add_argument("--blocks", type=int, default=20)
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--seed", type=int, default=9100)
+    ap.add_argument(
+        "--output",
+        type=Path,
+        help="write per-seed curves and the variance calibration as JSON. The "
+        "printed table is means only, and a mean cannot carry the paired "
+        "per-seed comparison that is the only valid way to rank two models "
+        "living in different latent spaces.",
+    )
     args = ap.parse_args()
 
     manifest = yaml.safe_load((args.data / "manifest.json").read_text())
@@ -179,6 +201,7 @@ def main():
     )
 
     grouped = defaultdict(list)
+    records = []
     for config_path in sorted(args.sweep.rglob("resolved_config.yaml")):
         run = config_path.parent
         if not (run / "model.pt").exists():
@@ -187,8 +210,16 @@ def main():
         if cfg["data"].get("state_input", "observation") != "observation":
             continue
         regime = cfg["data"]["regime"]
-        grouped[(regime, cfg["model"]["kind"])].append(
-            errors(run, *truth[regime], args.device).cpu().tolist()
+        curve, variance = errors(run, *truth[regime], args.device)
+        grouped[(regime, cfg["model"]["kind"])].append(curve.cpu().tolist())
+        records.append(
+            {
+                "regime": regime,
+                "kind": cfg["model"]["kind"],
+                "seed": cfg["seed"],
+                "curve": curve.cpu().tolist(),
+                "latent_variance": variance,
+            }
         )
 
     shown = [h for h in (1, 2, 3, 5, 8, 10, 15, 20) if h <= args.blocks]
@@ -216,6 +247,23 @@ def main():
             )
             usable = [v for v in mean if v == v]
             print(f"{regime:12s}{kind:13s}{cells}{usable[-1] / usable[0]:9.2f}{len(runs):7d}")
+
+    if args.output:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(
+            json.dumps(
+                {
+                    "task_name": manifest["task_name"],
+                    "action_block": block,
+                    "blocks": args.blocks,
+                    "trained_frames": trained,
+                    "episodes_live": [int(v) for v in live],
+                    "runs": records,
+                },
+                indent=1,
+            )
+        )
+        print(f"\nwrote {args.output}")
 
 
 if __name__ == "__main__":
