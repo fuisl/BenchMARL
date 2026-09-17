@@ -309,13 +309,23 @@ is the contribution: it is a much harder result to dismiss than a single negativ
 What it is *not* is a variance problem. Eighteen cells at 0/32, twice over, will
 not be rescued by more seeds, so the 8-seed expansion has not been scheduled.
 
-### The one open measurement
+### The open measurement, now closed
 
-The planner is not the limit — the same CEM with true dynamics solves 25/32. The
-`physical` model now avoids the constraint but cannot find progress, so the
-narrowed question is whether it represents the *goal-directed* dynamics at all,
-or only enough to keep the ball off the wire. The measurement is job 1276's, with
-the readout refitted on true latents per the correction above. It is cheap.
+The planner was never the limit — the same CEM with true dynamics solves 25/32 —
+and the remaining suspect was the reward head. Job 1282 refits it on true latent
+pairs, which is the comparison the diagnostic always needed. Two results:
+
+* **A long-standing number is retired.** Job 1203's readout Spearman of ≈ −0.25,
+  cited throughout this project as evidence the head cannot order plans, was the
+  distribution mismatch. A fairly fitted head scores **+0.028 … +0.050**.
+* **The readout is not the bottleneck.** The refitted head predicts reward
+  **twice as accurately** on held-out data and ranks plans *worse* — near zero
+  for `observation` and `history`, and negative for `physical`. Gate 4 was
+  already using the best-ranking configuration available.
+
+Reward-prediction accuracy and plan-ranking ability move in opposite directions
+here. That is a third dissociation, beside response-vs-control and
+architecture-vs-observability, and it closes the last cheap line of attack.
 
 ---
 
