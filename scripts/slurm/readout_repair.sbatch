@@ -36,6 +36,21 @@
 # inferable from motion rather than supplied. Its physical-response score was
 # unmeasurable (probe floor 1.37-1.70, job 1264), so a null here is expected and
 # is not evidence that history cannot work.
+#
+# SECOND RUN, 2026-09-17. Job 1276 answered the first question -- plan ranking
+# improves 3-4x with physical input, 0.03-0.06 to 0.146-0.212 -- and exposed a
+# defect in its own J_readout column. That head is fitted on PREDICTED latents by
+# design (train.py:120-125), so scoring it on the simulator's true latents
+# measures the distribution mismatch, not readout quality. Every negative
+# J_readout this project has reported, including job 1203's rho ~ -0.25, is that
+# artefact.
+#
+# --refit-readout fits a fresh head on TRUE latent pairs, which is the comparison
+# the column always needed. It answers what 17_observability_control.md left
+# open: the physical model stopped colliding but found no progress, and it is
+# still unknown whether its rollout carries the goal-directed dynamics at all.
+# The refit is 50 epochs per checkpoint over 192 checkpoints, so this run is
+# about an hour rather than three minutes.
 #SBATCH --job-name=readout-repair
 #SBATCH --partition=gpu
 #SBATCH --nodes=1
@@ -43,7 +58,7 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=24G
 #SBATCH --gres=gpu:a100_3g.20gb:1
-#SBATCH --time=04:00:00
+#SBATCH --time=06:00:00
 #SBATCH --output=slurm-%j.out
 
 set -euo pipefail
@@ -72,7 +87,7 @@ trap 'kill "$gpu_monitor_pid" 2>/dev/null || true' EXIT
 # compared against one ground truth rather than three.
 .venv/bin/python -u -m examples.world_model.readout_diagnostic \
     outputs/state_input_1223/runs --data outputs/buzz_wire_1196/data \
-    --states 96 --candidates 48 --device cuda \
+    --states 96 --candidates 48 --device cuda --refit-readout \
     2>&1 | tee "$output/stage2_readout.txt"
 
 # The 48-model grid Gate 4 actually planned with, as the reference point. Its
@@ -80,7 +95,7 @@ trap 'kill "$gpu_monitor_pid" 2>/dev/null || true' EXIT
 # before any improvement above them means anything.
 .venv/bin/python -u -m examples.world_model.readout_diagnostic \
     outputs/buzz_wire_1196/baselines --data outputs/buzz_wire_1196/data \
-    --states 96 --candidates 48 --device cuda \
+    --states 96 --candidates 48 --device cuda --refit-readout \
     2>&1 | tee "$output/baselines_readout.txt"
 
 printf '\nCompleted readout repair: %s\n' "$output"
