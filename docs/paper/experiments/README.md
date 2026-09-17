@@ -78,6 +78,7 @@ their directories remain on disk.
 | `13_balance_control_gate.md` | Gate 1: Balance IS controllable; cadence was worth 2.4x and all the failures |
 | `14_gate2_gate4.md` | First learned-control result; Balance's response is unmeasurable; probe family flips the ordering |
 | `15_buzz_wire_control_gate.md` | Buzz Wire solves 78% at the fixed cadence; it can carry prediction AND control alone |
+| `16_gate4_buzz_wire.md` | Gate 4 fails: 17/18 cells worse than random. Prediction replicates on a second bank; observability orders as predicted |
 
 Two notes share the number `02` and three share `05`. They are not renumbered
 here because other documents link to them by filename; new notes continue from
