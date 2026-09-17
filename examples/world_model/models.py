@@ -395,6 +395,105 @@ class MultiAgentWorldModel(nn.Module):
         return history[:, 1:]
 
 
+class SharedAgentPositionModel(nn.Module):
+    """Direct next-position baseline with one predictor shared by every agent.
+
+    This model deliberately removes the learned-latent/probe ambiguity from the
+    first validation question. It predicts each agent's physical displacement
+    over one action block and is trained directly against simulator position.
+    The three ``kind`` values use the same information contracts as
+    :class:`Conditioner`:
+
+    ``independent``
+        Agent ``i`` sees only its own observation and blocked action.
+    ``joint``
+        Agent ``i`` also sees every agent in a fixed order.
+    ``relational``
+        Agent ``i`` receives a sum of pairwise messages from the other agents.
+
+    Encoder, message and prediction weights are shared across agent indices.
+    Therefore this is a single-agent transition function applied to every
+    agent, not one separately fitted network per agent.
+    """
+
+    def __init__(
+        self,
+        kind,
+        obs_dim,
+        action_dim,
+        agents,
+        hidden_dim=128,
+        obs_mean=None,
+        obs_std=None,
+        action_mean=None,
+        action_std=None,
+        delta_mean=None,
+        delta_std=None,
+        conditioner_budget=100000,
+    ):
+        super().__init__()
+        if kind not in ("independent", "joint", "relational"):
+            raise ValueError(f"Unknown position model kind: {kind}")
+        self.kind = kind
+        self.agents = agents
+        self.observation_encoder = mlp(obs_dim, hidden_dim, hidden_dim)
+        self.action_encoder = mlp(action_dim, hidden_dim, hidden_dim)
+        conditioner_hidden = Conditioner.hidden_for_budget(
+            kind, hidden_dim, agents, conditioner_budget
+        )
+        self.conditioner_hidden = conditioner_hidden
+        self.conditioner = Conditioner(
+            kind, hidden_dim, agents, conditioner_hidden
+        )
+        self.head = mlp(hidden_dim, hidden_dim, 2)
+
+        def value_or_default(value, width, default):
+            value = torch.full((width,), default) if value is None else value
+            return value.clone().float()
+
+        self.register_buffer(
+            "obs_mean", value_or_default(obs_mean, obs_dim, 0.0)
+        )
+        self.register_buffer(
+            "obs_std", value_or_default(obs_std, obs_dim, 1.0)
+        )
+        self.register_buffer(
+            "action_mean", value_or_default(action_mean, action_dim, 0.0)
+        )
+        self.register_buffer(
+            "action_std", value_or_default(action_std, action_dim, 1.0)
+        )
+        self.register_buffer(
+            "delta_mean", value_or_default(delta_mean, 2, 0.0)
+        )
+        self.register_buffer(
+            "delta_std", value_or_default(delta_std, 2, 1.0)
+        )
+
+    def forward(self, observation, action):
+        """Predict physical displacement ``(dx, dy)`` for every agent.
+
+        Args:
+            observation: ``(..., N, obs_dim)`` at the block start.
+            action: ``(..., N, block * action_dim)`` for the same block.
+
+        Returns:
+            Displacement in simulator units with shape ``(..., N, 2)``.
+        """
+        if observation.shape[-2] != self.agents:
+            raise ValueError(
+                f"Expected {self.agents} agents, got {observation.shape[-2]}"
+            )
+        normalized_observation = (
+            observation - self.obs_mean
+        ) / self.obs_std
+        normalized_action = (action - self.action_mean) / self.action_std
+        obs = self.observation_encoder(normalized_observation)
+        act = self.action_encoder(normalized_action)
+        normalized_delta = self.head(self.conditioner(obs, act))
+        return normalized_delta * self.delta_std + self.delta_mean
+
+
 def parameter_counts(model):
     """Report capacity so the three baselines can be compared honestly."""
     groups = {

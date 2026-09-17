@@ -285,6 +285,37 @@ diagnostic measures that mismatch rather than readout quality. The diagnosis
 survives — §7's two experiments confirm it directly — but that particular
 supporting number needs re-measuring with a readout fitted on true latents.
 
+### A bottom-up dynamics check
+
+Job 1291 asks a narrower question than the latent rollout plots: can one
+transition function, shared across agent identities, directly predict each
+agent's next physical position over the five-step action block? Across 144 fits
+(8 seeds × 3 inputs × 2 action regimes × 3 conditioners), every model beats
+copying the current position. Relative coordinate MSE ranges from 0.187 for the
+weakest observation-only independent cell to 0.019 for the best
+physical-input correlated cells, where 1.0 is the no-motion baseline.
+
+Joint and relational conditioning each beat the independent model on 8/8 seeds
+in all twelve paired comparisons. Supplying physical state improves every
+architecture/regime/seed and places 96–99% of conditioned predictions within
+1 cm in the correlated bank. History is only a small and non-uniform repair.
+
+This proves that one-block agent motion is learnable and that shared context
+matters. It does **not** prove that the planning model's latent transition is
+correct: job 1291 trains a separate `(dx, dy)` target and never feeds that head
+to CEM.
+
+Jobs 1294–1295 now close that comparison. A position head fitted on true
+latents exposes a large immediate coordinate-system mismatch. Fitting a second
+head directly on predicted latents—as the planning readout is fitted—reduces
+one-block RMSE to about 0.031–0.034 m, but every one of 144 checkpoints is still
+worse than persistence and 3.84–13.13× worse than its matched direct model.
+Recursive h=5 error reaches about 0.049–0.055 m with an MLP head. The failure is
+already present at h=1; it is not mainly long-horizon drift, and architecture
+choice changes it far less than the latent-vs-direct gap. Full numbers and
+renders are in [experiments 20](experiments/20_agent_position_validation.md)
+and [21](experiments/21_latent_position_validation.md).
+
 ---
 
 ## 8. Where this leaves the paper

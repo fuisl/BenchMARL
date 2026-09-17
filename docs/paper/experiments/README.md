@@ -50,6 +50,10 @@ without trusting the current tree.
 | 1236 | `balance_repair_1236/` | Balance recollected on the fixed collector; identical design to 1233. COMPLETED 37:50, 48/48 | [`12_balance_corrected.md`](12_balance_corrected.md) |
 | 1238 | `balance_gate4_1238/` | Gate 4: 18 learned checkpoints through the same planner as 1237's oracle. COMPLETED 4:46 | [`14_gate2_gate4.md`](14_gate2_gate4.md) §1 |
 | 1259 | `buzz_wire_control_1259/` | Gate 1 on Buzz Wire: 47% -> 78% success from the cadence repair, 0 failures. COMPLETED 1:18:37 | [`15_buzz_wire_control_gate.md`](15_buzz_wire_control_gate.md) |
+| 1283–1290 | `agent_position_<job>/` | Superseded one-job-per-seed layout; cancelled, with 1283 partial after 2m41s | [`20_agent_position_validation.md`](20_agent_position_validation.md) |
+| 1291 | `agent_position_concurrent_1291/` | Eight seeds × two regimes × three inputs × three shared per-agent models; 144/144 complete in 9m26s | [`20_agent_position_validation.md`](20_agent_position_validation.md) |
+| 1292–1293 | `latent_position_1292/`, `latent_position_linear_1293/` | Initial true-latent-head measurement; complete but superseded by the planning-style head control in 1294–1295 | [`21_latent_position_validation.md`](21_latent_position_validation.md) |
+| 1294–1295 | `latent_position_mlp_1294/`, `latent_position_linear_1295/` | 144/144 latent checkpoints decoded in physical coordinates with true- and predicted-latent heads; aggregate plots and six filmstrips per probe family | [`21_latent_position_validation.md`](21_latent_position_validation.md) |
 | 1239 | `physical_response_1239/` | Gate 2: intervention response in common physical coordinates, 3 horizons x 2 probe families. COMPLETED 20:45 | [`14_gate2_gate4.md`](14_gate2_gate4.md) §§2-4 |
 | 1237 | `balance_control_1237/` | Gate 1: simulator MPC on Balance, execute-5 vs execute-1, 32 independent train roots. COMPLETED 5:30 | [`13_balance_control_gate.md`](13_balance_control_gate.md) |
 | — | `review_20260916/` | The review's own CPU diagnostics: policy identity, positional gradients, both rollout windows | [`../review_2026-09-16.md`](../review_2026-09-16.md) |
@@ -86,7 +90,8 @@ their directories remain on disk.
 | `17_observability_control.md` | Seeing the ball cuts collisions 0.94->0.17 and plan ranking 4x, and still beats nothing 0/18 |
 | `18_readout_refit.md` | A fairly fitted reward head predicts 2x better and ranks plans worse; job 1203's rho ~ -0.25 withdrawn |
 | `19_cost_landscape.md` | The physical model learned the collision penalty and not the progress objective; search and inaction both ruled out |
-| `20_agent_position_validation.md` | Direct shared per-agent next-position model; implementation smoke complete, registered pilot pending |
+| `20_agent_position_validation.md` | Direct shared per-agent next-position model; 144-fit registered sweep complete; shared context and physical state improve one-block motion |
+| `21_latent_position_validation.md` | Same position target decoded from true, one-step predicted, and recursive latent states; latent pipeline fails against persistence and direct prediction |
 
 Two notes share the number `02` and three share `05`. They are not renumbered
 here because other documents link to them by filename; new notes continue from

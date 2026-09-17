@@ -261,6 +261,15 @@ class OfflineSequences(Dataset):
                         samples["next_observation"][row, block - 1 :: block],
                     ]
                 ),
+                # Physical state at the same block boundaries as observation.
+                # This is a diagnostic target, not an input unless the caller
+                # explicitly selects state_input=physical above.
+                "agent_state": torch.cat(
+                    [
+                        samples["agent_state"][row, :1],
+                        samples["next_agent_state"][row, block - 1 :: block],
+                    ]
+                ),
                 "action": primitive_action.permute(0, 2, 1, 3).reshape(
                     length, agents, block * action_dim
                 ),
