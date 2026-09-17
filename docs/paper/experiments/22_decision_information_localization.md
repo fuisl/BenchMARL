@@ -1,6 +1,7 @@
 # Gate 0d: decision-information localization
 
-Status: protocol frozen; overnight run pending. Date: 2026-09-17.
+Status: protocol frozen; job 1296 running on commit `8c8711a`. Date:
+2026-09-17. Artifacts: `outputs/decision_information_1296/`.
 
 ## Question
 
@@ -100,4 +101,3 @@ The merged run produces:
 
 Implementation: `examples/world_model/decision_information.py`.
 Launcher: `scripts/slurm/decision_information_gate.sbatch`.
-
