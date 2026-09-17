@@ -44,8 +44,11 @@ from examples.world_model.plan_ranking import (
     spearman,
 )
 from examples.world_model.model_input import compose_frames, entity_frame
+from examples.world_model.dataset import OfflineSequences
+from examples.world_model.models import masked_mean, Readout
 from examples.world_model.snapshot_restore import broadcast_state
-from examples.world_model.train import load_model
+from examples.world_model.train import block_reward, load_model
+from torch.utils.data import DataLoader
 from tensordict import TensorDict
 
 BASELINES = ("independent", "joint", "relational")
@@ -157,13 +160,75 @@ def simulate(scratch_env, snapshot, candidates, action_block):
     )
 
 
+def fit_true_readout(model, config, device, epochs=50):
+    """A FRESH reward head fitted on the simulator's own consecutive latents.
+
+    `model.readout` is fitted on PREDICTED next-latents, by design: planning
+    consumes predicted latents, so `train.readout_losses` trains the head on the
+    distribution it will meet (`train.py:120-125`). That makes `J_readout` below
+    unsound as a measure of readout quality -- it hands a head trained on one
+    distribution a different one, and what it scores is the mismatch. Job 1203's
+    rho ~ -0.25, and the negative `recovered` column in job 1276, are both that
+    artefact rather than evidence the head cannot order plans.
+
+    This fits the same architecture, capacity and objective on TRUE latent pairs,
+    which is the head `J_readout` always needed. The encoder stays frozen, so the
+    representation being compared is untouched.
+    """
+    dataset = OfflineSequences(
+        config["data"]["root"],
+        config["data"]["regime"],
+        "train",
+        action_block=config["data"]["action_block"],
+        state_input=config["data"].get("state_input", "observation"),
+        history_frames=config["data"].get("history_frames", 3),
+    )
+    loader = DataLoader(
+        dataset,
+        batch_size=config["train"]["batch_size"],
+        shuffle=True,
+        collate_fn=torch.stack,
+        generator=torch.Generator().manual_seed(config["seed"]),
+    )
+    head = Readout(model.dim, config["model"]["hidden_dim"]).to(device)
+    optimizer = torch.optim.AdamW(
+        head.parameters(),
+        lr=config["train"]["learning_rate"],
+        weight_decay=config["train"]["weight_decay"],
+    )
+    schedule = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
+    for _ in range(epochs):
+        for batch in loader:
+            batch = batch.to(device)
+            with torch.no_grad():
+                latent = model.encode(batch["observation"])
+            reward, terminated = head(latent[:, :-1], latent[:, 1:])
+            valid = batch["outcome_valid"]
+            loss = masked_mean((reward - block_reward(batch)).square(), valid)
+            loss = loss + masked_mean(
+                torch.nn.functional.binary_cross_entropy_with_logits(
+                    terminated, batch["terminated"].float(), reduction="none"
+                ),
+                valid,
+            )
+            optimizer.zero_grad(set_to_none=True)
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(
+                head.parameters(), config["train"]["gradient_clip"]
+            )
+            optimizer.step()
+        schedule.step()
+    head.eval()
+    return head
+
+
 @torch.no_grad()
-def readout_costs(model, observation, block_valid, device):
-    """Learned readout applied to the simulator's own latents: (B, K)."""
+def readout_costs(model, observation, block_valid, device, head=None):
+    """A reward head applied to the simulator's own latents: (B, K)."""
     batch, n_candidates, frames, agents, obs_dim = observation.shape
     flat = observation.reshape(batch * n_candidates, frames, agents, obs_dim).to(device)
     latent = model.encode(flat)
-    reward, _ = model.readout(latent[:, :-1], latent[:, 1:])
+    reward, _ = (model.readout if head is None else head)(latent[:, :-1], latent[:, 1:])
     mask = block_valid.reshape(batch * n_candidates, frames - 1, 1, 1).to(device)
     cost = -(reward * mask).sum(dim=(1, 2, 3))
     return cost.view(batch, n_candidates).cpu()
@@ -186,6 +251,20 @@ def main():
     parser.add_argument("--candidates", type=int, default=48)
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--seed", type=int, default=5100)
+    parser.add_argument(
+        "--refit-readout",
+        action="store_true",
+        help="also fit a fresh reward head on TRUE latent pairs and score with "
+        "it. Without this, the J_readout column hands a head trained on "
+        "predicted latents a distribution it never saw, and measures that "
+        "mismatch rather than readout quality -- see `fit_true_readout`.",
+    )
+    parser.add_argument(
+        "--refit-epochs",
+        type=int,
+        default=50,
+        help="epochs for the refitted head; the default matches training",
+    )
     args = parser.parse_args()
 
     manifest = json.loads((args.data / "manifest.json").read_text())
@@ -275,22 +354,33 @@ def main():
             history_frames,
         )[:, 0]
         predicted = model_costs(model, start, candidates, block, args.device)
-        on_true = readout_costs(
-            model, boundary_frames(state_input, history_frames), block_valid, args.device
-        )
+        frames_for_input = boundary_frames(state_input, history_frames)
+        on_true = readout_costs(model, frames_for_input, block_valid, args.device)
+        refit = float("nan")
+        if args.refit_readout:
+            head = fit_true_readout(model, config, args.device, args.refit_epochs)
+            refit = rank_against(
+                truth_complete,
+                readout_costs(
+                    model, frames_for_input, block_valid, args.device, head=head
+                ),
+                rankable_complete,
+            )
         rows.setdefault((state_input, regime, kind), []).append(
             (
                 rank_against(truth, predicted, rankable),
                 # Scored against the complete-block truth, which is the set of
                 # blocks a boundary scorer can see at all.
                 rank_against(truth_complete, on_true, rankable_complete),
+                refit,
             )
         )
+        print(f"  {directory.name} {state_input}/{regime}/{kind}", flush=True)
 
     print("\nSpearman against the simulator's own plan costs:")
     header = (
         f"{'input':12s} {'regime':12s} {'kind':12s} {'J_model':>10s} "
-        f"{'J_readout':>11s} {'recovered':>11s} {'seeds':>6s}"
+        f"{'J_readout':>11s} {'J_refit':>9s} {'recovered':>11s} {'seeds':>6s}"
     )
     print(header)
     print("-" * len(header))
@@ -299,11 +389,21 @@ def main():
             continue
         model_rho = mean([v[0] for v in values])
         readout_rho = mean([v[1] for v in values])
+        refit_rho = mean([v[2] for v in values])
+        refit_cell = "       --" if refit_rho != refit_rho else f"{refit_rho:9.4f}"
         print(
             f"{state_input:12s} {regime:12s} {kind:12s} {model_rho:10.4f} "
-            f"{readout_rho:11.4f} {readout_rho - model_rho:+11.4f} {len(values):6d}"
+            f"{readout_rho:11.4f} {refit_cell} "
+            f"{readout_rho - model_rho:+11.4f} {len(values):6d}"
         )
 
+    print(
+        "\nJ_refit is the fair readout test: a head fitted on TRUE latent pairs"
+        "\nand scored on them. J_readout is the TRAINED head on true latents,"
+        "\nwhich is off-distribution for it -- treat it as a mismatch measure."
+        if args.refit_readout else "",
+        end="",
+    )
     print(
         "\nJ_model uses predicted latents (dynamics + readout error);"
         "\nJ_readout uses the simulator's own latents (readout error only)."
