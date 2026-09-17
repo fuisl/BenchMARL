@@ -90,22 +90,42 @@ the thing being tested, so the training distribution is a controlled variable.
 
 ## 4. How we test: gates
 
-Rather than one end-to-end number, we run gates in order, and a gate that fails
-stops the ones after it.
+The gate structure is not ours — it comes from an external review
+([`review_2026-09-16.md`](review_2026-09-16.md) §Gates 0–5), adopted wholesale
+after it reproduced three defects we had missed. Gates run **in order**, and a
+gate that fails stops the ones after it. That discipline is why we learned
+control fails *before* spending a large allocation on more seeds of it.
 
-| gate | question | verdict |
-|---|---|---|
-| 0 | Is the data what we think it is? | passed after repairs |
-| 1 | Is the task controllable *at all*, by a planner with the true simulator? | passed (Buzz Wire 78%) |
-| 2 | Is the cross-agent effect large enough for any probe to resolve? | **passed on Buzz Wire, failed on Balance** |
-| 3 | Does conditioning capture more of that effect? | **passed, replicated** |
-| 4 | Does that turn into better control? | **failed** |
+| # | The question the gate asks | What we ran | Verdict |
+|---|---|---|---|
+| **0** | Repair and audit before another sweep — is the data what we think it is, and does each measurement read the thing it names? | 1235, 1236, contract tests | **passed** |
+| **1** | Is the task controllable **with true dynamics at all**? Compare do-nothing, random, the scenario heuristic and simulator-MPC on the same roots and budget; hold H=5 and compare executing five blocks against one. | 1237 Balance, 1259 Buzz Wire | **passed** — and exposed the cadence bug |
+| **2** | With encoder geometry and reward-head quality removed, can learned joint dynamics support that validated controller? Score all three variants in **one common coordinate system**. | 1239, 1264 | **passed on Buzz Wire**; showed Balance is unmeasurable |
+| **3** | Is the **data coverage** adequate before adding model complexity? Competent-local actions vs controlled single/pair deviations vs broad independent actions, on matched anchors and budgets. | **not run** | open |
+| **4** | Does a learned model actually control, using exactly the admitted task, objective, inputs, horizon, cadence and search budget? Three-seed pilot first; expand only a *functioning* comparison. | 1261–1263 | **failed** |
+| **5** | Choose the next model change **from the remaining failure** — and change one thing, not data + loss + architecture + planner at once. | 1273, 1276 (running) | in progress |
 
-Gate 2 is the one we would recommend to anyone doing this kind of work. It asks
-whether the quantity you are about to compare models on is above your own
-measurement floor, *before* you compare them.
+Three things worth knowing about this:
 
----
+* **Gate 1 is the cheapest and it paid for itself twice.** Asking "can the *true
+  simulator* do this task at this cadence?" before comparing learned models is
+  what revealed that every control result for three months had been measured
+  through a planner that re-observed only four times per episode.
+* **Gate 2 is the one we would recommend to other teams.** Before comparing
+  models on a quantity, check the quantity is above your own measurement floor.
+  We added an explicit probe-resolution check, and it retired a whole task's
+  worth of previously reported numbers.
+* **Gate 4's own rule stopped us expanding.** It says to grow to eight seeds only
+  once the comparison *functions*. It did not, so the expansion was not
+  scheduled — 18 cells at 0/32 is not a variance problem.
+
+Our current work is a **Gate 5** action and obeys its constraint: the input
+condition changes, while data, loss, architecture and planner all stay fixed.
+
+**Deviations we are carrying.** Gate 3 has not been run, so data coverage remains
+an untested alternative explanation for the Gate 4 failure. And Gate 4 asks for
+*fresh* root episodes at final evaluation; we use 32 train-split roots and hold
+the 16 test roots frozen, so the final table still owes a run on unseen roots.
 
 ## 5. Main findings
 
