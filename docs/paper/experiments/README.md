@@ -94,6 +94,7 @@ their directories remain on disk.
 | `20_agent_position_validation.md` | Direct shared per-agent next-position model; 144-fit registered sweep complete; shared context and physical state improve one-block motion |
 | `21_latent_position_validation.md` | Same position target decoded from true, one-step predicted, and recursive latent states; latent pipeline fails against persistence and direct prediction |
 | `22_decision_information_localization.md` | Frozen Gate 0d: localize plan-ranking loss across encoder, rollout, scalar reward head, structured task head, and successive CEM populations |
+| `23_planner_coverage_structured_surrogate.md` | Gate 0e: collect competent-local and CEM hard-negative coverage, then test a task-sufficient physical surrogate with the true Buzz Wire cost |
 
 Two notes share the number `02` and three share `05`. They are not renumbered
 here because other documents link to them by filename; new notes continue from
