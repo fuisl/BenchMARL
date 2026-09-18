@@ -1,6 +1,7 @@
 # Gate 0e: planner coverage and structured physical surrogate
 
-Status: implementation under preflight. Date: 2026-09-18.
+Status: job 1331 running on commit `b3697fd`. Date: 2026-09-18. Artifacts:
+`outputs/structured_surrogate_1331/`.
 
 ## Question
 
