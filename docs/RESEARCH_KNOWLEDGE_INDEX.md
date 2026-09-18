@@ -1,7 +1,7 @@
 # Research knowledge index and source-of-truth map
 
-**Last consolidated:** 2026-09-17  
-**Scope:** all 40 Markdown documents under `docs/paper/`  
+**Last consolidated:** 2026-09-18
+**Scope:** all 42 Markdown documents under `docs/paper/`
 **Purpose:** make the research record navigable, distinguish current evidence
 from historical plans, and prevent a new experiment from silently rewriting an
 old conclusion.
@@ -41,6 +41,9 @@ rank candidate plans, and improve closed-loop cooperative control?
 | Reward-head explanation | **Rejected as the main fix.** A refitted head halves held-out reward MSE but ranks plans worse. Reward prediction accuracy is not plan-ranking quality. | [readout refit](paper/experiments/18_readout_refit.md) |
 | Direct agent motion | **Learnable for one block.** A shared transition predicts each agent's position five simulator steps ahead far better than persistence; shared conditioning and physical state improve every registered comparison. This is a direct supervised diagnostic, not latent-world-model validation. | [agent-position validation](paper/experiments/20_agent_position_validation.md) |
 | Latent physical validity | **Fails at the first transition.** A head fitted on predicted latents recovers part of their coordinate shift, but all 144 checkpoints remain worse than persistence and 3.84–13.13× worse than matched direct models. Recursive rollout adds error but is not the first failure. | [latent-position validation](paper/experiments/21_latent_position_validation.md) |
+| Decision-information localization | **Two failures are separable.** The reward interface is poor even on true latents; true-latent progress is useful, but recursive rollout rejects the known-good plan and CEM removes useful candidates as it optimizes. | [decision localization](paper/experiments/22_decision_information_localization.md) |
+| Planner-induced coverage | **Causally useful but insufficient.** It cuts oracle/local physical error about fivefold, improves plan ranking, and creates task progress; control remains unsafe. | [structured-surrogate gate](paper/experiments/23_planner_coverage_structured_surrogate.md) |
+| Structured physical control | **Fails the registered gate.** With latent coordinates and scalar reward removed, the full models still collide in 69--88% of episodes and succeed 1/48 times. | [structured-surrogate gate](paper/experiments/23_planner_coverage_structured_surrogate.md) |
 | General relational advantage | **Not supported.** Buzz Wire favors relational response prediction; corrected Balance favors joint plan ranking and learned return. | [corrected Balance](paper/experiments/12_balance_corrected.md), [Gate 2 and Gate 4](paper/experiments/14_gate2_gate4.md) |
 
 ### Defensible paper story
@@ -53,12 +56,15 @@ is a measurement and failure-decomposition paper:
 2. relational conditioning improves that response on Buzz Wire and replicates;
 3. observability changes prediction, ranking, and safety much more than model
    architecture does;
-4. these improvements still do not yield task progress or successful control;
-5. reward MSE, response prediction, plan ranking, and control are distinct
-   quantities and must not be used as substitutes for one another.
+4. observability repairs safety but not progress, while coverage repairs
+   progress but not safety or successful control;
+5. planner-induced coverage can recover physical generalization and progress
+   without recovering safe control;
+6. reward MSE, one-step physics, average plan ranking, selected-tail quality,
+   and control are distinct quantities and must not substitute for one another.
 
-The latest concise narrative is
-[the 2026-09-17 project report](paper/project_report_2026-09-17.md). Detailed
+The latest concise narrative is the
+[project report consolidated through 2026-09-18](paper/project_report_2026-09-17.md). Detailed
 numbers should be cited from the experiment note that produced them, not copied
 from this index.
 
@@ -102,16 +108,18 @@ Recommended reading paths:
 | Experimental governance | [coding rules](paper/coding_rules.md) | [experiment plan](paper/experiment_plan.md), [reporting](paper/experiments/07_reporting.md) | Rules are active; parts of the plan are historical or explicitly superseded. |
 | Task semantics and selection | [VMAS task survey](paper/vmas_task_survey.md) | [protocol](paper/experiments/01_protocol.md), [review](paper/review_2026-09-16.md) | Survey is exploratory. Installed VMAS code and validated task-specific notes govern actual runs. |
 | Defect and measurement audit | [audit](paper/audit_2026-09-15.md) | [review](paper/review_2026-09-16.md), [Gate 0 repairs](paper/experiments/11_gate0_repairs.md) | Audit findings F1–F12 explain why early conclusions changed. Correcting jobs decide present validity. |
-| Data construction and coverage | [datasets](paper/experiments/03_datasets.md) | [Transport comparisons](paper/experiments/02_transport_comparisons.md), [corrected Balance](paper/experiments/12_balance_corrected.md) | Coverage remains an open causal alternative because Gate 3 has not run. |
+| Data construction and coverage | [planner-induced coverage](paper/experiments/23_planner_coverage_structured_surrogate.md) | [datasets](paper/experiments/03_datasets.md), [corrected Balance](paper/experiments/12_balance_corrected.md) | Coverage now has a within-model behavior/full control: it improves OOD physics, ranking, and distance, but not safety or success. |
 | Model architecture and training | [model baselines](paper/experiments/04_model_baselines.md) | [proposal](paper/multi_agent_latent_mpc_proposal.md), [readout refit](paper/experiments/18_readout_refit.md) | Matched independent/joint/relational design is current; old SIGReg “not run” text is stale. |
 | Counterfactual response | [Gate 2 physical comparison](paper/experiments/14_gate2_gate4.md) | [initial C7](paper/experiments/05_counterfactual_prediction.md), [replication](paper/experiments/16_gate4_buzz_wire.md) | Use common-coordinate results. Pre-F6 latent-space ratios are secondary diagnostics, not physical effects. |
 | Rollout horizon | [corrected horizon note](paper/experiments/09_horizon_rollout.md) | [Gate 0 repairs](paper/experiments/11_gate0_repairs.md) | Corrected job 1235 replaces the reported 18.7× cliff. |
 | Goal and reward objectives | [goal objective](paper/experiments/10_goal_objective.md) | [Stage 1 rescoring](paper/experiments/08_stage1_rescoring.md), [readout refit](paper/experiments/18_readout_refit.md) | Random-endpoint goal gaps and the old readout anticorrelation are retired. |
-| Plan ranking | [plan ranking](paper/experiments/05_plan_ranking.md) | [corrected Balance](paper/experiments/12_balance_corrected.md), [observability control](paper/experiments/17_observability_control.md), [readout refit](paper/experiments/18_readout_refit.md) | Interpret with rankable-state counts, probe floor, candidate distribution, and native control. |
-| Closed-loop control | [Buzz Wire Gate 4](paper/experiments/16_gate4_buzz_wire.md) | [Balance Gate 1](paper/experiments/13_balance_control_gate.md), [Balance learned Gate 4](paper/experiments/14_gate2_gate4.md), [observability control](paper/experiments/17_observability_control.md) | All pre-cadence-repair control conclusions are historical. Buzz Wire provides the clean end-to-end falsification. |
+| Plan ranking | [decision localization](paper/experiments/22_decision_information_localization.md) | [plan ranking](paper/experiments/05_plan_ranking.md), [structured-surrogate gate](paper/experiments/23_planner_coverage_structured_surrogate.md) | Interpret with rankable-state counts, probe floor, candidate distribution, oracle percentile, and the selected CEM tail—not Spearman alone. |
+| Closed-loop control | [Buzz Wire Gate 4](paper/experiments/16_gate4_buzz_wire.md) | [observability control](paper/experiments/17_observability_control.md), [structured-surrogate gate](paper/experiments/23_planner_coverage_structured_surrogate.md) | All pre-cadence-repair control conclusions are historical. Buzz Wire falsifies both latent and current structured learned control. |
 | Direct physical transition diagnostic | [agent-position validation](paper/experiments/20_agent_position_validation.md) | [datasets](paper/experiments/03_datasets.md), [horizon](paper/experiments/09_horizon_rollout.md) | Establishes one-block physical motion learnability only; it does not validate the latent rollout or planning objective. |
 | Latent-to-physical position validation | [latent-position validation](paper/experiments/21_latent_position_validation.md) | [direct position](paper/experiments/20_agent_position_validation.md), [physical response](paper/experiments/14_gate2_gate4.md) | Separates true-latent probe floor, latent alignment, predicted-latent readout, and recursive drift on the same physical target. |
-| Run/artifact lookup | [experiment index](paper/experiments/README.md) | Individual numbered notes | Useful but incomplete for jobs 1261–1282; see documentation gaps. |
+| Decision-interface and optimizer failure | [decision localization](paper/experiments/22_decision_information_localization.md) | [cost landscape](paper/experiments/19_cost_landscape.md), [readout refit](paper/experiments/18_readout_refit.md) | Current decomposition of true-latent information, reward/progress scoring, recursive imagination, and CEM population shift. |
+| Structured physical surrogate | [planner-induced coverage](paper/experiments/23_planner_coverage_structured_surrogate.md) | [direct position](paper/experiments/20_agent_position_validation.md), [decision localization](paper/experiments/22_decision_information_localization.md) | Registered Baseline B result: one-step generalization and progress improve, safe control fails. |
+| Run/artifact lookup | [experiment index](paper/experiments/README.md) | Individual numbered notes | Current through jobs 1296 and 1331, but still incomplete for jobs 1261–1282; see documentation gaps. |
 
 ## 4. Current claim ledger
 
@@ -134,11 +142,13 @@ planned claim failed its direct test; **open** = not yet tested well enough;
 | K10 | The model has a hard 25-step rollout limit and an 18.7× error cliff. | **Retired** | Caused by reading an unsupervised positional slot; [09](paper/experiments/09_horizon_rollout.md), [11](paper/experiments/11_gate0_repairs.md). |
 | K11 | Observation-space endpoint goals provide a valid reward-free control objective here. | **Rejected in the tested designs** | Three failures and one partial pass; native task outcomes and safety do not agree with goal distance. [10](paper/experiments/10_goal_objective.md) |
 | K12 | Job 1203's readout Spearman near −0.25 proves the reward head points the wrong way. | **Retired** | It mixed a trained-on-predicted head with true latents. Correct refit gives roughly +0.028 to +0.050, but still no useful ranking. [18](paper/experiments/18_readout_refit.md) |
-| K13 | Data coverage explains the remaining learned-control failure. | **Open** | Gate 3 has not run. It remains an alternative, not the conclusion. |
-| K14 | Rare collision events dominate cost ranking and are underweighted by squared-error training. | **Open** | Plausible after job 1282, explicitly untested; [18](paper/experiments/18_readout_refit.md). |
+| K13 | Data coverage is sufficient to repair learned control. | **Falsified for the tested one-shot mixture** | Within the structured model, full coverage sharply improves oracle/local physics, rank correlation, and final distance, but leaves 69--88% collisions and 1/48 successes. The hard negatives came from the old planner, not an iterative structured-planner loop. [23](paper/experiments/23_planner_coverage_structured_surrogate.md) |
+| K14 | Average collision prediction quality is enough to protect CEM. | **Falsified for the tested surrogate** | Full models reach collision AUROC about 0.98 on held-out mixtures but CEM still selects unsafe motion. This supports a competitive-tail/calibration problem; it does not by itself prove which loss or weighting will fix it. [23](paper/experiments/23_planner_coverage_structured_surrogate.md) |
 | K15 | The physical-input learned cost fails because it does not represent task progress, rather than because CEM cannot optimize it. | **Bounded** | The oracle plan ranks poorly even when placed directly in a 302-plan bank, while the learned argmin makes do-nothing-level progress; one seed and 16 roots. [19](paper/experiments/19_cost_landscape.md) |
 | K16 | One-block individual-agent motion is learnable by a transition shared across identities, and shared context helps. | **Established on the fixed Buzz Wire bank** | Every registered model beats persistence; joint and relational each beat independent on 8/8 seeds in every input/regime cell. Physical input is best in every cell. This is direct `(dx, dy)` supervision, one bank, one block, and does not establish latent-rollout validity. [20](paper/experiments/20_agent_position_validation.md) |
 | K17 | The current latent transition preserves sufficiently accurate agent position for planning. | **Falsified on the fixed Buzz Wire bank** | With a head fitted on predicted latents, all 144 checkpoints are worse than persistence and 3.84–13.13× worse than matched direct models. Both MLP and linear heads agree; the error is already present at h=1. [21](paper/experiments/21_latent_position_validation.md) |
+| K18 | Useful task information in a latent guarantees that the planning interface and recursive rollout can use it. | **Falsified on Buzz Wire** | True-latent progress ranks plans well, the reward interface does not, and recursive rollout demotes the known-good plan; later CEM populations lose true quality. [22](paper/experiments/22_decision_information_localization.md) |
+| K19 | Removing latent coordinates and scalar reward is sufficient for a cheap physical world model to control Buzz Wire. | **Falsified for Baseline B** | Full-coverage structured models make replicated distance progress but do not achieve positive return or safe success. [23](paper/experiments/23_planner_coverage_structured_surrogate.md) |
 
 ## 5. What went wrong
 
@@ -152,7 +162,7 @@ same scientific chain.
 |---|---|---|
 | The paper committed early to a positive chain. | Negative or mismatched intermediate metrics were interpreted as model failures instead of measurement failures. | The gate protocol validates task, objective, measurement floor, and oracle control before architecture claims. |
 | Tasks were selected by narrative coupling, not measured decision relevance. | Transport was nearly uncontrollable from selected anchors; Wheel and Dropout had no active anchors under the chosen probe; Balance effects were below probe resolution. | Report active-anchor counts, task progress, and measurement floor before training sweeps. |
-| Coverage was assumed from action marginals and branching. | Logged data often did not identify the interaction the model was asked to learn. | Gate 3 is still required: competent-local behavior plus controlled deviations and broad actions on matched roots. |
+| Coverage was assumed from action marginals and branching. | Logged data often did not identify the interaction the model was asked to learn. | Job 1331 adds competent-local and CEM-query data on split-safe roots. It establishes a coverage effect, while leaving iterative on-policy structured-planner aggregation open. |
 | Architecture, observability, objective, and task changed across comparisons. | “Structure substitutes for information” looked causal before a within-task input intervention existed. | Hold task/data/planner fixed and vary input condition; treat cross-task comparisons as descriptive. |
 
 ### 5.2 Implementation and protocol defects
@@ -187,7 +197,7 @@ same scientific chain.
   establish freshness.
 - Old statements often remained inline with a later “revision” paragraph,
   making search results return both the false and corrected claim.
-- Nine historical jobs lack dedicated notes, while newer jobs 1261–1282 have
+- Nine historical jobs lack dedicated notes, while several jobs 1261–1282 have
   notes but are absent from the job table in the experiment index.
 - The same experiment numbers (`02` and `05`) were reused, weakening chronological
   navigation.
@@ -235,6 +245,8 @@ partial jobs remain evidence but must not be pooled with completed comparisons.
 | Cost-landscape diagnosis | [19](paper/experiments/19_cost_landscape.md) | The physical-input model represents collision penalty but does not rank task progress; exhaustive bank rules out CEM search as the cause. | Current one-seed mechanism result; no architecture claim. |
 | Bottom-up physical validation | [20](paper/experiments/20_agent_position_validation.md) | Direct next-position model shared across agents; all models beat persistence, shared conditioning helps, and physical input is strongest. | Complete 144-fit result; bounded to one-step direct supervision on one fixed bank. |
 | Latent physical validation | [21](paper/experiments/21_latent_position_validation.md) | Direct-vs-latent comparison, true/predicted latent heads, recursive physical curves, and filmstrips. | Complete 144-checkpoint MLP sweep plus linear control; current evidence that the latent pipeline loses position at the first transition. |
+| Decision-information localization | [22](paper/experiments/22_decision_information_localization.md) | Separates true-latent information, reward/progress interfaces, recursive rollout, and successive CEM populations. | Complete three-seed Gate 0d; current evidence for two distinct interface/rollout failures and optimizer exploitation. |
+| Planner coverage and Baseline B | [23](paper/experiments/23_planner_coverage_structured_surrogate.md) | Split-safe competent/CEM-query collection and behavior-vs-full structured physical control. | Complete three-seed registered gate; coverage improves intermediate metrics and motion, while safe control fails. |
 
 ## 8. Complete document catalog
 
@@ -290,10 +302,12 @@ Every Markdown file under `docs/paper/` appears below.
 | [15_buzz_wire_control_gate.md](paper/experiments/15_buzz_wire_control_gate.md) | Buzz Wire oracle controllability and cadence repair. | Current planner reference. |
 | [16_gate4_buzz_wire.md](paper/experiments/16_gate4_buzz_wire.md) | Learned Buzz Wire control failure, collision mechanism, second-bank response replication, observability response. | Central current result. |
 | [17_observability_control.md](paper/experiments/17_observability_control.md) | Observation/history/physical inputs in control and ranking; collision repair without progress. | Central current mechanism result. |
-| [18_readout_refit.md](paper/experiments/18_readout_refit.md) | Corrected readout diagnostic, reward MSE versus ranking dissociation, rejected candidate-shift explanation. | Latest experiment note. |
+| [18_readout_refit.md](paper/experiments/18_readout_refit.md) | Corrected readout diagnostic, reward MSE versus ranking dissociation, rejected candidate-shift explanation. | Current readout-specific result. |
 | [19_cost_landscape.md](paper/experiments/19_cost_landscape.md) | Exhaustive learned-cost comparison of oracle, zero, and random plans; separates static preference, progress blindness, and search failure. | Current one-seed failure diagnosis. |
 | [20_agent_position_validation.md](paper/experiments/20_agent_position_validation.md) | Direct shared per-agent position model, physical metrics, paired seed analysis, and latent-model boundary. | Complete 144-fit registered sweep. |
 | [21_latent_position_validation.md](paper/experiments/21_latent_position_validation.md) | True-latent probe floor, predicted-latent planning head, direct-model comparison, recursive physical rollout, and rendered filmstrips. | Complete 144-checkpoint MLP result plus linear control. |
+| [22_decision_information_localization.md](paper/experiments/22_decision_information_localization.md) | True-latent versus rollout reward/progress ranking and CEM-stage population truth. | Current decision-level failure localization. |
+| [23_planner_coverage_structured_surrogate.md](paper/experiments/23_planner_coverage_structured_surrogate.md) | Planner-induced coverage collection, structured physical surrogate, held-out ranking, and closed-loop control. | Latest registered experiment; failed control gate with positive coverage effect. |
 
 ## 9. Documentation gaps
 
@@ -311,13 +325,15 @@ currently disagree.
 
 ### Unresolved scientific work
 
-- **Gate 3 coverage experiment has not run.** Coverage remains a competing
-  explanation for failed learned control.
+- **Iterative on-policy coverage remains open.** Job 1331's hard negatives came
+  from the frozen latent/reward planner, not from the newly fitted structured
+  planner whose errors CEM ultimately exploited.
 - Final evaluation on **fresh unseen roots** is still owed if any learned
   controller becomes functional; current Gate 4 uses train-split roots while
   preserving test roots.
-- The hypothesis that rare collision events dominate ranking while MSE fits the
-  non-collision bulk is untested.
+- Collision-tail calibration on the structured planner's own low-risk selected
+  candidates is still unmeasured; aggregate AUROC around 0.98 did not protect
+  closed-loop CEM.
 - Buzz Wire history-input response is below the probe's resolution and should
   not be called null.
 - Balance learned-control architecture ordering is based on three training seeds
@@ -327,6 +343,10 @@ currently disagree.
   latent pipeline fails at the first block and degrades recursively; see
   [experiments 20](paper/experiments/20_agent_position_validation.md) and
   [21](paper/experiments/21_latent_position_validation.md).
+- The structured surrogate improves average five-block ranking but worsens the
+  true return of its selected tail; horizon-localized ranking and calibration
+  are the next unresolved measurement. See
+  [experiment 23](paper/experiments/23_planner_coverage_structured_surrogate.md).
 
 ### Editorial cleanup still needed
 

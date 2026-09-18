@@ -1,6 +1,7 @@
 # Multi-agent world models for joint planning — where we are
 
-**2026-09-17 · branch `feat/le-wm` · target AAMAS 2027 (abstract 1 Oct, paper 8 Oct)**
+**Consolidated through 2026-09-18 · branch `feat/le-wm` · target AAMAS 2027
+(abstract 1 Oct, paper 8 Oct)**
 
 A short version of the work so far, for people who have not been following the
 job numbers. Every number here comes from a file in `outputs/`; the job that
@@ -101,9 +102,9 @@ control fails *before* spending a large allocation on more seeds of it.
 | **0** | Repair and audit before another sweep — is the data what we think it is, and does each measurement read the thing it names? | 1235, 1236, contract tests | **passed** |
 | **1** | Is the task controllable **with true dynamics at all**? Compare do-nothing, random, the scenario heuristic and simulator-MPC on the same roots and budget; hold H=5 and compare executing five blocks against one. | 1237 Balance, 1259 Buzz Wire | **passed** — and exposed the cadence bug |
 | **2** | With encoder geometry and reward-head quality removed, can learned joint dynamics support that validated controller? Score all three variants in **one common coordinate system**. | 1239, 1264 | **passed on Buzz Wire**; showed Balance is unmeasurable |
-| **3** | Is the **data coverage** adequate before adding model complexity? Competent-local actions vs controlled single/pair deviations vs broad independent actions, on matched anchors and budgets. | **not run** | open |
+| **3** | Is the **data coverage** adequate before adding model complexity? Competent-local actions and planner-induced hard negatives on split-safe roots. | 1331 | **coverage helps physics, ranking, and progress; it does not make control safe** |
 | **4** | Does a learned model actually control, using exactly the admitted task, objective, inputs, horizon, cadence and search budget? Three-seed pilot first; expand only a *functioning* comparison. | 1261–1263 | **failed** |
-| **5** | Choose the next model change **from the remaining failure** — and change one thing, not data + loss + architecture + planner at once. | 1273, 1276 (running) | in progress |
+| **5** | Choose the next model change **from the remaining failure** — and change one thing, not data + loss + architecture + planner at once. | 1273, 1276, 1291, 1294--1296, 1331 | **localized through a failed structured-surrogate control gate** |
 
 Three things worth knowing about this:
 
@@ -119,13 +120,15 @@ Three things worth knowing about this:
   once the comparison *functions*. It did not, so the expansion was not
   scheduled — 18 cells at 0/32 is not a variance problem.
 
-Our current work is a **Gate 5** action and obeys its constraint: the input
-condition changes, while data, loss, architecture and planner all stay fixed.
+The later Gate 5 sequence first localized the latent/reward/rollout failures,
+then job 1331 changed both representation and coverage as an explicitly named
+existence test rather than an architecture comparison. Its behavior-only/full
+pair isolates the coverage effect inside that new baseline.
 
-**Deviations we are carrying.** Gate 3 has not been run, so data coverage remains
-an untested alternative explanation for the Gate 4 failure. And Gate 4 asks for
-*fresh* root episodes at final evaluation; we use 32 train-split roots and hold
-the 16 test roots frozen, so the final table still owes a run on unseen roots.
+**Deviation we are carrying.** Gate 4 asks for *fresh* root episodes at final
+evaluation. Earlier learned-control tables use 32 train-split roots; job 1331
+does use the 16 frozen test roots, but a final headline controller would still
+need a newly generated untouched evaluation bank.
 
 ## 5. Main findings
 
@@ -316,6 +319,41 @@ choice changes it far less than the latent-vs-direct gap. Full numbers and
 renders are in [experiments 20](experiments/20_agent_position_validation.md)
 and [21](experiments/21_latent_position_validation.md).
 
+### Decision localization and the structured-surrogate test
+
+Job 1296 asks the decision-level version of that question. Useful progress is
+present in the physical model's true latents (Plan--Real Spearman 0.478 and the
+known-good plan near the top decile), but the scalar reward interface is already
+poor on true latents. Recursive rollout then degrades the progress ordering and
+rejects the same known-good plan. Across CEM iterations, optimization removes
+the remaining useful true candidates from its own population. This separates
+reward-interface failure, rollout loss, and optimizer-induced model
+exploitation; see [experiment 22](experiments/22_decision_information_localization.md).
+
+Job 1331 then performs the requested existence test without learned latents or
+a scalar reward head. A 14-state physical surrogate predicts next state,
+clearance, collision probability, and collision penalty; the known Buzz Wire
+cost is reconstructed during planning. The full training mixture adds
+true-dynamics competent plans, local perturbations, and simulator-labelled
+candidates queried from CEM iterations 1/5/10/20/30.
+
+Coverage works on its intended intermediate targets. It cuts ball-position
+error on held-out oracle/local actions from about 0.035--0.036 m to about
+0.0075--0.0078 m, raises Plan--Real Spearman from 0.162 to 0.286, and all three
+seeds move the ball closer than do-nothing. It still does not produce safe
+control: the three full-mixture seeds collide in 69--88% of episodes, return is
+negative, and only 1/48 episodes succeeds. The known-good plan remains around
+the 59th predicted percentile, while the full model's selected test-bank plan
+has worse true return despite better global correlation.
+
+This is a registered failure of Baseline B, not a null result. It establishes
+that coverage is causal for physical generalization and progress while showing
+that average one-step accuracy, collision AUROC near 0.98, and improved global
+ranking do not secure the extreme low-cost tail CEM uses. The competent action
+basin is also narrow: local perturbations around the oracle collide 40.9% of
+the time. Full results and the next controlled diagnostic are in
+[experiment 23](experiments/23_planner_coverage_structured_surrogate.md).
+
 ---
 
 ## 8. Where this leaves the paper
@@ -326,9 +364,10 @@ matched single-agent model, on two independent datasets, 8 seeds each; and the
 benefit scales with state observability in a controlled within-task intervention.
 
 **Falsified.** That better cross-agent prediction yields better joint planning.
-Tested directly on the one task where both ends are measurable, then re-tested
-after repairing the information defect that caused the first failure. Both times:
-0/32 successes, and nothing beating an agent that does not act.
+Tested directly on the one task where both ends are measurable, re-tested after
+repairing observability, and finally tested with a task-sufficient physical
+surrogate and planner-induced coverage. The last intervention recovers motion
+but not safe control.
 
 So the paper is **a measurement paper**, and §7 makes it a stronger one than it
 was yesterday. Cross-agent response is measurable; conditioning captures it; the
@@ -367,6 +406,8 @@ architecture-vs-observability, and it closes the last cheap line of attack.
 | Per-job notes | [`experiments/README.md`](experiments/README.md) maps every job to its artifacts |
 | Current status | [`status_2026-09-16.md`](status_2026-09-16.md) |
 | The failure in full | [`experiments/16_gate4_buzz_wire.md`](experiments/16_gate4_buzz_wire.md) |
+| Decision-level localization | [`experiments/22_decision_information_localization.md`](experiments/22_decision_information_localization.md) |
+| Structured-surrogate coverage gate | [`experiments/23_planner_coverage_structured_surrogate.md`](experiments/23_planner_coverage_structured_surrogate.md) |
 | Measurability | [`experiments/14_gate2_gate4.md`](experiments/14_gate2_gate4.md) |
 | Conventions | [`coding_rules.md`](coding_rules.md) |
 | Figures | `outputs/horizon_curves/` — rollout-error curves and imagined-rollout filmstrips; regenerate with `scripts/horizon_curves.sh` and `scripts/imagination_figures.sh` (`outputs/` is gitignored, so only the code is versioned) |
