@@ -21,6 +21,8 @@ from examples.world_model.models import (
     masked_sum_count,
     MultiAgentWorldModel,
     parameter_counts,
+    ReferenceMultiAgentWorldModel,
+    ReferenceProjector,
     SIGReg,
 )
 
@@ -46,6 +48,25 @@ def build(kind, seed=0, wake=False):
     if wake:
         wake_conditioning(model)
     return model.eval()
+
+
+def build_reference(agents=AGENTS):
+    torch.manual_seed(0)
+    return ReferenceMultiAgentWorldModel(
+        "relational",
+        OBS,
+        ACT,
+        agents,
+        dim=DIM,
+        hidden_dim=48,
+        history_size=3,
+        depth=2,
+        heads=2,
+        dim_head=16,
+        mlp_dim=48,
+        dropout=0.1,
+        projector_hidden_dim=64,
+    ).eval()
 
 
 def wake_conditioning(model):
@@ -83,6 +104,62 @@ def test_prediction_shape(kind):
     model = build(kind)
     observation, action = sample()
     assert predict(model, observation, action).shape == (3, FRAMES - 1, AGENTS, DIM)
+
+
+def test_reference_profile_has_pinned_projectors_and_predictor_shape():
+    model = build_reference()
+    assert model.profile == "lewm_reference"
+    assert model.history_size == 3
+    assert len(model.predictor.layers) == 2
+    assert model.predictor.layers[0].attn.heads == 2
+    assert isinstance(model.projector, ReferenceProjector)
+    assert isinstance(model.projector.net[1], torch.nn.BatchNorm1d)
+    assert model.projector.net[0].in_features == DIM
+    assert model.projector.net[0].out_features == 64
+    assert model.projector.net[-1].out_features == DIM
+    assert isinstance(model.pred_proj.net[1], torch.nn.BatchNorm1d)
+    assert model.predictor.pos_embedding.shape[1] == 3
+
+
+def test_reference_profile_rejects_context_longer_than_history():
+    model = build_reference()
+    latent = torch.randn(2, 4, AGENTS, DIM)
+    action = torch.randn(2, 4, AGENTS, ACT)
+    with pytest.raises(ValueError, match="exceeds history_size"):
+        model.predict(latent, action)
+
+
+def test_reference_single_agent_bypasses_multi_agent_conditioner():
+    model = build_reference(agents=1)
+
+    class Forbidden(torch.nn.Module):
+        def forward(self, *_args):
+            raise AssertionError("single-agent reference must use action embeddings")
+
+    model.conditioner = Forbidden()
+    observation = torch.randn(2, 3, 1, OBS)
+    action = torch.randn(2, 3, 1, ACT)
+    with torch.no_grad():
+        result = model.predict(model.encode(observation), action)
+    assert result.shape == (2, 3, 1, DIM)
+
+
+def test_reference_rollout_never_exceeds_registered_context():
+    model = build_reference()
+    lengths = []
+    original = model.predict
+
+    def record(latent, action):
+        lengths.append((latent.size(1), action.size(1)))
+        return original(latent, action)
+
+    model.predict = record
+    initial = torch.randn(2, 1, AGENTS, DIM)
+    actions = torch.randn(2, 5, AGENTS, ACT)
+    with torch.no_grad():
+        result = model.rollout(initial, actions)
+    assert result.shape == (2, 5, AGENTS, DIM)
+    assert lengths == [(1, 1), (2, 2), (3, 3), (3, 3), (3, 3)]
 
 
 def test_independent_has_no_cross_agent_path():
@@ -227,3 +304,10 @@ def test_only_the_conditioner_differs_between_baselines():
     for group in ("encoder", "action_encoder", "predictor", "readout"):
         sizes = {counts[kind][group] for kind in counts}
         assert len(sizes) == 1, f"{group} differs across baselines: {sizes}"
+
+
+def test_reference_parameter_report_includes_both_projectors():
+    counts = parameter_counts(build_reference())
+    assert counts["projector"] > 0
+    assert counts["pred_proj"] == counts["projector"]
+    assert counts["total"] == counts["dynamics_total"] + counts["readout"]

@@ -99,6 +99,7 @@ their directories remain on disk.
 | `24_planner_tail_failure.md` | Gate 5: freeze job 1331 and separate planner-induced one-step shift, recursive accumulation, and false-safe CEM tails |
 | `25_feedback_cadence_ablation.md` | Does replanning cadence K compensate for the dynamics error Gate 5 localized, on the same frozen structured surrogate; K=1 reused from job 1331, K=2/5 computed |
 | `26_g6a_planner_aware_aggregation.md` | Experiment 24/G6a: two-round structured DAgger with a matched generic-data control, re-diagnosed by an unchanged Gate 5 rerun |
+| `27_audit_gate_a0_reference_profile.md` | Audit Gate A0 step 1: preserve the compact legacy model and add a separately named reference-compatible LeWM architecture/training profile |
 
 Two notes share the number `02` and three share `05`. They are not renumbered
 here because other documents link to them by filename; new notes continue from

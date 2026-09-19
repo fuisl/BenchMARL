@@ -1,0 +1,39 @@
+# Audit Gate A0.1: vector-input, reference-compatible LeWM profile.
+# The vector encoder and multi-agent conditioner are explicit adaptations; the
+# temporal width, predictor, projector and optimizer recipe match the pinned
+# LeWM contract.  Real planner history and SIGReg population semantics are A0
+# step 2 and are intentionally not claimed by this configuration yet.
+defaults:
+  - world_model
+  - _self_
+
+model:
+  profile: lewm_reference
+  dim: 192
+  depth: 6
+  heads: 16
+  dim_head: 64
+  mlp_dim: 2048
+  dropout: 0.1
+  history_size: 3
+  projector_hidden_dim: 2048
+
+data:
+  # This is one independently encoded frame, not the legacy concatenated
+  # state_input=history representation.
+  state_input: observation
+  history_frames: 3
+
+train:
+  batch_size: 128
+  dynamics_epochs: 100
+  learning_rate: 5.0e-5
+  weight_decay: 1.0e-3
+  gradient_clip: 1.0
+  sigreg_weight: 0.09
+  sigreg_knots: 17
+  sigreg_projections: 1024
+
+hydra:
+  run:
+    dir: outputs/a0_reference_${model.kind}_${data.regime}

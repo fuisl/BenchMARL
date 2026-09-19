@@ -22,6 +22,10 @@ data:
   history_frames: 3
 
 model:
+  # Historical checkpoints omit this field and load as legacy_compact.
+  # lewm_reference is a parallel Audit-Gate-A0 profile; it never changes the
+  # module graph used by those checkpoints.
+  profile: legacy_compact  # legacy_compact | lewm_reference
   kind: relational  # independent | joint | relational
   dim: 192          # LeWM embed_dim
   hidden_dim: 512
@@ -35,6 +39,9 @@ model:
   dim_head: 32
   mlp_dim: 512
   dropout: 0.0
+  # Used only by lewm_reference.
+  history_size: 3
+  projector_hidden_dim: 2048
 
 train:
   batch_size: 128       # LeWM loader.batch_size

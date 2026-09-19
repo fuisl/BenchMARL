@@ -3,8 +3,13 @@
 #  This source code is licensed under the license found in the
 #  LICENSE file in the root directory of this source tree.
 #
-"""M4 (docs/paper/experiment_plan.md): three latent world-model baselines that
-differ only in how another agent's latent and action reach the predictor.
+"""Latent world-model profiles and multi-agent conditioning baselines.
+
+The historical :class:`MultiAgentWorldModel` is the ``legacy_compact`` profile:
+three baselines that differ only in how another agent's latent and action reach
+the predictor.  It is intentionally frozen for checkpoint compatibility.
+Audit Gate A0 adds :class:`ReferenceMultiAgentWorldModel` as a separate
+``lewm_reference`` profile rather than rewriting that lineage in place.
 
 The predictor stack, the SIGReg anti-collapse term and the action embedder are
 ported from official LeWM revision 8edfeb336732b5f3ce7b8b210d0ba370a09e2cac
@@ -13,7 +18,7 @@ from the reference: causal autoregressive prediction over frames, AdaLN-zero
 action conditioning, an undetached prediction target, and
 ``loss = MSE(pred, target) + weight * SIGReg(emb)``.
 
-Deliberate deviations, all recorded in experiments/04_model_baselines.md:
+Deliberate legacy deviations, all recorded in experiments/04_model_baselines.md:
 
 * the reference encodes pixels with a ViT; VMAS tasks are vector-observation, so
   a shared per-agent MLP encoder replaces it;
@@ -338,6 +343,7 @@ class MultiAgentWorldModel(nn.Module):
         obs_std=None,
     ):
         super().__init__()
+        self.profile = "legacy_compact"
         self.kind = kind
         self.agents = agents
         self.dim = dim
@@ -393,6 +399,129 @@ class MultiAgentWorldModel(nn.Module):
             predicted = self.predict(history, actions[:, : step + 1])
             history = torch.cat([history, predicted[:, -1:]], dim=1)
         return history[:, 1:]
+
+
+class ReferenceProjector(nn.Module):
+    """LeWM's two-layer projector with hidden BatchNorm.
+
+    This is a literal vector analogue of ``module.MLP`` in pinned LeWM
+    revision ``8edfeb33``.  The vector encoder is the unavoidable modality
+    adaptation; projector geometry is not.
+    """
+
+    def __init__(self, dim=192, hidden_dim=2048):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(dim, hidden_dim),
+            nn.BatchNorm1d(hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, dim),
+        )
+
+    def forward(self, value):
+        shape = value.shape
+        return self.net(value.reshape(-1, shape[-1])).reshape(shape)
+
+
+class ReferenceMultiAgentWorldModel(MultiAgentWorldModel):
+    """Reference-compatible LeWM vector profile.
+
+    The encoder is necessarily an MLP rather than LeWM's image ViT.  For one
+    agent, action conditioning bypasses the multi-agent conditioner and matches
+    the pinned predictor interface exactly.  With multiple agents the existing
+    conditioner is retained as an explicit multi-agent adaptation.
+
+    Real observation/action history is intentionally not managed here.  That
+    belongs to the planner interface and is introduced by Audit Gate A0 step 2.
+    This class only establishes the reference architecture and bounded temporal
+    context while keeping legacy checkpoints loadable by the original class.
+    """
+
+    def __init__(
+        self,
+        kind,
+        obs_dim,
+        action_dim,
+        agents,
+        dim=192,
+        hidden_dim=512,
+        conditioner_budget=None,
+        history_size=3,
+        depth=6,
+        heads=16,
+        dim_head=64,
+        mlp_dim=2048,
+        dropout=0.1,
+        projector_hidden_dim=2048,
+        obs_mean=None,
+        obs_std=None,
+    ):
+        if history_size < 1:
+            raise ValueError("history_size must be positive")
+        super().__init__(
+            kind,
+            obs_dim,
+            action_dim,
+            agents,
+            dim=dim,
+            hidden_dim=hidden_dim,
+            conditioner_budget=conditioner_budget,
+            frames=history_size,
+            depth=depth,
+            heads=heads,
+            dim_head=dim_head,
+            mlp_dim=mlp_dim,
+            dropout=dropout,
+            obs_mean=obs_mean,
+            obs_std=obs_std,
+        )
+        self.profile = "lewm_reference"
+        self.history_size = history_size
+        self.projector = ReferenceProjector(dim, projector_hidden_dim)
+        self.pred_proj = ReferenceProjector(dim, projector_hidden_dim)
+
+    def encode(self, observation):
+        normalized = (observation - self.obs_mean) / self.obs_std
+        return self.projector(self.encoder(normalized))
+
+    def predict(self, latent, action):
+        if latent.size(1) != action.size(1):
+            raise ValueError("Reference latent/action contexts must have equal length")
+        if latent.size(1) > self.history_size:
+            raise ValueError(
+                f"Reference context exceeds history_size={self.history_size}"
+            )
+        action_emb = self.action_encoder(
+            action.transpose(1, 2).reshape(-1, action.size(1), action.size(-1))
+        )
+        batch, frames, agents = latent.shape[:3]
+        action_emb = action_emb.view(batch, agents, frames, self.dim).transpose(1, 2)
+        conditioning = (
+            action_emb
+            if agents == 1
+            else self.conditioner(latent, action_emb)
+        )
+        tokens = latent.transpose(1, 2).reshape(batch * agents, frames, self.dim)
+        cond = conditioning.transpose(1, 2).reshape(batch * agents, frames, self.dim)
+        predicted = self.predictor(tokens, cond)
+        predicted = self.pred_proj(predicted)
+        return predicted.view(batch, agents, frames, self.dim).transpose(1, 2)
+
+    def rollout(self, latent, actions):
+        """Bound predicted context to the reference history length.
+
+        Step 1 may still start this method from one frame.  Step 2 replaces that
+        planner-side approximation with three real frames and two real actions.
+        """
+        history = latent
+        predictions = []
+        for step in range(actions.size(1)):
+            context = history[:, -self.history_size :]
+            window = actions[:, : step + 1][:, -self.history_size :]
+            predicted = self.predict(context, window)[:, -1:]
+            predictions.append(predicted)
+            history = torch.cat([history, predicted], dim=1)
+        return torch.cat(predictions, dim=1)
 
 
 class SharedAgentPositionModel(nn.Module):
@@ -496,15 +625,19 @@ class SharedAgentPositionModel(nn.Module):
 
 def parameter_counts(model):
     """Report capacity so the three baselines can be compared honestly."""
+    modules = [
+        ("encoder", model.encoder),
+        ("action_encoder", model.action_encoder),
+        ("conditioner", model.conditioner),
+        ("predictor", model.predictor),
+    ]
+    for name in ("projector", "pred_proj"):
+        if hasattr(model, name):
+            modules.append((name, getattr(model, name)))
+    modules.append(("readout", model.readout))
     groups = {
         name: sum(p.numel() for p in module.parameters())
-        for name, module in (
-            ("encoder", model.encoder),
-            ("action_encoder", model.action_encoder),
-            ("conditioner", model.conditioner),
-            ("predictor", model.predictor),
-            ("readout", model.readout),
-        )
+        for name, module in modules
     }
     groups["dynamics_total"] = sum(
         value for key, value in groups.items() if key != "readout"

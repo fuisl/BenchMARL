@@ -22,7 +22,9 @@ Run: ``python -m examples.world_model.train [overrides]``
 import csv
 import hashlib
 import json
+import math
 import subprocess
+from contextlib import nullcontext
 from importlib.metadata import version
 from pathlib import Path
 
@@ -39,6 +41,7 @@ from examples.world_model.models import (
     masked_sum_count,
     MultiAgentWorldModel,
     parameter_counts,
+    ReferenceMultiAgentWorldModel,
     SIGReg,
 )
 from omegaconf import DictConfig, OmegaConf
@@ -68,18 +71,71 @@ def loaders(cfg):
             data,
             batch_size=cfg.train.batch_size,
             shuffle=split == "train",
-            drop_last=False,
+            # Pinned LeWM drops the incomplete training batch.  Preserve the
+            # historical behavior for every legacy checkpoint and experiment.
+            drop_last=(
+                split == "train"
+                and cfg.model.get("profile", "legacy_compact") == "lewm_reference"
+            ),
             collate_fn=torch.stack,
             generator=torch.Generator().manual_seed(cfg.seed),
         )
     return splits
 
 
-def observation_statistics(loader):
+def reference_training_view(model, batch):
+    """Return LeWM's registered 3-context/1-prediction training window.
+
+    Pinned LeWM loads four frames, feeds the first three embeddings/actions to
+    the predictor, and uses frames 1..3 as shifted targets.  Existing offline
+    snippets are longer, so step 1 takes their first exact reference window;
+    it does not reinterpret the legacy concatenated-history input condition.
+    """
+    if getattr(model, "profile", "legacy_compact") != "lewm_reference":
+        return batch
+    required_frames = model.history_size + 1
+    if batch["observation"].shape[1] < required_frames:
+        raise ValueError(
+            f"Reference training needs {required_frames} observations, got "
+            f"{batch['observation'].shape[1]}"
+        )
+    frame_keys = {
+        "observation",
+        "agent_state",
+        "package_state",
+        "observation_valid",
+    }
+    block_keys = {
+        "action",
+        "primitive_action",
+        "primitive_reward",
+        "primitive_valid",
+        "valid",
+        "outcome_valid",
+        "done",
+        "terminated",
+        "truncated",
+    }
+    view = {}
+    for key, value in batch.items():
+        if key in frame_keys:
+            value = value[:, :required_frames]
+        elif key in block_keys:
+            value = value[:, : model.history_size]
+        view[key] = value
+    return view
+
+
+def observation_statistics(loader, max_frames=None):
     """Normalisation fitted on valid TRAINING frames only (M3 handoff contract)."""
     total, square, count = 0.0, 0.0, 0
     for batch in loader:
-        frames = batch["observation"][batch["observation_valid"]]
+        observation = batch["observation"]
+        valid = batch["observation_valid"]
+        if max_frames is not None:
+            observation = observation[:, :max_frames]
+            valid = valid[:, :max_frames]
+        frames = observation[valid]
         flat = frames.reshape(-1, frames.size(-1)).double()
         total = total + flat.sum(dim=0)
         square = square + flat.square().sum(dim=0)
@@ -103,6 +159,7 @@ def block_reward(batch):
 
 def dynamics_losses(model, sigreg, batch, cfg):
     """LeWM's two-term objective, masked to valid blocks/frames."""
+    batch = reference_training_view(model, batch)
     latent = model.encode(batch["observation"])
     predicted = model.predict(latent[:, :-1], batch["action"])
     target = latent[:, 1:]  # undetached, as in the reference
@@ -119,6 +176,7 @@ def dynamics_losses(model, sigreg, batch, cfg):
 
 def readout_losses(model, batch):
     """Reward/termination fit on frozen, predicted latents."""
+    batch = reference_training_view(model, batch)
     with torch.no_grad():
         latent = model.encode(batch["observation"])
         predicted = model.predict(latent[:, :-1], batch["action"])
@@ -153,6 +211,7 @@ def evaluate(model, sigreg, loader, cfg, device):
     sigreg_total, sigreg_batches = 0.0, 0
     for batch in loader:
         batch = batch.to(device)
+        batch = reference_training_view(model, batch)
         latent = model.encode(batch["observation"])
         predicted = model.predict(latent[:, :-1], batch["action"])
         # Multi-step: roll from frame 0 on actions alone, no teacher forcing.
@@ -220,19 +279,49 @@ def evaluate(model, sigreg, loader, cfg, device):
     return metrics
 
 
+def reference_lr_factor(step, total_steps, warmup_steps):
+    """One-percent linear warmup followed by cosine decay to zero."""
+    if total_steps < 1 or warmup_steps < 1 or warmup_steps >= total_steps:
+        raise ValueError("Invalid reference scheduler extent")
+    if step < warmup_steps:
+        return step / warmup_steps
+    progress = (step - warmup_steps) / (total_steps - warmup_steps)
+    return 0.5 * (1.0 + math.cos(math.pi * min(progress, 1.0)))
+
+
 def run_stage(model, parameters, loader, step_fn, epochs, cfg, device, logger, stage):
     optimizer = torch.optim.AdamW(
         parameters, lr=cfg.train.learning_rate, weight_decay=cfg.train.weight_decay
     )
-    schedule = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=max(epochs, 1)
-    )
+    reference = cfg.model.get("profile", "legacy_compact") == "lewm_reference"
+    if reference:
+        total_steps = max(1, epochs * len(loader))
+        warmup_steps = max(1, int(0.01 * total_steps))
+        if total_steps == 1:
+            schedule = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda _step: 1.0)
+        else:
+            schedule = torch.optim.lr_scheduler.LambdaLR(
+                optimizer,
+                lambda step: reference_lr_factor(step, total_steps, warmup_steps),
+            )
+    else:
+        schedule = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=max(epochs, 1)
+        )
     history = []
+    device_type = torch.device(device).type
+    use_bf16 = reference and device_type == "cuda"
     for epoch in range(epochs):
         totals, weight = {}, 0.0
         for batch in loader:
             batch = batch.to(device)
-            losses = step_fn(batch)
+            precision = (
+                torch.autocast(device_type="cuda", dtype=torch.bfloat16)
+                if use_bf16
+                else nullcontext()
+            )
+            with precision:
+                losses = step_fn(batch)
             optimizer.zero_grad(set_to_none=True)
             losses["loss"].backward()
             grad_norm = torch.nn.utils.clip_grad_norm_(
@@ -241,12 +330,15 @@ def run_stage(model, parameters, loader, step_fn, epochs, cfg, device, logger, s
             if not torch.isfinite(grad_norm):
                 raise ValueError(f"{stage}: non-finite gradient at epoch {epoch}")
             optimizer.step()
+            if reference:
+                schedule.step()
             size = batch.batch_size[0]
             for key, value in losses.items():
                 totals[key] = totals.get(key, 0.0) + float(value) * size
             totals["grad_norm"] = totals.get("grad_norm", 0.0) + float(grad_norm) * size
             weight += size
-        schedule.step()
+        if not reference:
+            schedule.step()
         record = {key: value / weight for key, value in totals.items()}
         record["epoch"] = epoch
         history.append(record)
@@ -270,6 +362,38 @@ REPORTED_METRICS = {
     "latent_variance": False,
     "effective_rank": False,
 }
+
+
+def world_model_from_config(cfg, shapes, observation_mean, observation_std, device):
+    """Construct the recorded model profile without guessing from its weights."""
+    profile = cfg.model.get("profile", "legacy_compact")
+    common = {
+        "kind": cfg.model.kind,
+        "obs_dim": shapes["obs_dim"],
+        "action_dim": shapes["action_dim"],
+        "agents": shapes["agents"],
+        "dim": cfg.model.dim,
+        "hidden_dim": cfg.model.hidden_dim,
+        "conditioner_budget": cfg.model.conditioner_budget,
+        "depth": cfg.model.depth,
+        "heads": cfg.model.heads,
+        "dim_head": cfg.model.dim_head,
+        "mlp_dim": cfg.model.mlp_dim,
+        "dropout": cfg.model.dropout,
+        "obs_mean": observation_mean,
+        "obs_std": observation_std,
+    }
+    if profile == "legacy_compact":
+        model = MultiAgentWorldModel(frames=shapes["frames"], **common)
+    elif profile == "lewm_reference":
+        model = ReferenceMultiAgentWorldModel(
+            history_size=cfg.model.history_size,
+            projector_hidden_dim=cfg.model.projector_hidden_dim,
+            **common,
+        )
+    else:
+        raise ValueError(f"Unknown world-model profile: {profile}")
+    return model.to(device)
 
 
 def run_training(cfg, output: Path):
@@ -302,29 +426,24 @@ def run_training(cfg, output: Path):
 
     splits = loaders(cfg)
     train_loader, validation_loader = splits["train"], splits["validation"]
-    mean, std = observation_statistics(train_loader)
+    reference_frames = (
+        cfg.model.history_size + 1
+        if cfg.model.get("profile", "legacy_compact") == "lewm_reference"
+        else None
+    )
+    mean, std = observation_statistics(train_loader, reference_frames)
 
     sample = next(iter(train_loader))
     frames, agents, obs_dim = sample["observation"].shape[1:]
     action_dim = sample["action"].shape[-1]
 
-    model = MultiAgentWorldModel(
-        cfg.model.kind,
-        obs_dim,
-        action_dim,
-        agents,
-        dim=cfg.model.dim,
-        hidden_dim=cfg.model.hidden_dim,
-        conditioner_budget=cfg.model.conditioner_budget,
-        frames=frames,
-        depth=cfg.model.depth,
-        heads=cfg.model.heads,
-        dim_head=cfg.model.dim_head,
-        mlp_dim=cfg.model.mlp_dim,
-        dropout=cfg.model.dropout,
-        obs_mean=mean,
-        obs_std=std,
-    ).to(device)
+    shapes = {
+        "agents": agents,
+        "obs_dim": obs_dim,
+        "action_dim": action_dim,
+        "frames": frames,
+    }
+    model = world_model_from_config(cfg, shapes, mean, std, device)
     sigreg = SIGReg(cfg.train.sigreg_knots, cfg.train.sigreg_projections).to(device)
 
     # BenchMARL's own convention, so these runs group and aggregate like every
@@ -337,6 +456,8 @@ def run_training(cfg, output: Path):
     )["task_name"]
     environment_name, task_name = task_name.split("/")
     algorithm_name = f"{cfg.model.kind}_{cfg.data.regime}"
+    if model.profile != "legacy_compact":
+        algorithm_name = f"{model.profile}_{algorithm_name}"
     # The Stage 2 input condition is a third axis with no slot in the schema, so
     # it joins the algorithm name exactly as the data regime does. Only when it
     # is not the default, so the 192 already-logged baseline runs keep their
@@ -360,6 +481,7 @@ def run_training(cfg, output: Path):
                 "config": {
                     "algorithm": algorithm_name,
                     "kind": cfg.model.kind,
+                    "profile": model.profile,
                     "regime": cfg.data.regime,
                     "state_input": cfg.data.state_input,
                     "task": task_name,
@@ -444,16 +566,12 @@ def run_training(cfg, output: Path):
     torch.save(
         {
             "kind": cfg.model.kind,
+            "profile": model.profile,
             "state_dict": model.state_dict(),
             "config": OmegaConf.to_container(cfg, resolve=True),
             "observation_mean": mean,
             "observation_std": std,
-            "shapes": {
-                "agents": agents,
-                "obs_dim": obs_dim,
-                "action_dim": action_dim,
-                "frames": frames,
-            },
+            "shapes": shapes,
         },
         checkpoint,
     )
@@ -499,23 +617,20 @@ def load_model(checkpoint_path, device="cpu"):
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     cfg = OmegaConf.create(checkpoint["config"])
     shapes = checkpoint["shapes"]
-    model = MultiAgentWorldModel(
-        checkpoint["kind"],
-        shapes["obs_dim"],
-        shapes["action_dim"],
-        shapes["agents"],
-        dim=cfg.model.dim,
-        hidden_dim=cfg.model.hidden_dim,
-        conditioner_budget=cfg.model.conditioner_budget,
-        frames=shapes["frames"],
-        depth=cfg.model.depth,
-        heads=cfg.model.heads,
-        dim_head=cfg.model.dim_head,
-        mlp_dim=cfg.model.mlp_dim,
-        dropout=cfg.model.dropout,
-        obs_mean=checkpoint["observation_mean"],
-        obs_std=checkpoint["observation_std"],
-    ).to(device)
+    recorded_profile = checkpoint.get("profile", "legacy_compact")
+    configured_profile = cfg.model.get("profile", "legacy_compact")
+    if configured_profile != recorded_profile:
+        raise ValueError(
+            "Checkpoint model profile disagrees with its recorded config: "
+            f"{recorded_profile} != {configured_profile}"
+        )
+    model = world_model_from_config(
+        cfg,
+        shapes,
+        checkpoint["observation_mean"],
+        checkpoint["observation_std"],
+        device,
+    )
     model.load_state_dict(checkpoint["state_dict"])
     model.eval()
     return model
@@ -526,6 +641,7 @@ def verify_reload(checkpoint_path, sample: TensorDict, device):
     original = load_model(checkpoint_path, device)
     reloaded = load_model(checkpoint_path, device)
     batch = sample.to(device)
+    batch = reference_training_view(original, batch)
     with torch.no_grad():
         first = original.predict(
             original.encode(batch["observation"])[:, :-1], batch["action"]

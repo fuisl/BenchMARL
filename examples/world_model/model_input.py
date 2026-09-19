@@ -27,7 +27,8 @@ This module builds the same three from a *live* simulator, so a checkpoint can
 be planned with rather than only scored offline:
 
 ``observation``  what the agents see -- the established baseline, unchanged
-``history``      the last ``history_frames`` observed frames at block cadence
+``history``      legacy concatenation of the last ``history_frames`` before one
+                 encoding; not LeWM's temporal latent/action context
 ``physical``     the tracked entity states appended, identical for every agent
 
 The constructions must match `Dataset._apply_state_input` exactly. Where they

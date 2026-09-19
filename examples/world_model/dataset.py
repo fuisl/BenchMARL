@@ -85,8 +85,9 @@ class OfflineSequences(Dataset):
         inference). These three conditions separate the possibilities.
 
         ``observation``  what the agents actually see -- the established baseline
-        ``history``      the last ``history_frames`` observed frames, so hidden
-                         state can be inferred from motion rather than supplied
+        ``history``      legacy stacked-observation input: concatenate the last
+                         ``history_frames`` before encoding. This is not LeWM's
+                         independently encoded temporal latent/action context.
         ``physical``     the recorded entity states appended outright, the upper
                          bound where the hidden variable is simply given
 
