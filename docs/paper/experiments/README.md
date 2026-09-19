@@ -96,6 +96,9 @@ their directories remain on disk.
 | `21_latent_position_validation.md` | Same position target decoded from true, one-step predicted, and recursive latent states; latent pipeline fails against persistence and direct prediction |
 | `22_decision_information_localization.md` | Frozen Gate 0d: localize plan-ranking loss across encoder, rollout, scalar reward head, structured task head, and successive CEM populations |
 | `23_planner_coverage_structured_surrogate.md` | Gate 0e: collect competent-local and CEM hard-negative coverage, then test a task-sufficient physical surrogate with the true Buzz Wire cost |
+| `24_planner_tail_failure.md` | Gate 5: freeze job 1331 and separate planner-induced one-step shift, recursive accumulation, and false-safe CEM tails |
+| `25_feedback_cadence_ablation.md` | Does replanning cadence K compensate for the dynamics error Gate 5 localized, on the same frozen structured surrogate; K=1 reused from job 1331, K=2/5 computed |
+| `26_g6a_planner_aware_aggregation.md` | Experiment 24/G6a: two-round structured DAgger with a matched generic-data control, re-diagnosed by an unchanged Gate 5 rerun |
 
 Two notes share the number `02` and three share `05`. They are not renumbered
 here because other documents link to them by filename; new notes continue from
