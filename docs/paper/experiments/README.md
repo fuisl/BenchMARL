@@ -58,6 +58,7 @@ without trusting the current tree.
 | 1331 | `structured_surrogate_1331/` | Gate 0e: coverage repairs OOD physics and raises plan rho 0.162->0.286, but structured control remains unsafe (1/48 successes, 69--88% collision). COMPLETED 35:34; **failed registered control gate** | [`23_planner_coverage_structured_surrogate.md`](23_planner_coverage_structured_surrogate.md) |
 | 1239 | `physical_response_1239/` | Gate 2: intervention response in common physical coordinates, 3 horizons x 2 probe families. COMPLETED 20:45 | [`14_gate2_gate4.md`](14_gate2_gate4.md) §§2-4 |
 | 1237 | `balance_control_1237/` | Gate 1: simulator MPC on Balance, execute-5 vs execute-1, 32 independent train roots. COMPLETED 5:30 | [`13_balance_control_gate.md`](13_balance_control_gate.md) |
+| 1469 | `a0_reference_sanity_1469/` | Audit Gate A0 step 4: one-seed sanity run of the repaired `lewm_reference` profile. Trains stably, action-conditioned, no latent collapse; reward readout matches the historical Buzz Wire norm. COMPLETED 1:08 | [`27_audit_gate_a0_reference_profile.md`](27_audit_gate_a0_reference_profile.md) |
 | — | `review_20260916/` | The review's own CPU diagnostics: policy identity, positional gradients, both rollout windows | [`../review_2026-09-16.md`](../review_2026-09-16.md) |
 
 Failed and cancelled jobs are listed because the audit requires failed-run

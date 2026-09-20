@@ -1,8 +1,9 @@
 # Audit Gate A0: parallel LeWM reference profile
 
-Status: steps 1--3 implemented; the scheduler, action-interface and
-external-conformance items from the 2026-09-20 review are closed against
-primary sources; no scientific run authorized. Updated: 2026-09-20.
+Status: steps 1--3 implemented and audited; the single-seed sanity run
+(job 1469) passed. The scheduler, action-interface and external-conformance
+items from the 2026-09-20 review are closed against primary sources. No sweep,
+no comparison, and no controller evaluation authorized. Updated: 2026-09-20.
 
 ## Purpose
 
@@ -140,9 +141,55 @@ ignore its conditioning at initialization, the test first perturbs the
 modulation weights, so the comparison actually exercises the native-to-
 normalized action boundary. Removing the action transform makes it fail.
 
-No training, controller evaluation, or scientific experiment was launched for
-any of these implementation steps. The remaining A0 item is a single-seed
-sanity run, which is not yet authorized.
+## Step-4 single-seed sanity run (job 1469)
+
+One seed, one regime, no sweep and no comparison. The question is only whether
+the repaired reference implementation trains sensibly in practice. The
+`legacy_compact` versus `lewm_reference` comparison is a separately registered
+step and was deliberately not run here.
+
+Buzz Wire bank `outputs/buzz_wire_1196/data`, `correlated` regime, seed 4100,
+683 training sequences at batch 128 with `drop_last`, so 5 updates per epoch
+and 500 dynamics updates in total (5 warmup). Completed in 68 s on one
+`3g.20gb` MIG slice. The pinned-conformance tests ran as a preflight gate
+inside the allocation and passed, so no data was produced by an implementation
+that had drifted from the vendored sources. Artifacts:
+`outputs/a0_reference_sanity_1469/`.
+
+| Check | Result | Verdict |
+|---|---|---|
+| dynamics loss, epoch 0 -> 99 | 5.919 -> 0.593 (min 0.569 at 94) | converged |
+| prediction term | 0.263 -> 0.074 | converged |
+| SIGReg term | 62.85 -> 5.78 | converged |
+| gradient norm | 11.3 -> 1.48, no spikes | stable |
+| non-finite losses | none in 150 epochs | pass |
+| latent variance | 0.885 | no collapse |
+| effective rank | 42.4 of 192 | highest recorded in this repository |
+| AdaLN gate scale | 0.00284 | near the top of 738 historical runs |
+| checkpoint reload difference | exactly 0.0 | pass |
+| termination head validated | true | pass |
+
+The AdaLN-zero weight norm is only a proxy, so action conditioning was also
+measured directly on the trained checkpoint. Re-sampling the action block while
+holding the latent context fixed moves the prediction by 0.68 latent standard
+deviations, and replacing it with the null action moves it by 0.51. Perturbing
+agent 0's action alone moves agent 0 by 0.606 and agent 1 by 0.219, so the
+relational conditioner carries real cross-agent coupling. The predictor is
+action-conditioned and is not the identity.
+
+The reward readout did not learn: relative error 1.008, against a target
+variance of 7.86. This is **not** an A0 regression. Across 240 historical Buzz
+Wire runs the same quantity has median 1.003 and range 0.992--1.021, and the
+failure of the reward interface on true latents is the registered finding of
+[`22_decision_information_localization.md`](22_decision_information_localization.md).
+The readout is labelled `D`, a diagnostic departure, in the step-1 contract; it
+is not a reference-matched component and this run does not change its status.
+
+Verdict: the repaired reference implementation trains sensibly. A0 is closed
+for implementation purposes. This run is a sanity check, not evidence about
+latent world-model quality, and must not be cited as a comparison.
+
+No controller evaluation, sweep, or between-profile comparison was launched.
 
 Pinned fixtures: `test/_lewm_pinned_8edfeb33.py`,
 `test/_stable_pretraining_pinned_v017.py`.
