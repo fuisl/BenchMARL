@@ -36,6 +36,8 @@ cannot (a history whose decision cadence differs from the training cadence) this
 raises rather than feeding the encoder a distribution it never saw.
 """
 
+from dataclasses import dataclass
+
 import torch
 
 from examples.world_model.dataset import STATE_INPUTS
@@ -45,7 +47,117 @@ from examples.world_model.snapshot_restore import (
     tracked_entities,
 )
 
-__all__ = ["STATE_INPUTS", "ObservationBuilder", "builder_for", "entity_frame"]
+__all__ = [
+    "STATE_INPUTS",
+    "ObservationBuilder",
+    "PlanningContext",
+    "ReferenceHistory",
+    "builder_for",
+    "entity_frame",
+    "reference_builder_for",
+]
+
+
+@dataclass(frozen=True)
+class PlanningContext:
+    """Real LeWM context at one MPC decision.
+
+    Frames are oldest-to-newest ``[o[t-2], o[t-1], o[t]]``.  Actions are the
+    two completed blocked actions ``[a[t-2], a[t-1]]``.  Future candidate
+    actions are deliberately absent and are appended only inside model scoring.
+    """
+
+    observations: torch.Tensor
+    past_actions: torch.Tensor
+
+    def __post_init__(self):
+        if self.observations.ndim != 4:
+            raise ValueError("Context observations must have shape (B,T,N,O)")
+        if self.past_actions.ndim != 4:
+            raise ValueError("Context actions must have shape (B,T-1,N,A)")
+        if self.observations.shape[1] != self.past_actions.shape[1] + 1:
+            raise ValueError("Context needs one more observation than past actions")
+        observation_axes = (self.observations.shape[0], self.observations.shape[2])
+        action_axes = (self.past_actions.shape[0], self.past_actions.shape[2])
+        if observation_axes != action_axes:
+            raise ValueError("Context observation/action batch or agents differ")
+
+    @property
+    def current(self):
+        return self.observations[:, -1]
+
+
+class ReferenceHistory:
+    """Stateful real observation/action history for reference LeWM MPC.
+
+    One instance belongs to one policy evaluation.  At episode start the first
+    observation is repeated and historical actions are zero, following the
+    stable-worldmodel convention.  Thereafter an action block must be recorded
+    before the next observation can be appended, preventing silent context
+    resets or temporally misaligned pairs.
+    """
+
+    requires_receding_horizon_one = True
+
+    def __init__(self, frame_builder, history_size=3, action_block=5):
+        if history_size != 3:
+            raise ValueError("The registered LeWM reference history size is 3")
+        if action_block < 1:
+            raise ValueError("action_block must be positive")
+        if getattr(frame_builder, "state_input", None) == "history":
+            raise ValueError(
+                "Reference LeWM history encodes frames independently; it cannot "
+                "wrap the legacy concatenated state_input=history condition"
+            )
+        self.frame_builder = frame_builder
+        self.history_size = history_size
+        self.action_block = action_block
+        self.reset()
+
+    def reset(self):
+        if hasattr(self.frame_builder, "reset"):
+            self.frame_builder.reset()
+        self._observations = None
+        self._actions = None
+        self._pending_action = None
+
+    def __call__(self, env):
+        observation = self.frame_builder(env)
+        if observation.ndim != 3:
+            raise ValueError("Reference frame builder must return (B,N,O)")
+        if self._observations is None:
+            batch, agents = observation.shape[:2]
+            primitive = env.full_action_spec_unbatched["agents", "action"].shape[-1]
+            action_width = self.action_block * primitive
+            self._observations = [observation.clone()] * self.history_size
+            zero = observation.new_zeros(batch, agents, action_width)
+            self._actions = [zero.clone() for _ in range(self.history_size - 1)]
+        else:
+            if self._pending_action is None:
+                raise RuntimeError(
+                    "A completed action block must be recorded before the next frame"
+                )
+            self._observations = self._observations[1:] + [observation.clone()]
+            self._actions = self._actions[1:] + [self._pending_action]
+            self._pending_action = None
+        return PlanningContext(
+            torch.stack(self._observations, dim=1),
+            torch.stack(self._actions, dim=1),
+        )
+
+    def record_action(self, blocked_action):
+        """Record one actually executed block as ``(B,N,block*action_dim)``."""
+        if self._observations is None:
+            raise RuntimeError("Observe the initial frame before recording an action")
+        if self._pending_action is not None:
+            raise RuntimeError("The previous action has not been paired with a frame")
+        expected = self._actions[-1].shape
+        if blocked_action.shape != expected:
+            raise ValueError(
+                f"Executed block has shape {tuple(blocked_action.shape)}, "
+                f"expected {tuple(expected)}"
+            )
+        self._pending_action = blocked_action.detach().clone()
 
 
 def entity_frame(env):
@@ -122,6 +234,23 @@ def builder_for(checkpoint_config, obs_dim, action_block_stride=1):
         data.get("history_frames", 3),
         obs_dim,
         action_block_stride=action_block_stride,
+    )
+
+
+def reference_builder_for(checkpoint_config, obs_dim, action_block):
+    """Build the real temporal observer required by ``lewm_reference``."""
+    data = checkpoint_config.data
+    model = checkpoint_config.model
+    frame_builder = ObservationBuilder(
+        data.state_input,
+        data.get("history_frames", 3),
+        obs_dim,
+        action_block_stride=1,
+    )
+    return ReferenceHistory(
+        frame_builder,
+        history_size=model.get("history_size", 3),
+        action_block=action_block,
     )
 
 

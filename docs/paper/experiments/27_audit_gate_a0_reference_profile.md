@@ -1,6 +1,7 @@
-# Audit Gate A0, step 1: parallel LeWM reference profile
+# Audit Gate A0: parallel LeWM reference profile
 
-Status: implementation only; no scientific run authorized. Date: 2026-09-19.
+Status: steps 1--2 implemented; code review pending; no scientific run
+authorized. Updated: 2026-09-20.
 
 ## Purpose
 
@@ -43,15 +44,44 @@ snippet.  Frames 0--2 and actions 0--2 are predictor context; frames 1--3 are
 the shifted targets.  The training loader drops its incomplete final batch,
 while validation does not.
 
-## Deliberately deferred to step 2
+## Step-2 temporal and SIGReg contract
 
-This profile bounds autoregressive prediction to three positions, but planning
-still starts from one current frame.  Step 2 must add the real rolling
-observation/action buffer before any controller is called LeWM-faithful.
-Likewise, SIGReg still uses the legacy population reduction until step 2
-registers and tests `(T,B,D)` and `(T,B*N,D)` semantics.  No A0 experiment may
-run before those two contracts are complete.
+The reference controller now plans from an actual rolling context rather than
+reconstructing history from one current frame:
 
-Implementation: `examples/world_model/models.py` and
-`examples/world_model/train.py`. Configuration:
+| decision | observation history | executed action history |
+|---:|---|---|
+| 0 | `[o0, o0, o0]` | `[0, 0]` |
+| 1 | `[o0, o0, o1]` | `[0, a0]` |
+| 2 | `[o0, o1, o2]` | `[a0, a1]` |
+
+Each frame is encoded independently. Candidate action `a_t` is appended to the
+two executed blocks, the predictor consumes the three aligned positions, and
+only the latest predicted position is shifted into the next context. Reference
+MPC therefore requires `K=1`: every executed block must be followed by a real
+observation before replanning. Passing a single observation to either reward or
+goal planning now fails loudly instead of silently reverting to the historical
+one-frame rollout.
+
+SIGReg is applied after the reference projector while preserving time. The
+registered multi-agent default is `(T,B*N,D)`, treating agents as population
+members at each temporal position. The diagnostic alternative applies
+`(T,B,D)` independently per agent and averages the losses. With one agent, the
+default is exactly the pinned `(T,B,D)` call. Incomplete sequences are excluded
+from SIGReg to keep a rectangular population, but their valid transitions are
+still retained by the masked prediction loss. Legacy checkpoints retain their
+historical `(1,B*T*N,D)` reduction and cannot opt into the reference modes.
+
+Conformance tests pin the episode-start history, temporal/action window shifts,
+single-agent SIGReg call, both multi-agent SIGReg choices, planning input
+rejection, and the MPC executed-action hook. CPU tests are mandatory and the
+planning path is also smoke-tested on CUDA when available.
+
+No training, controller evaluation, or scientific experiment was launched for
+this implementation step.
+
+Implementation: `examples/world_model/models.py`,
+`examples/world_model/model_input.py`, `examples/world_model/mpc.py`,
+`examples/world_model/plan_ranking.py`, `examples/world_model/goal_planning.py`,
+and `examples/world_model/train.py`. Configuration:
 `benchmarl/conf/world_model_reference.yaml`.

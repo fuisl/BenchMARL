@@ -46,11 +46,10 @@ class SIGReg(nn.Module):
     """Sketched Isotropic Gaussian Regularizer (LeWM ``module.SIGReg``).
 
     Epps-Pulley normality statistic of random 1-D projections of the latents.
-    The reference feeds ``(T, B, D)`` and averages the statistic over time; we
-    feed all valid frames as a single population ``(1, M, D)`` because our
-    snippets have a variable number of valid frames per position, so a
-    per-position empirical characteristic function would use varying and
-    sometimes tiny sample counts.
+    This primitive consumes ``(T,B,D)`` and averages the statistic over time.
+    ``train.sigreg_loss`` owns the profile-specific population construction:
+    reference models preserve time, while legacy reproduction keeps the old
+    flattened population.
     """
 
     def __init__(self, knots: int = 17, num_proj: int = 1024):
@@ -508,19 +507,48 @@ class ReferenceMultiAgentWorldModel(MultiAgentWorldModel):
         return predicted.view(batch, agents, frames, self.dim).transpose(1, 2)
 
     def rollout(self, latent, actions):
-        """Bound predicted context to the reference history length.
+        raise RuntimeError(
+            "lewm_reference cannot roll out from one current frame; use "
+            "rollout_from_context with three real frames and two past actions"
+        )
 
-        Step 1 may still start this method from one frame.  Step 2 replaces that
-        planner-side approximation with three real frames and two real actions.
+    def rollout_from_context(self, latent_history, past_actions, future_actions):
+        """LeWM rollout from real temporal state/action context.
+
+        ``latent_history`` contains ``z[t-2:t]`` and ``past_actions`` contains
+        the two actions that produced the latter two real observations.  At
+        each imagined step, the current candidate action completes the
+        three-position predictor window.  Only the newest three latent/action
+        pairs survive to the next step, exactly as in pinned LeWM ``JEPA.rollout``.
         """
-        history = latent
+        if latent_history.size(1) != self.history_size:
+            raise ValueError(
+                f"Reference rollout requires {self.history_size} latent frames, "
+                f"got {latent_history.size(1)}"
+            )
+        if past_actions.size(1) != self.history_size - 1:
+            raise ValueError(
+                f"Reference rollout requires {self.history_size - 1} past actions, "
+                f"got {past_actions.size(1)}"
+            )
+        if future_actions.size(1) < 1:
+            raise ValueError("Reference rollout needs at least one future action")
+        expected = latent_history.shape[0], latent_history.shape[2]
+        for name, value in (
+            ("past_actions", past_actions),
+            ("future_actions", future_actions),
+        ):
+            if (value.shape[0], value.shape[2]) != expected:
+                raise ValueError(f"{name} batch/agent dimensions do not match history")
+        history = latent_history
+        actions = past_actions
         predictions = []
-        for step in range(actions.size(1)):
-            context = history[:, -self.history_size :]
-            window = actions[:, : step + 1][:, -self.history_size :]
-            predicted = self.predict(context, window)[:, -1:]
+        for current in future_actions.split(1, dim=1):
+            action_context = torch.cat([actions, current], dim=1)
+            predicted = self.predict(history, action_context)[:, -1:]
             predictions.append(predicted)
-            history = torch.cat([history, predicted], dim=1)
+            history = torch.cat([history[:, 1:], predicted], dim=1)
+            actions = action_context[:, 1:]
         return torch.cat(predictions, dim=1)
 
 

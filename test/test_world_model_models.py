@@ -154,12 +154,15 @@ def test_reference_rollout_never_exceeds_registered_context():
         return original(latent, action)
 
     model.predict = record
-    initial = torch.randn(2, 1, AGENTS, DIM)
+    initial = torch.randn(2, 3, AGENTS, DIM)
+    past = torch.randn(2, 2, AGENTS, ACT)
     actions = torch.randn(2, 5, AGENTS, ACT)
     with torch.no_grad():
-        result = model.rollout(initial, actions)
+        result = model.rollout_from_context(initial, past, actions)
     assert result.shape == (2, 5, AGENTS, DIM)
-    assert lengths == [(1, 1), (2, 2), (3, 3), (3, 3), (3, 3)]
+    assert lengths == [(3, 3)] * 5
+    with pytest.raises(RuntimeError, match="three real frames"):
+        model.rollout(initial[:, -1:], actions)
 
 
 def test_independent_has_no_cross_agent_path():

@@ -53,6 +53,9 @@ train:
   sigreg_weight: 0.09   # LeWM loss.sigreg.weight
   sigreg_knots: 17
   sigreg_projections: 1024
+  # Historical reproduction. The reference profile overrides this with a
+  # population that preserves time as LeWM does.
+  sigreg_population: legacy_flattened
 
 hydra:
   run:

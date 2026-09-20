@@ -104,6 +104,86 @@ def test_injected_cost_is_used_and_receives_planner_shapes():
     assert [row["return"] for row in oracle] != [row["return"] for row in injected]
 
 
+class _TrackingHistory:
+    """Minimal stateful observer that pins the MPC history hook contract."""
+
+    requires_receding_horizon_one = True
+
+    def __init__(self):
+        self.resets = 0
+        self.observations = 0
+        self.actions = []
+
+    def reset(self):
+        self.resets += 1
+        self.observations = 0
+        self.actions = []
+
+    def __call__(self, env):
+        self.observations += 1
+        return agent_observations(env)
+
+    def record_action(self, action):
+        self.actions.append(action.clone())
+
+
+def test_reference_history_requires_one_block_replanning():
+    env, scratch, initial = build()
+    observe = _TrackingHistory()
+    try:
+        with pytest.raises(ValueError, match="receding_horizon=1"):
+            evaluate_policy(
+                env,
+                initial,
+                policy="mpc",
+                generator=torch.Generator().manual_seed(3),
+                cem_config=CEM,
+                mpc_config=MPC,
+                scratch_env=scratch,
+                plan_costs=lambda _snapshot, _observation, candidates: (
+                    candidates.square().sum(dim=(-1, -2))
+                ),
+                observe=observe,
+                outcome_fn=buzz_wire_outcome,
+            )
+    finally:
+        env.close()
+        scratch.close()
+
+
+def test_mpc_records_only_complete_executed_action_blocks():
+    env, scratch, initial = build()
+    observe = _TrackingHistory()
+    mpc = MPCConfig(receding_horizon=1, action_block=MPC.action_block)
+    try:
+        evaluate_policy(
+            env,
+            initial,
+            policy="mpc",
+            generator=torch.Generator().manual_seed(3),
+            cem_config=CEM,
+            mpc_config=mpc,
+            scratch_env=scratch,
+            plan_costs=lambda _snapshot, _observation, candidates: (
+                candidates.square().sum(dim=(-1, -2))
+            ),
+            observe=observe,
+            outcome_fn=buzz_wire_outcome,
+        )
+    finally:
+        env.close()
+        scratch.close()
+
+    assert observe.resets == 1
+    assert observe.observations >= 1
+    assert len(observe.actions) == observe.observations - 1
+    assert observe.actions
+    assert all(
+        action.shape == (STATES, 2, MPC.action_block * 2)
+        for action in observe.actions
+    )
+
+
 def test_agent_observations_match_the_scenario():
     env, _scratch, _initial = build()
     try:

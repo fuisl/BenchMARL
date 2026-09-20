@@ -36,6 +36,7 @@ import yaml
 
 from benchmarl.environments import VmasTask
 from examples.world_model.compare_baselines import bootstrap_interval, mean
+from examples.world_model.model_input import PlanningContext
 from examples.world_model.oracle_dynamics import oracle_plan_costs
 from examples.world_model.train import load_model
 
@@ -97,7 +98,12 @@ def model_costs(model, observation, candidates, action_block, device):
     the simulator, so the only thing that differs between the two is the model.
     """
     batch, n_candidates, steps, joint_dim = candidates.shape
-    agents, obs_dim = observation.shape[1:]
+    current_observation = (
+        observation.current
+        if isinstance(observation, PlanningContext)
+        else observation
+    )
+    agents, obs_dim = current_observation.shape[1:]
     action_dim = joint_dim // agents
     blocks = steps // action_block
 
@@ -110,12 +116,41 @@ def model_costs(model, observation, candidates, action_block, device):
     )
     plans = plans.to(device)
 
-    start = observation.unsqueeze(1).expand(batch, n_candidates, agents, obs_dim)
-    start = start.reshape(batch * n_candidates, 1, agents, obs_dim).to(device)
-
-    latent = model.encode(start)
-    rolled = model.rollout(latent, plans)
-    sequence = torch.cat([latent, rolled], dim=1)
+    if isinstance(observation, PlanningContext):
+        if getattr(model, "profile", "legacy_compact") != "lewm_reference":
+            raise ValueError("PlanningContext is reserved for lewm_reference")
+        frames = observation.observations.shape[1]
+        past = observation.past_actions.shape[1]
+        history = observation.observations[:, None].expand(
+            batch, n_candidates, frames, agents, obs_dim
+        ).reshape(batch * n_candidates, frames, agents, obs_dim).to(device)
+        action_history = observation.past_actions[:, None].expand(
+            batch,
+            n_candidates,
+            past,
+            agents,
+            observation.past_actions.shape[-1],
+        ).reshape(
+            batch * n_candidates,
+            past,
+            agents,
+            observation.past_actions.shape[-1],
+        ).to(device)
+        latent_history = model.encode(history)
+        rolled = model.rollout_from_context(latent_history, action_history, plans)
+        sequence = torch.cat([latent_history[:, -1:], rolled], dim=1)
+    else:
+        if getattr(model, "profile", "legacy_compact") == "lewm_reference":
+            raise ValueError(
+                "lewm_reference planning requires a real PlanningContext"
+            )
+        start = current_observation.unsqueeze(1).expand(
+            batch, n_candidates, agents, obs_dim
+        )
+        start = start.reshape(batch * n_candidates, 1, agents, obs_dim).to(device)
+        latent = model.encode(start)
+        rolled = model.rollout(latent, plans)
+        sequence = torch.cat([latent, rolled], dim=1)
     reward, terminated = model.readout(sequence[:, :-1], sequence[:, 1:])
 
     # The oracle stops accumulating reward once an episode ends, so a model cost

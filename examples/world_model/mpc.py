@@ -383,13 +383,15 @@ def evaluate_policy(
     the agents can actually see. Passing it is what makes this a test of the
     world model rather than of CEM.
 
-    ``observe(env) -> (B,N,obs_dim)`` builds what the planner's model is handed.
-    It defaults to the agents' own observations, which is what every result
-    before job 1265 used. A checkpoint trained on another input condition must
-    override it with `model_input.builder_for`, or its encoder is fed a vector
-    it was never fitted on. Only the *planner's* view changes: episode
-    statistics and goal distances stay in agent observation space so that
-    conditions remain comparable.
+    ``observe(env)`` builds what the planner's model is handed. It normally
+    returns ``(B,N,obs_dim)``; the reference LeWM observer returns a
+    ``PlanningContext`` with three real frames and two executed action blocks.
+    Stateful observers may expose ``reset()`` and ``record_action()`` hooks;
+    this loop records only actions that were actually executed. A checkpoint
+    trained on another input condition must override the default, or its
+    encoder is fed a vector it was never fitted on. Only the *planner's* view
+    changes: episode statistics and goal distances stay in agent observation
+    space so conditions remain comparable.
     """
     mpc_config.validate(cem_config.horizon)
     if policy not in ("random", "mpc") and not callable(policy):
@@ -400,6 +402,17 @@ def evaluate_policy(
         if scratch_env is None or scratch_env is env:
             raise ValueError("Oracle MPC requires a separate scratch environment")
         plan_costs = oracle_costs(scratch_env)
+    if (
+        policy == "mpc"
+        and getattr(observe, "requires_receding_horizon_one", False)
+        and mpc_config.receding_horizon != 1
+    ):
+        raise ValueError(
+            "Reference temporal context requires receding_horizon=1 so every "
+            "executed action block is paired with its next real observation"
+        )
+    if hasattr(observe, "reset"):
+        observe.reset()
     restore_state(env, initial_state)
     stats = EpisodeStats(
         env, outcome_fn, goal_observation, goal_threshold, goal_weight
@@ -500,11 +513,13 @@ def evaluate_policy(
                     f"{(batch_size, 1, joint_dim)}"
                 )
 
+        executed_actions = []
         for action in actions.unbind(dim=1):
             alive = stats.alive.clone()
             action = action.masked_fill(~alive[:, None], 0).reshape(
                 batch_size, n_agents, action_dim
             )
+            executed_actions.append(action.clone())
             td.set(("agents", "action"), action)
             td = env.step(td)["next"]
             stats.update(env, td)
@@ -518,6 +533,20 @@ def evaluate_policy(
             )
             if not stats.alive.any():
                 break
+        if (
+            policy == "mpc"
+            and hasattr(observe, "record_action")
+            and stats.alive.any()
+        ):
+            if len(executed_actions) != mpc_config.action_block:
+                raise RuntimeError(
+                    "Reference history expected exactly one complete action block"
+                )
+            primitive = torch.stack(executed_actions, dim=1)
+            blocked = primitive.permute(0, 2, 1, 3).reshape(
+                batch_size, n_agents, mpc_config.action_block * action_dim
+            )
+            observe.record_action(blocked)
 
     synchronize(env.device)
     timing = {"seconds": perf_counter() - start, "decisions": decisions}

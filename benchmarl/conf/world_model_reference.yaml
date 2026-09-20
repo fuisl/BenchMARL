@@ -33,6 +33,10 @@ train:
   sigreg_weight: 0.09
   sigreg_knots: 17
   sigreg_projections: 1024
+  # (T,B*N,D): agents are additional population members at each time index.
+  # `per_agent` is the registered diagnostic alternative, never selected
+  # post-hoc from control results.
+  sigreg_population: joint
 
 hydra:
   run:

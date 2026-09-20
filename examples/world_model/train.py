@@ -157,6 +157,41 @@ def block_reward(batch):
     return (rewards * valid).sum(dim=2)
 
 
+def sigreg_loss(model, sigreg, latent, observation_valid, cfg):
+    """Apply the registered SIGReg population semantics for one model profile."""
+    profile = getattr(model, "profile", "legacy_compact")
+    mode = cfg.train.get(
+        "sigreg_population",
+        "legacy_flattened" if profile == "legacy_compact" else "joint",
+    )
+    if profile == "legacy_compact":
+        if mode != "legacy_flattened":
+            raise ValueError("Legacy checkpoints require legacy_flattened SIGReg")
+        frames = latent[observation_valid]
+        return sigreg(frames.reshape(1, -1, frames.size(-1)))
+    if mode not in ("joint", "per_agent"):
+        raise ValueError(f"Unknown reference SIGReg population: {mode}")
+
+    # Preserve the temporal axis and one rectangular population, as pinned
+    # LeWM does.  Padded/partial snippets are excluded from SIGReg only; their
+    # valid transitions remain available to the masked prediction objective.
+    complete = observation_valid.all(dim=1)
+    encoded = latent[complete]
+    if encoded.shape[0] == 0:
+        raise ValueError("Reference SIGReg needs at least one complete sequence")
+    if mode == "joint":
+        population = encoded.permute(1, 0, 2, 3).reshape(
+            encoded.shape[1], encoded.shape[0] * encoded.shape[2], encoded.shape[3]
+        )
+        return sigreg(population)
+    return torch.stack(
+        [
+            sigreg(encoded[:, :, agent].transpose(0, 1))
+            for agent in range(encoded.shape[2])
+        ]
+    ).mean()
+
+
 def dynamics_losses(model, sigreg, batch, cfg):
     """LeWM's two-term objective, masked to valid blocks/frames."""
     batch = reference_training_view(model, batch)
@@ -164,9 +199,9 @@ def dynamics_losses(model, sigreg, batch, cfg):
     predicted = model.predict(latent[:, :-1], batch["action"])
     target = latent[:, 1:]  # undetached, as in the reference
     prediction = masked_mean((predicted - target).square(), batch["valid"])
-    frames = latent[batch["observation_valid"]]
-    population = frames.reshape(1, -1, frames.size(-1))
-    anti_collapse = sigreg(population)
+    anti_collapse = sigreg_loss(
+        model, sigreg, latent, batch["observation_valid"], cfg
+    )
     return {
         "prediction": prediction,
         "sigreg": anti_collapse,
@@ -214,8 +249,21 @@ def evaluate(model, sigreg, loader, cfg, device):
         batch = reference_training_view(model, batch)
         latent = model.encode(batch["observation"])
         predicted = model.predict(latent[:, :-1], batch["action"])
-        # Multi-step: roll from frame 0 on actions alone, no teacher forcing.
-        rolled = model.rollout(latent[:, :1], batch["action"])
+        if getattr(model, "profile", "legacy_compact") == "lewm_reference":
+            rolled = model.rollout_from_context(
+                latent[:, : model.history_size],
+                batch["action"][:, : model.history_size - 1],
+                batch["action"][:, model.history_size - 1 : model.history_size],
+            )
+            rollout_target = latent[:, model.history_size : model.history_size + 1]
+            rollout_valid = batch["valid"][
+                :, model.history_size - 1 : model.history_size
+            ]
+        else:
+            # Historical metric: roll from frame 0 on actions alone.
+            rolled = model.rollout(latent[:, :1], batch["action"])
+            rollout_target = latent[:, 1:]
+            rollout_valid = batch["valid"]
         reward, _ = model.readout(latent[:, :-1], predicted)
         valid = batch["valid"]
         # Reward and termination are scored on outcome validity, matching how
@@ -225,10 +273,10 @@ def evaluate(model, sigreg, loader, cfg, device):
         target = latent[:, 1:]
         pairs = {
             "one_step_error": ((predicted - target).square(), valid),
-            "rollout_error": ((rolled - target).square(), valid),
+            "rollout_error": ((rolled - rollout_target).square(), rollout_valid),
             "final_step_error": (
-                (rolled[:, -1:] - target[:, -1:]).square(),
-                valid[:, -1:],
+                (rolled[:, -1:] - rollout_target[:, -1:]).square(),
+                rollout_valid[:, -1:],
             ),
             "reward_error": ((reward - block_reward(batch)).square(), outcome),
         }
@@ -252,7 +300,9 @@ def evaluate(model, sigreg, loader, cfg, device):
             terminated_count
         )
         frames = latent[batch["observation_valid"]]
-        sigreg_total += float(sigreg(frames.reshape(1, -1, frames.size(-1))))
+        sigreg_total += float(
+            sigreg_loss(model, sigreg, latent, batch["observation_valid"], cfg)
+        )
         sigreg_batches += 1
         latents.append(frames.reshape(-1, model.dim))
 

@@ -29,9 +29,11 @@ observable on these tasks -- Buzz Wire observes `pos - goal` directly.
 
 * `terminal_goal_cost` mirrors `JEPA.criterion`: terminal frame only, goal
   detached, squared error **summed** over feature dimensions rather than averaged.
-* `lewm_rollout` mirrors `JEPA.rollout`: the predictor context is truncated to
-  the last `history_size` frames at every step. `MultiAgentWorldModel.rollout`
-  instead lets the context grow, so it is overridden rather than reused.
+* The ``lewm_reference`` path starts with three independently encoded real
+  frames and two executed action blocks, appends each candidate action, and
+  retains the newest three latent/action positions. ``lewm_rollout`` remains
+  only for historical compact checkpoints, which started from one frame; it is
+  deliberately rejected for the reference profile.
 
 Deliberate multi-agent extension: the reference is single-agent, so the terminal
 distance is summed over agents as well as latent dimensions.
@@ -39,6 +41,7 @@ distance is summed over agents as well as latent dimensions.
 
 import torch
 
+from examples.world_model.model_input import PlanningContext
 from examples.world_model.plan_ranking import spearman
 from examples.world_model.readout_diagnostic import simulate
 
@@ -47,16 +50,19 @@ HISTORY_SIZE = 3  # LeWM config/train/lewm.yaml
 
 @torch.no_grad()
 def lewm_rollout(model, latent, actions, history_size=HISTORY_SIZE):
-    """Autoregressive rollout with LeWM's context truncation.
+    """Historical one-frame rollout with LeWM-like context truncation.
 
     latent: (B,1,N,D) encoded start. actions: (B,H,N,block*d_a).
     Returns predicted latents (B,H,N,D) for steps 1..H.
 
-    The reference keeps only the last `history_size` frames of context at each
-    step and takes the final position of the prediction. Our own
-    `MultiAgentWorldModel.rollout` feeds the whole growing history instead, which
-    is a deviation worth isolating rather than silently inheriting.
+    This helper documents the earlier goal-planning adaptation but is not the
+    registered reference implementation: it lacks real pre-decision history.
+    Reference checkpoints must use ``model.rollout_from_context`` instead.
     """
+    if getattr(model, "profile", "legacy_compact") == "lewm_reference":
+        raise ValueError(
+            "lewm_reference requires rollout_from_context with real history"
+        )
     history = latent
     predictions = []
     for step in range(actions.size(1)):
@@ -96,7 +102,12 @@ def goal_plan_costs(
 ):
     """Predicted terminal latent distance to the goal, per candidate: (B,K)."""
     batch, n_candidates, steps, joint_dim = candidates.shape
-    agents, obs_dim = observation.shape[1:]
+    current_observation = (
+        observation.current
+        if isinstance(observation, PlanningContext)
+        else observation
+    )
+    agents, obs_dim = current_observation.shape[1:]
     action_dim = joint_dim // agents
     blocks = steps // action_block
 
@@ -109,13 +120,41 @@ def goal_plan_costs(
         .to(device)
     )
 
-    start = (
-        observation.unsqueeze(1)
-        .expand(batch, n_candidates, agents, obs_dim)
-        .reshape(batch * n_candidates, 1, agents, obs_dim)
-        .to(device)
-    )
-    rolled = lewm_rollout(model, model.encode(start), plans, history_size)
+    if isinstance(observation, PlanningContext):
+        if getattr(model, "profile", "legacy_compact") != "lewm_reference":
+            raise ValueError("PlanningContext is reserved for lewm_reference")
+        frames = observation.observations.shape[1]
+        past = observation.past_actions.shape[1]
+        history = observation.observations[:, None].expand(
+            batch, n_candidates, frames, agents, obs_dim
+        ).reshape(batch * n_candidates, frames, agents, obs_dim).to(device)
+        action_history = observation.past_actions[:, None].expand(
+            batch,
+            n_candidates,
+            past,
+            agents,
+            observation.past_actions.shape[-1],
+        ).reshape(
+            batch * n_candidates,
+            past,
+            agents,
+            observation.past_actions.shape[-1],
+        ).to(device)
+        rolled = model.rollout_from_context(
+            model.encode(history), action_history, plans
+        )
+    else:
+        if getattr(model, "profile", "legacy_compact") == "lewm_reference":
+            raise ValueError(
+                "lewm_reference planning requires a real PlanningContext"
+            )
+        start = (
+            current_observation.unsqueeze(1)
+            .expand(batch, n_candidates, agents, obs_dim)
+            .reshape(batch * n_candidates, 1, agents, obs_dim)
+            .to(device)
+        )
+        rolled = lewm_rollout(model, model.encode(start), plans, history_size)
     rolled = rolled.view(batch, n_candidates, blocks, agents, -1)
 
     goal = model.encode(goal_observation.unsqueeze(1).to(device))

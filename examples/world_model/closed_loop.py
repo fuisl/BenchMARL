@@ -69,7 +69,7 @@ from examples.world_model.cem import CEMConfig
 from examples.world_model.collect import SPLITS
 from examples.world_model.goal_planning import goal_plan_costs
 from examples.world_model.metrics import mean_interval, success_interval
-from examples.world_model.model_input import ObservationBuilder
+from examples.world_model.model_input import ObservationBuilder, ReferenceHistory
 from examples.world_model.mpc import (
     action_bounds,
     evaluate_policy,
@@ -729,10 +729,6 @@ def main():
 
         def run(label, policy, plan_costs=None, observe=None):
             planner = torch.Generator(device=args.device).manual_seed(args.seed)
-            if observe is not None:
-                # Stateful for `history`; a stale buffer would carry the previous
-                # checkpoint's frames into this episode set.
-                observe.reset()
             episodes, timing, terminal = evaluate_policy(
                 env,
                 initial_state,
@@ -848,9 +844,17 @@ def main():
                 int(model.obs_mean.shape[-1]),
                 action_block_stride=mpc_config.receding_horizon,
             )
+            if model.profile == "lewm_reference":
+                observe = ReferenceHistory(
+                    observe,
+                    history_size=config["model"].get("history_size", 3),
+                    action_block=block,
+                )
             # The input condition is part of the model's identity, so it belongs
             # in the label: without it three conditions collapse into one row.
             tag = f"{kind}|{regime}|{seed}"
+            if model.profile != "legacy_compact":
+                tag = f"{model.profile}|{tag}"
             if state_input != "observation":
                 tag = f"{state_input}|{tag}"
             if args.objectives in ("both", "reward"):
