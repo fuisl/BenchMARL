@@ -3,6 +3,7 @@ import torch
 
 from examples.world_model.planner_tail_failure import (
     information_contract,
+    load_surrogate,
     rank_and_tail_metrics,
     registered_branch_result,
     surrogate_trajectories,
@@ -96,6 +97,49 @@ def test_recorded_recursive_cost_exactly_matches_planner_cost():
         objective="probability",
     )
     assert torch.equal(paths["recursive"]["cost"][:, :, -1], expected)
+
+
+def test_frozen_gate5_rejects_full32_checkpoint(tmp_path):
+    model = StructuredSurrogate(
+        torch.zeros(32),
+        torch.ones(32),
+        torch.zeros(20),
+        torch.ones(20),
+        torch.zeros(30),
+        torch.ones(30),
+        torch.zeros(1),
+        torch.ones(1),
+        torch.zeros(1),
+        torch.ones(1),
+        hidden=8,
+    )
+    checkpoint = tmp_path / "full32.pt"
+    torch.save(
+        {"state_dict": model.state_dict(), "state_profile": "full32"},
+        checkpoint,
+    )
+    with pytest.raises(ValueError, match="separately registered diagnostic"):
+        load_surrogate(checkpoint, "cpu")
+
+
+def test_frozen_gate5_loads_historical_checkpoint_without_profile(tmp_path):
+    model = StructuredSurrogate(
+        torch.zeros(14),
+        torch.ones(14),
+        torch.zeros(20),
+        torch.ones(20),
+        torch.zeros(12),
+        torch.ones(12),
+        torch.zeros(1),
+        torch.ones(1),
+        torch.zeros(1),
+        torch.ones(1),
+        hidden=8,
+    )
+    checkpoint = tmp_path / "legacy.pt"
+    torch.save({"state_dict": model.state_dict()}, checkpoint)
+    restored, _payload = load_surrogate(checkpoint, "cpu")
+    assert restored.state_profile == "legacy14"
 
 
 def test_registered_branch_prioritizes_upstream_ood():

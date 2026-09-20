@@ -95,11 +95,12 @@ their directories remain on disk.
 | `20_agent_position_validation.md` | Direct shared per-agent next-position model; 144-fit registered sweep complete; shared context and physical state improve one-block motion |
 | `21_latent_position_validation.md` | Same position target decoded from true, one-step predicted, and recursive latent states; latent pipeline fails against persistence and direct prediction |
 | `22_decision_information_localization.md` | Frozen Gate 0d: localize plan-ranking loss across encoder, rollout, scalar reward head, structured task head, and successive CEM populations |
-| `23_planner_coverage_structured_surrogate.md` | Gate 0e: collect competent-local and CEM hard-negative coverage, then test a task-sufficient physical surrogate with the true Buzz Wire cost |
+| `23_planner_coverage_structured_surrogate.md` | Gate 0e historical 14-D privileged surrogate; later audit proved it is not Markov-sufficient because linkage bodies were omitted |
 | `24_planner_tail_failure.md` | Gate 5: freeze job 1331 and separate planner-induced one-step shift, recursive accumulation, and false-safe CEM tails |
 | `25_feedback_cadence_ablation.md` | Does replanning cadence K compensate for the dynamics error Gate 5 localized, on the same frozen structured surrogate; K=1 reused from job 1331, K=2/5 computed |
-| `26_g6a_planner_aware_aggregation.md` | Experiment 24/G6a: two-round structured DAgger with a matched generic-data control, re-diagnosed by an unchanged Gate 5 rerun |
-| `27_audit_gate_a0_reference_profile.md` | Audit Gate A0 step 1: preserve the compact legacy model and add a separately named reference-compatible LeWM architecture/training profile |
+| `26_g6a_planner_aware_aggregation.md` | Experiment 24/G6a audit repair: equal optimizer mass/steps for targeted and generic arms; rerun blocked on state repair |
+| `27_audit_gate_a0_reference_profile.md` | Audit Gate A0: preserve the compact legacy model and add reference architecture, real temporal MPC context, and SIGReg semantics |
+| `28_full_structured_state_successor.md` | Audit Gate A1: parallel full32 state with agents, ball, linkage bodies, and goal; implementation only |
 
 Two notes share the number `02` and three share `05`. They are not renumbered
 here because other documents link to them by filename; new notes continue from

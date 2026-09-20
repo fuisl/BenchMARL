@@ -1,6 +1,6 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # Licensed under the license found in the LICENSE file in the root directory.
-"""Planner-induced coverage and a 14-D privileged Buzz Wire diagnostic.
+"""Planner-induced coverage and privileged Buzz Wire state surrogates.
 
 This is Baseline B after Gate 0d.  It deliberately removes both learned-latent
 coordinates and scalar reward prediction:
@@ -8,8 +8,8 @@ coordinates and scalar reward prediction:
 * collection queries the frozen seed-4100 planner at CEM iterations
   1/5/10/20/30, then executes its preferred candidates in VMAS;
 * competent true-dynamics plans and local joint-action perturbations are added;
-* a small surrogate predicts the selected 14-D state, within-block clearance,
-  and collision probability;
+* a small surrogate predicts a registered structured state, within-block
+  clearance, and collision probability;
 * CEM scores rollouts with Buzz Wire's known progress and collision cost.
 
 Commands are separate so the launcher enforces collection before training:
@@ -17,6 +17,11 @@ Commands are separate so the launcher enforces collection before training:
 ``collect`` writes a split-safe coverage bank. ``run`` fits behavior-only and
 full-mixture controls, evaluates held-out plan ranking, then runs receding-
 horizon MPC on the frozen test roots.
+
+``legacy14`` reproduces jobs 1331--1337 but omits the linkage bodies and is
+provably non-Markov. ``full32`` is its parallel successor: it retains all six
+recorded physical coordinates for both agents, the ball, and both movable
+linkage bodies, plus the goal. Neither profile is a deployable observation.
 """
 
 import argparse
@@ -24,6 +29,7 @@ import json
 import math
 import subprocess
 from collections import defaultdict
+from dataclasses import dataclass
 from pathlib import Path
 from time import perf_counter
 
@@ -60,18 +66,75 @@ from examples.world_model.snapshot_restore import (
     agent_observations,
     physical_state,
     restore_state,
+    tracked_entities,
 )
 from examples.world_model.train import load_model
 
 
 FAMILY_NAMES = ("behavior", "competent_local", "cem_hard")
 HARD_STAGES = (1, 5, 10, 20, 30)
-# This legacy diagnostic omits the two movable linkage bodies. An audit
-# counterexample now proves it is not Markov-sufficient; retain its dimensions
-# only so jobs 1331--1337 remain reproducible while a full-state successor is
-# implemented separately.
-STATE_DIM = 14  # two agents pos/vel, ball pos/vel, goal position
-DYNAMIC_DIM = 12
+@dataclass(frozen=True)
+class StructuredStateSpec:
+    name: str
+    state_dim: int
+    dynamic_dim: int
+    agent_width: int
+    entity_width: int
+    entity_count: int
+    entity_names: tuple[str, ...]
+    ball_position: slice
+    body_positions: tuple[slice, ...]
+    fields: str
+
+
+LEGACY_SPEC = StructuredStateSpec(
+    name="legacy14",
+    state_dim=14,
+    dynamic_dim=12,
+    agent_width=4,
+    entity_width=4,
+    entity_count=1,
+    entity_names=("ball",),
+    ball_position=slice(8, 10),
+    body_positions=(slice(0, 2), slice(4, 6), slice(8, 10)),
+    fields="agent0/1 pos+vel, ball pos+vel, goal pos",
+)
+FULL_SPEC = StructuredStateSpec(
+    name="full32",
+    state_dim=32,
+    dynamic_dim=30,
+    agent_width=6,
+    entity_width=6,
+    entity_count=3,
+    entity_names=("ball", "joint agent_0 ball", "joint agent_1 ball"),
+    ball_position=slice(12, 14),
+    body_positions=(slice(0, 2), slice(6, 8), slice(12, 14)),
+    fields=(
+        "agent0/1 pos+vel+rot+ang_vel, ball and two linkage bodies "
+        "pos+vel+rot+ang_vel, goal pos"
+    ),
+)
+STATE_SPECS = {spec.name: spec for spec in (LEGACY_SPEC, FULL_SPEC)}
+# Backward-compatible aliases used by the frozen job-1331 Gate-5 diagnostic.
+STATE_DIM = LEGACY_SPEC.state_dim
+DYNAMIC_DIM = LEGACY_SPEC.dynamic_dim
+
+
+def state_spec(profile="legacy14"):
+    try:
+        return STATE_SPECS[profile]
+    except KeyError as error:
+        raise ValueError(
+            f"Unknown structured state profile {profile!r}; "
+            f"expected one of {tuple(STATE_SPECS)}"
+        ) from error
+
+
+def state_spec_for_width(width):
+    matches = [spec for spec in STATE_SPECS.values() if spec.state_dim == width]
+    if len(matches) != 1:
+        raise ValueError(f"Unsupported structured state width: {width}")
+    return matches[0]
 
 
 def write_json(path, value):
@@ -85,26 +148,64 @@ def wire_clearance(position):
     return torch.minimum(horizontal, vertical)
 
 
-def structured_state(agent_state, package_state, observation=None, goal=None):
-    """Build [...,14] task state from recorded or live physical tensors."""
-    agents = agent_state[..., :4].flatten(-2)
-    ball = package_state[..., 0, :4]
+def structured_state(
+    agent_state,
+    package_state,
+    observation=None,
+    goal=None,
+    profile="legacy14",
+):
+    """Build one registered privileged state from recorded/live tensors."""
+    spec = state_spec(profile)
+    if agent_state.shape[-2] != 2:
+        raise ValueError("Buzz Wire structured state requires exactly two agents")
+    if package_state.shape[-2] < spec.entity_count:
+        raise ValueError(
+            f"{profile} needs {spec.entity_count} dynamic entities, got "
+            f"{package_state.shape[-2]}"
+        )
+    agents = agent_state[..., : spec.agent_width].flatten(-2)
+    entities = package_state[
+        ..., : spec.entity_count, : spec.entity_width
+    ].flatten(-2)
     if goal is None:
         if observation is None:
             raise ValueError("observation or goal is required")
         goal = (agent_state[..., :2] - observation[..., 4:6]).mean(dim=-2)
-    return torch.cat([agents, ball, goal], dim=-1)
+    result = torch.cat([agents, entities, goal], dim=-1)
+    if result.shape[-1] != spec.state_dim:
+        raise ValueError(
+            f"{profile} produced width {result.shape[-1]}, expected {spec.state_dim}"
+        )
+    return result
 
 
-def live_structured_state(env):
+def live_structured_state(env, profile="legacy14"):
+    spec = state_spec(profile)
     agents = physical_state(env._env.world.agents)
-    ball = physical_state([env._env.scenario.ball])
+    tracked = tracked_entities(env)
+    names = tuple(entity.name for entity in tracked[: spec.entity_count])
+    if names != spec.entity_names:
+        raise ValueError(
+            f"{profile} requires entity order {spec.entity_names}, got {names}"
+        )
+    entities = physical_state(tracked)
     goal = env._env.scenario.goal.state.pos
-    return structured_state(agents, ball, goal=goal)
+    return structured_state(agents, entities, goal=goal, profile=profile)
 
 
-def blockify(data, split, family, source, root_id, stage, action_block):
+def blockify(
+    data,
+    split,
+    family,
+    source,
+    root_id,
+    stage,
+    action_block,
+    state_profile="legacy14",
+):
     """Convert primitive VMAS trajectories to task-labelled block transitions."""
+    spec = state_spec(state_profile)
     count, steps, agents, action_dim = data["action"].shape
     if steps % action_block:
         raise ValueError("Primitive trajectory length must divide into blocks")
@@ -118,6 +219,7 @@ def blockify(data, split, family, source, root_id, stage, action_block):
         data["agent_state"][:, start],
         data["package_state"][:, start],
         goal=goal,
+        profile=state_profile,
     )
 
     valid = data["valid"].reshape(count, blocks, action_block)
@@ -141,7 +243,9 @@ def blockify(data, split, family, source, root_id, stage, action_block):
             count, blocks, 1, next_package_steps.shape[3], 6
         ),
     ).squeeze(2)
-    next_state = structured_state(end_agent, end_package, goal=goal)
+    next_state = structured_state(
+        end_agent, end_package, goal=goal, profile=state_profile
+    )
 
     primitive_action = data["action"].reshape(
         count, blocks, action_block, agents, action_dim
@@ -162,8 +266,12 @@ def blockify(data, split, family, source, root_id, stage, action_block):
     primitive_clearance = primitive_clearance.masked_fill(~valid, float("inf"))
     minimum_clearance = primitive_clearance.min(dim=2).values
 
-    start_distance = torch.linalg.vector_norm(state[..., 8:10] - goal, dim=-1)
-    end_distance = torch.linalg.vector_norm(next_state[..., 8:10] - goal, dim=-1)
+    start_distance = torch.linalg.vector_norm(
+        state[..., spec.ball_position] - goal, dim=-1
+    )
+    end_distance = torch.linalg.vector_norm(
+        next_state[..., spec.ball_position] - goal, dim=-1
+    )
     progress = start_distance - end_distance
     collision_cost = (2 * progress - team_reward).clamp_min(0)
 
@@ -177,9 +285,9 @@ def blockify(data, split, family, source, root_id, stage, action_block):
 
     flat_mask = outcome_valid.flatten()
     result = {
-        "state": state.reshape(-1, STATE_DIM)[flat_mask],
+        "state": state.reshape(-1, spec.state_dim)[flat_mask],
         "action": action.reshape(-1, agents, action_block * action_dim)[flat_mask],
-        "next_state": next_state.reshape(-1, STATE_DIM)[flat_mask],
+        "next_state": next_state.reshape(-1, spec.state_dim)[flat_mask],
         "dynamics_valid": dynamics_valid.flatten()[flat_mask],
         "minimum_clearance": minimum_clearance.flatten()[flat_mask],
         "collision": collision.flatten()[flat_mask],
@@ -296,6 +404,7 @@ def collect_coverage(args):
     if manifest["task_name"] != "vmas/buzz_wire":
         raise ValueError("Structured surrogate is scoped to Buzz Wire")
     block = manifest["action_block"]
+    spec = state_spec(args.state_profile)
     task = VmasTask.BUZZ_WIRE.get_from_yaml()
     records, collection_summary = [], {}
 
@@ -314,6 +423,7 @@ def collect_coverage(args):
                 root_id=samples["anchor_id"],
                 stage=-1,
                 action_block=block,
+                state_profile=spec.name,
             )
         )
 
@@ -383,6 +493,7 @@ def collect_coverage(args):
                 root_id=root_id,
                 stage=stage,
                 action_block=block,
+                state_profile=spec.name,
             )
         )
         summary = trajectory_summary(data, stage)
@@ -472,6 +583,7 @@ def collect_coverage(args):
                 root_id=root_id,
                 stage=-1,
                 action_block=block,
+                state_profile=spec.name,
             )
         )
         summary = trajectory_summary(data, variant)
@@ -480,7 +592,7 @@ def collect_coverage(args):
         print(f"oracle roots {ids[-1].item() + 1}/{root_count}", flush=True)
 
     coverage = cat_records(records)
-    if coverage["state"].shape[1] != STATE_DIM:
+    if coverage["state"].shape[1] != spec.state_dim:
         raise ValueError("Unexpected structured state width")
     root_splits = {}
     for root, split in zip(coverage["root_id"].tolist(), coverage["split"].tolist()):
@@ -544,7 +656,11 @@ def collect_coverage(args):
         {
             "task_name": manifest["task_name"],
             "action_block": block,
-            "state_fields": "agent0 pos/vel, agent1 pos/vel, ball pos/vel, goal pos",
+            "state_profile": spec.name,
+            "state_dim": spec.state_dim,
+            "dynamic_dim": spec.dynamic_dim,
+            "state_fields": spec.fields,
+            "entity_order": spec.entity_names,
             "families": FAMILY_NAMES,
             "hard_stages": HARD_STAGES,
             "source_data": str(args.data),
@@ -584,13 +700,23 @@ class StructuredSurrogate(nn.Module):
         hidden=256,
     ):
         super().__init__()
+        spec = state_spec_for_width(state_mean.numel())
+        if delta_mean.numel() != spec.dynamic_dim:
+            raise ValueError(
+                f"{spec.name} needs {spec.dynamic_dim} dynamic targets, got "
+                f"{delta_mean.numel()}"
+            )
+        self.state_profile = spec.name
+        self.state_dim = spec.state_dim
+        self.dynamic_dim = spec.dynamic_dim
+        self.ball_position = spec.ball_position
         width = state_mean.numel() + action_mean.numel()
         self.body = nn.Sequential(
             nn.Linear(width, hidden), nn.SiLU(),
             nn.Linear(hidden, hidden), nn.SiLU(),
             nn.Linear(hidden, hidden), nn.SiLU(),
         )
-        self.delta = nn.Linear(hidden, DYNAMIC_DIM)
+        self.delta = nn.Linear(hidden, self.dynamic_dim)
         self.clearance = nn.Linear(hidden, 1)
         self.collision = nn.Linear(hidden, 1)
         self.penalty = nn.Linear(hidden, 1)
@@ -616,15 +742,30 @@ class StructuredSurrogate(nn.Module):
         clearance = self.clearance(hidden).squeeze(-1) * self.clearance_std + self.clearance_mean
         collision = self.collision(hidden).squeeze(-1)
         penalty = self.penalty(hidden).squeeze(-1) * self.penalty_std + self.penalty_mean
-        next_state = torch.cat([state[..., :DYNAMIC_DIM] + delta, state[..., DYNAMIC_DIM:]], dim=-1)
+        if state.shape[-1] != self.state_dim:
+            raise ValueError(
+                f"{self.state_profile} model expected state width {self.state_dim}, "
+                f"got {state.shape[-1]}"
+            )
+        next_state = torch.cat(
+            [
+                state[..., : self.dynamic_dim] + delta,
+                state[..., self.dynamic_dim :],
+            ],
+            dim=-1,
+        )
         return next_state, clearance, collision, penalty
 
 
 def statistics(data, mask):
+    spec = state_spec_for_width(data["state"].shape[-1])
     valid = mask & data["dynamics_valid"]
     state = data["state"][mask]
     action = data["action"][mask].flatten(1)
-    delta = data["next_state"][valid, :DYNAMIC_DIM] - data["state"][valid, :DYNAMIC_DIM]
+    delta = (
+        data["next_state"][valid, : spec.dynamic_dim]
+        - data["state"][valid, : spec.dynamic_dim]
+    )
 
     def stats(value):
         return value.mean(0), value.std(0, unbiased=False).clamp_min(1e-5)
@@ -652,7 +793,17 @@ def batch_loss(model, batch, pos_weight):
     state, action = batch["state"], batch["action"]
     predicted, clearance, logits, penalty = model(state, action)
     valid = batch["dynamics_valid"]
-    dynamics = (((predicted[..., :DYNAMIC_DIM] - batch["next_state"][..., :DYNAMIC_DIM]) / model.delta_std).square()[valid]).mean()
+    dynamics = (
+        (
+            (
+                predicted[..., : model.dynamic_dim]
+                - batch["next_state"][..., : model.dynamic_dim]
+            )
+            / model.delta_std
+        )
+        .square()[valid]
+        .mean()
+    )
     clearance_loss = (((clearance - batch["minimum_clearance"]) / model.clearance_std).square()).mean()
     collision = torch.nn.functional.binary_cross_entropy_with_logits(
         logits, batch["collision"].float(), pos_weight=pos_weight
@@ -681,12 +832,18 @@ def evaluate_transitions(model, data, indices, device):
     batch = {key: value[indices].to(device) for key, value in data.items()}
     predicted, clearance, logits, penalty = model(batch["state"], batch["action"])
     valid = batch["dynamics_valid"]
-    error = predicted[valid, :DYNAMIC_DIM] - batch["next_state"][valid, :DYNAMIC_DIM]
+    error = (
+        predicted[valid, : model.dynamic_dim]
+        - batch["next_state"][valid, : model.dynamic_dim]
+    )
+    ball = model.ball_position
     collision = batch["collision"].bool()
     probability = torch.sigmoid(logits)
     result = {
         "dynamic_coordinate_rmse": float(error.square().mean().sqrt()),
-        "ball_position_rmse": float(error[:, 8:10].square().sum(-1).mean().sqrt()),
+        "ball_position_rmse": float(
+            error[:, ball].square().sum(-1).mean().sqrt()
+        ),
         "clearance_rmse": float((clearance - batch["minimum_clearance"]).square().mean().sqrt()),
         "collision_brier": float((probability - collision.float()).square().mean()),
         "collision_auc": binary_auc(probability, collision),
@@ -831,12 +988,23 @@ def surrogate_cost(model, initial_state, candidates, action_block, objective="pr
     horizon = primitive_steps // action_block
     action = candidates.reshape(batch, count, horizon, action_block, agents, primitive)
     action = action.permute(0, 1, 2, 4, 3, 5).reshape(batch * count, horizon, agents, action_block * primitive)
-    state = initial_state[:, None].expand(batch, count, STATE_DIM).reshape(batch * count, STATE_DIM)
+    if initial_state.shape[-1] != model.state_dim:
+        raise ValueError(
+            f"{model.state_profile} model expected state width {model.state_dim}, "
+            f"got {initial_state.shape[-1]}"
+        )
+    state = initial_state[:, None].expand(
+        batch, count, model.state_dim
+    ).reshape(batch * count, model.state_dim)
     survival = torch.ones(batch * count, device=state.device)
     total = torch.zeros_like(survival)
     for step in range(horizon):
         next_state, clearance, logits, penalty = model(state, action[:, step])
-        progress = torch.linalg.vector_norm(state[:, 8:10] - state[:, 12:14], dim=-1) - torch.linalg.vector_norm(next_state[:, 8:10] - next_state[:, 12:14], dim=-1)
+        progress = torch.linalg.vector_norm(
+            state[:, model.ball_position] - state[:, -2:], dim=-1
+        ) - torch.linalg.vector_norm(
+            next_state[:, model.ball_position] - next_state[:, -2:], dim=-1
+        )
         if objective == "probability":
             collision = torch.sigmoid(logits)
             collision_penalty = 20 * collision
@@ -863,11 +1031,11 @@ def build_bank(task, snapshot, oracle, action_block, random_plans, seed, device)
     return {"candidates": candidates, "truth": truth}
 
 
-def bank_state(task, snapshot, device):
+def bank_state(task, snapshot, device, state_profile="legacy14"):
     env = task.get_env_fun(snapshot["steps"].shape[0], True, 0, device)()
     env.reset()
     restore_state(env, tree_map(snapshot, lambda x: x.to(device)))
-    state = live_structured_state(env)
+    state = live_structured_state(env, state_profile)
     env.close()
     return state
 
@@ -928,6 +1096,15 @@ def run_surrogate(args):
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
     data = torch.load(args.coverage / "coverage.pt", map_location="cpu", weights_only=False)
+    coverage_manifest = json.loads(
+        (args.coverage / "manifest.json").read_text()
+    )
+    profile = coverage_manifest.get("state_profile", "legacy14")
+    spec = state_spec(profile)
+    if data["state"].shape[-1] != spec.state_dim:
+        raise ValueError(
+            f"Coverage declares {profile} but has width {data['state'].shape[-1]}"
+        )
     stored = torch.load(args.coverage / "oracle_plans.pt", map_location="cpu", weights_only=False)
     manifest = json.loads((args.data / "manifest.json").read_text())
     task = VmasTask.BUZZ_WIRE.get_from_yaml()
@@ -941,7 +1118,17 @@ def run_surrogate(args):
             test_mask = (data["split"] == 2) & ((data["family"] == 0) if mix == "behavior" else torch.ones_like(data["family"], dtype=torch.bool))
             test = evaluate_transitions(model, data, test_mask.nonzero(as_tuple=True)[0], args.device)
             checkpoint = output / f"model_{mix}_{seed}.pt"
-            torch.save({"state_dict": model.state_dict(), "mix": mix, "seed": seed, "fit": fit, "test": test}, checkpoint)
+            torch.save(
+                {
+                    "state_dict": model.state_dict(),
+                    "state_profile": profile,
+                    "mix": mix,
+                    "seed": seed,
+                    "fit": fit,
+                    "test": test,
+                },
+                checkpoint,
+            )
             models[mix, seed] = model
             records.append({"mix": mix, "seed": seed, "fit": fit, "test_transitions": test, "checkpoint": str(checkpoint)})
 
@@ -950,7 +1137,9 @@ def run_surrogate(args):
         ids = (stored["split"] == split).nonzero(as_tuple=True)[0]
         snapshot = take_snapshot(stored["snapshot"], ids, "cpu")
         bank = build_bank(task, snapshot, stored["plans"][ids], block, args.random_plans, args.bank_seed + split, args.device)
-        bank["state"] = bank_state(task, snapshot, args.device).cpu()
+        bank["state"] = bank_state(
+            task, snapshot, args.device, state_profile=profile
+        ).cpu()
         bank["snapshot"] = snapshot
         banks[name] = bank
         torch.save(bank, output / f"{name}_bank.pt")
@@ -1026,7 +1215,9 @@ def run_surrogate(args):
                 mpc_config=mpc_config,
                 outcome_fn=task_outcome(manifest["task_name"]),
                 plan_costs=controller_cost(model, block, selected[mix]),
-                observe=live_structured_state,
+                observe=lambda active_env, profile=profile: live_structured_state(
+                    active_env, profile
+                ),
             )
             for row in episode_rows:
                 row["policy"] = policy
@@ -1038,9 +1229,10 @@ def run_surrogate(args):
     control_summary = summarize(rows, seed=args.control_seed)
     result = {
         "question": (
-            "Can a cheap 14-D privileged structured-state diagnostic control "
+            f"Can the privileged {profile} structured-state model control "
             "Buzz Wire?"
         ),
+        "state_profile": profile,
         "selected_objective": selected,
         "fits": records,
         "ranking_all_objectives": ranking,
@@ -1064,6 +1256,12 @@ def build_parser():
     collect.add_argument("--runs", type=Path, required=True)
     collect.add_argument("--output", type=Path, required=True)
     collect.add_argument("--device", default="cuda")
+    collect.add_argument(
+        "--state-profile",
+        choices=tuple(STATE_SPECS),
+        default="legacy14",
+        help="legacy14 reproduces jobs 1331--1337; full32 includes linkage state",
+    )
     collect.add_argument("--model-seed", type=int, default=4100)
     collect.add_argument("--kind", default="joint")
     collect.add_argument("--seed", type=int, default=8400)

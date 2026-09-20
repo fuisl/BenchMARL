@@ -115,6 +115,17 @@ def load_surrogate(path, device):
     model = StructuredSurrogate(
         *(state[name] for name in BUFFER_NAMES), hidden=hidden
     ).to(device)
+    recorded_profile = checkpoint.get("state_profile", "legacy14")
+    if model.state_profile != recorded_profile:
+        raise ValueError(
+            f"Checkpoint records {recorded_profile} but its tensors describe "
+            f"{model.state_profile}"
+        )
+    if model.state_profile != "legacy14":
+        raise ValueError(
+            "The frozen job-1331 Gate-5 diagnostic accepts only legacy14; "
+            "a full32 successor needs a separately registered diagnostic"
+        )
     model.load_state_dict(state)
     model.eval()
     return model, checkpoint

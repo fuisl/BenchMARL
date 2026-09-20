@@ -7,6 +7,8 @@ from tensordict import TensorDict
 from benchmarl.environments import VmasTask
 from examples.world_model.snapshot_restore import restore_state, snapshot_state
 from examples.world_model.structured_surrogate import (
+    FULL_SPEC,
+    LEGACY_SPEC,
     StructuredSurrogate,
     blockify,
     live_structured_state,
@@ -29,6 +31,17 @@ def test_structured_state_contains_agents_ball_and_goal_in_declared_order():
     torch.testing.assert_close(state[:, :8], agents[..., :4].flatten(1))
     torch.testing.assert_close(state[:, 8:12], package[:, 0, :4])
     torch.testing.assert_close(state[:, 12:14], goal)
+
+
+def test_full_structured_state_contains_linkage_pose_and_velocity():
+    agents = torch.arange(2 * 2 * 6, dtype=torch.float32).reshape(2, 2, 6)
+    entities = torch.arange(2 * 3 * 6, dtype=torch.float32).reshape(2, 3, 6) + 100
+    goal = torch.tensor([[200.0, 201.0], [202.0, 203.0]])
+    state = structured_state(agents, entities, goal=goal, profile="full32")
+    assert state.shape == (2, FULL_SPEC.state_dim)
+    torch.testing.assert_close(state[:, :12], agents.flatten(1))
+    torch.testing.assert_close(state[:, 12:30], entities.flatten(1))
+    torch.testing.assert_close(state[:, 30:32], goal)
 
 
 def test_blockify_preserves_action_order_and_reward_decomposition():
@@ -67,22 +80,45 @@ def test_blockify_preserves_action_order_and_reward_decomposition():
     assert result["root_id"].item() == 7
 
 
-def test_structured_surrogate_rollout_cost_is_finite_and_batched():
+def test_blockify_builds_full32_transition_without_dropping_links():
+    count, steps, agents, action_dim = 1, 2, 2, 2
+    agent_state = torch.randn(count, steps, agents, 6)
+    package_state = torch.randn(count, steps, 3, 6)
+    data = {
+        "observation": torch.zeros(count, steps, agents, 6),
+        "action": torch.zeros(count, steps, agents, action_dim),
+        "reward": torch.zeros(count, steps, agents, 1),
+        "valid": torch.ones(count, steps, dtype=torch.bool),
+        "agent_state": agent_state,
+        "next_agent_state": agent_state + 0.1,
+        "package_state": package_state,
+        "next_package_state": package_state + 0.1,
+    }
+    result = blockify(
+        data, 0, 0, 0, 7, -1, action_block=2, state_profile="full32"
+    )
+    assert result["state"].shape == (1, FULL_SPEC.state_dim)
+    assert result["next_state"].shape == (1, FULL_SPEC.state_dim)
+    torch.testing.assert_close(result["state"][0, 12:30], package_state[0, 0].flatten())
+
+
+@pytest.mark.parametrize("spec", [LEGACY_SPEC, FULL_SPEC], ids=lambda spec: spec.name)
+def test_structured_surrogate_rollout_cost_is_finite_and_batched(spec):
     model = StructuredSurrogate(
-        torch.zeros(14),
-        torch.ones(14),
+        torch.zeros(spec.state_dim),
+        torch.ones(spec.state_dim),
         torch.zeros(20),
         torch.ones(20),
-        torch.zeros(12),
-        torch.ones(12),
+        torch.zeros(spec.dynamic_dim),
+        torch.ones(spec.dynamic_dim),
         torch.tensor(0.1),
         torch.tensor(1.0),
         torch.tensor(0.0),
         torch.tensor(1.0),
         hidden=16,
     )
-    state = torch.zeros(2, 14)
-    state[:, 13] = 1.0
+    state = torch.zeros(2, spec.state_dim)
+    state[:, -1] = 1.0
     candidates = torch.zeros(2, 3, 25, 4)
     for objective in ("probability", "penalty", "clearance"):
         cost = surrogate_cost(model, state, candidates, 5, objective)
@@ -115,11 +151,12 @@ def test_base_augmentation_sampler_assigns_equal_expected_mass(
     assert mass == {"base": 0.5, "augmentation": 0.5}
 
 
-def test_matched_training_uses_fixed_epoch_and_optimizer_step_budget():
+@pytest.mark.parametrize("spec", [LEGACY_SPEC, FULL_SPEC], ids=lambda spec: spec.name)
+def test_matched_training_uses_fixed_epoch_and_optimizer_step_budget(spec):
     torch.manual_seed(7)
     train_rows, validation_rows = 12, 4
     rows = train_rows + validation_rows
-    state = torch.randn(rows, 14)
+    state = torch.randn(rows, spec.state_dim)
     action = torch.randn(rows, 2, 4)
     data = {
         "state": state,
@@ -180,6 +217,8 @@ def test_legacy_14d_state_is_provably_non_markov_when_link_state_differs():
         restore_state(paired, counterexample)
         before = live_structured_state(paired)
         torch.testing.assert_close(before[0], before[1], atol=0, rtol=0)
+        full_before = live_structured_state(paired, "full32")
+        assert torch.linalg.vector_norm(full_before[0] - full_before[1]) > 0
 
         action = torch.zeros(2, 2, 2)
         td = TensorDict({("agents", "action"): action}, batch_size=[2])
