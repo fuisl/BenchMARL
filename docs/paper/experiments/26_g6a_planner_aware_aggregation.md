@@ -1,6 +1,32 @@
 # Experiment 24/G6a: planner-aware data aggregation
 
-Status: implementation complete; submission pending. Date: 2026-09-18.
+Status: original result is provisional; sampler-matched implementation revised,
+rerun not authorized. Updated: 2026-09-20.
+
+## Audit correction before rerun
+
+Job 1337 did not isolate targeted collection from generic collection. Targeted
+rows entered collection family 2 while generic rows entered family 0, and the
+family-balanced sampler consequently gave the two additions different expected
+optimizer weight. Its arm difference remains descriptive but is not clean
+causal evidence for planner-aware coverage.
+
+The corrected implementation assigns both additions one common augmentation
+family while retaining distinct `source` labels. Training samples 50% from the
+unchanged base bank and 50% from cumulative augmentation in both arms. The
+number of samples per epoch is fixed at twice the base training-transition
+count, early stopping cannot shorten an arm, and both arms therefore receive
+the same epoch and optimizer-step budget. These values are stored in each fit
+record and in `aggregation_summary.json`. Initial-state roots are placed in a
+separate integer namespace so they cannot collide with historical anchor IDs.
+
+The audit also produced a direct counterexample to the 14-D state's claimed
+Markov sufficiency: two snapshots with identical agent/ball/goal state and the
+same zero action diverge after one simulator step when only an omitted movable
+link body's velocity differs. Jobs 1331--1337 must therefore be described as a
+**14-D privileged structured-state diagnostic**, not a task-sufficient or full
+physical-state model. The sampler correction is ready for review, but no G6a
+rerun should begin until the successor state includes the linkage dynamics.
 
 ## Question
 

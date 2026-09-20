@@ -1,10 +1,19 @@
-import torch
+from types import SimpleNamespace
 
+import pytest
+import torch
+from tensordict import TensorDict
+
+from benchmarl.environments import VmasTask
+from examples.world_model.snapshot_restore import restore_state, snapshot_state
 from examples.world_model.structured_surrogate import (
     StructuredSurrogate,
     blockify,
+    live_structured_state,
     structured_state,
     surrogate_cost,
+    train_surrogate,
+    training_sampling_weights,
     wire_clearance,
 )
 
@@ -84,3 +93,99 @@ def test_structured_surrogate_rollout_cost_is_finite_and_batched():
 def test_clearance_is_negative_outside_the_wire():
     clearance = wire_clearance(torch.tensor([[0.0, 0.0], [0.1, 0.0]]))
     torch.testing.assert_close(clearance, torch.tensor([0.095, -0.005]))
+
+
+@pytest.mark.parametrize("augmentation_count", [2, 20])
+def test_base_augmentation_sampler_assigns_equal_expected_mass(
+    augmentation_count,
+):
+    family = torch.tensor([0] * 7 + [1] * 3 + [2] * 5 + [3] * augmentation_count)
+    data = {"family": family}
+    indices = torch.arange(family.numel())
+    weights, mass = training_sampling_weights(
+        data,
+        indices,
+        scheme="base_augmentation",
+        augmentation_family=3,
+    )
+    augmentation = family == 3
+    expected = torch.tensor(0.5, dtype=weights.dtype)
+    torch.testing.assert_close(weights[~augmentation].sum(), expected)
+    torch.testing.assert_close(weights[augmentation].sum(), expected)
+    assert mass == {"base": 0.5, "augmentation": 0.5}
+
+
+def test_matched_training_uses_fixed_epoch_and_optimizer_step_budget():
+    torch.manual_seed(7)
+    train_rows, validation_rows = 12, 4
+    rows = train_rows + validation_rows
+    state = torch.randn(rows, 14)
+    action = torch.randn(rows, 2, 4)
+    data = {
+        "state": state,
+        "action": action,
+        "next_state": state + 0.05 * torch.randn_like(state),
+        "dynamics_valid": torch.ones(rows, dtype=torch.bool),
+        "minimum_clearance": torch.randn(rows),
+        "collision": torch.arange(rows) % 2 == 0,
+        "collision_cost": torch.rand(rows),
+        "family": torch.tensor([0] * 6 + [3] * 6 + [0] * validation_rows),
+        "split": torch.tensor([0] * train_rows + [1] * validation_rows),
+    }
+    args = SimpleNamespace(
+        hidden=8,
+        device="cpu",
+        batch_size=4,
+        learning_rate=3e-4,
+        weight_decay=1e-4,
+        epochs=3,
+        patience=1,
+    )
+    _model, fit = train_surrogate(
+        data,
+        "full",
+        11,
+        args,
+        sampling_scheme="base_augmentation",
+        augmentation_family=3,
+        samples_per_epoch=8,
+        fixed_epochs=True,
+    )
+    assert fit["epochs"] == 3
+    assert fit["optimizer_steps"] == 6
+    assert fit["samples_per_epoch"] == 8
+    assert fit["expected_sampling_mass"] == {"base": 0.5, "augmentation": 0.5}
+
+
+def test_legacy_14d_state_is_provably_non_markov_when_link_state_differs():
+    """Same 14-D state and action diverge when an omitted joint body differs."""
+    task = VmasTask.BUZZ_WIRE.get_from_yaml()
+    source = task.get_env_fun(1, True, 0, "cpu")()
+    paired = task.get_env_fun(2, True, 0, "cpu")()
+    try:
+        source.set_seed(1)
+        source.reset()
+        snapshot = snapshot_state(source)
+
+        def duplicate(value):
+            if isinstance(value, dict):
+                return {key: duplicate(item) for key, item in value.items()}
+            return value.repeat_interleave(2, dim=0)
+
+        counterexample = duplicate(snapshot)
+        link = counterexample["entities"]["joint agent_0 ball"]["state"]
+        link["_vel"][1, 0] += 0.5
+
+        paired.reset()
+        restore_state(paired, counterexample)
+        before = live_structured_state(paired)
+        torch.testing.assert_close(before[0], before[1], atol=0, rtol=0)
+
+        action = torch.zeros(2, 2, 2)
+        td = TensorDict({("agents", "action"): action}, batch_size=[2])
+        paired.step(td)
+        after = live_structured_state(paired)
+        assert torch.linalg.vector_norm(after[0] - after[1]) > 1e-3
+    finally:
+        source.close()
+        paired.close()

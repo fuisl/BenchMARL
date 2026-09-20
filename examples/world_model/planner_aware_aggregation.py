@@ -28,7 +28,13 @@ enters candidate selection, only supervision, matching Gate 5's contract.
 
 The generic control collects the same roots and the identical per-root plan
 count from uniform random actions instead of any model's CEM, and is shared
-across seeds each round since it does not depend on a model.
+across seeds each round since it does not depend on a model. Both additions
+use one augmentation family. Training draws 50% base and 50% augmentation with
+a fixed epoch/step budget, so source is the only optimizer-mass difference.
+
+The underlying 14-D surrogate omits movable linkage bodies and is now known to
+be non-Markov. This corrected runner remains available for provenance and code
+review, but must not be submitted until a full-state successor replaces it.
 
 Every round of every arm is written out as a Gate-5-compatible source
 directory (`result/model_full_{seed}.pt` + `result/result.json` +
@@ -61,6 +67,10 @@ from examples.world_model.structured_surrogate import (
 
 
 SEEDS = (9100, 9101, 9102)
+G6A_AUGMENTATION_FAMILY = 3
+G6A_ROOT_OFFSET = 2_000_000
+G6A_TARGETED_SOURCE = 9
+G6A_GENERIC_SOURCE = 10
 
 
 def write_json(path, value):
@@ -74,6 +84,16 @@ def assert_disjoint_from_frozen_test_roots(collection_ids, frozen_test_ids):
         raise ValueError(
             "G6a collection roots must be disjoint from Gate 5's frozen test roots"
         )
+
+
+def namespaced_g6a_root_ids(ids):
+    """Keep initial-state-bank roots distinct from historical anchor IDs."""
+    ids = torch.as_tensor(ids, dtype=torch.long)
+    if (ids < 0).any():
+        raise ValueError("G6a source root IDs must be non-negative")
+    if (ids >= G6A_ROOT_OFFSET).any():
+        raise ValueError("G6a source root IDs exceed their namespace range")
+    return ids + G6A_ROOT_OFFSET
 
 
 def structured_state_and_bounds(task, snapshot, device):
@@ -151,11 +171,16 @@ def collect_own_cem_hard_negatives(
         plans = torch.cat(selected, dim=1)
         data = replay_blocked(task, snapshot, plans, block, replay_batch, device)
         plan_count = plans.shape[1]
-        root_id = ids.repeat_interleave(plan_count)
+        root_id = namespaced_g6a_root_ids(ids).repeat_interleave(plan_count)
         stage = torch.tensor(stage_values).repeat(ids.numel())
         records.append(
             blockify(
-                data, split=0, family=2, source=4, root_id=root_id, stage=stage,
+                data,
+                split=0,
+                family=G6A_AUGMENTATION_FAMILY,
+                source=G6A_TARGETED_SOURCE,
+                root_id=root_id,
+                stage=stage,
                 action_block=block,
             )
         )
@@ -185,10 +210,15 @@ def collect_generic_matched(
             + low
         )
         data = replay_blocked(task, snapshot, plans, block, replay_batch, device)
-        root_id = ids.repeat_interleave(plans_per_root)
+        root_id = namespaced_g6a_root_ids(ids).repeat_interleave(plans_per_root)
         records.append(
             blockify(
-                data, split=0, family=0, source=8, root_id=root_id, stage=-1,
+                data,
+                split=0,
+                family=G6A_AUGMENTATION_FAMILY,
+                source=G6A_GENERIC_SOURCE,
+                root_id=root_id,
+                stage=-1,
                 action_block=block,
             )
         )
@@ -292,6 +322,14 @@ def main():
     )
     plan_dim = agents * primitive * block
     plans_per_root = len(HARD_STAGES) * args.hard_plans
+    base_train_transitions = int((base_data["split"] == 0).sum())
+    samples_per_epoch = 2 * base_train_transitions
+    matched_training = {
+        "sampling_scheme": "base_augmentation",
+        "augmentation_family": G6A_AUGMENTATION_FAMILY,
+        "samples_per_epoch": samples_per_epoch,
+        "fixed_epochs": True,
+    }
 
     data_targeted = {seed: base_data for seed in SEEDS}
     models_targeted = {
@@ -313,17 +351,26 @@ def main():
             seed=args.generic_seed + round_index, device=args.device,
         )
         data_generic = cat_records([data_generic] + generic_records)
+        round_summary["generic_transitions"] = int(
+            data_generic["state"].shape[0]
+        )
         generic_models = {}
         for seed in SEEDS:
-            model, fit = train_surrogate(data_generic, "full", seed, args)
+            model, fit = train_surrogate(
+                data_generic, "full", seed, args, **matched_training
+            )
             generic_models[seed] = (model, fit)
             round_summary[f"generic_validation_loss_{seed}"] = fit["validation_loss"]
+            round_summary[f"generic_optimizer_steps_{seed}"] = fit[
+                "optimizer_steps"
+            ]
         write_gate5_source(
             args.output / f"g6a_generic_round{round_index}", SEEDS, generic_models,
             frozen, args.source / "coverage",
         )
         print(f"round {round_index}: generic control trained and written", flush=True)
 
+        targeted_models = {}
         for seed in SEEDS:
             print(f"round {round_index}: seed {seed} own-CEM collection", flush=True)
             targeted_records = collect_own_cem_hard_negatives(
@@ -333,16 +380,21 @@ def main():
                 seed=args.targeted_seed + round_index * 1000 + seed, device=args.device,
             )
             data_targeted[seed] = cat_records([data_targeted[seed]] + targeted_records)
-            model, fit = train_surrogate(data_targeted[seed], "full", seed, args)
+            model, fit = train_surrogate(
+                data_targeted[seed], "full", seed, args, **matched_training
+            )
             models_targeted[seed] = model
+            targeted_models[seed] = (model, fit)
             round_summary[f"targeted_validation_loss_{seed}"] = fit["validation_loss"]
+            round_summary[f"targeted_optimizer_steps_{seed}"] = fit[
+                "optimizer_steps"
+            ]
             round_summary[f"targeted_transitions_{seed}"] = int(
                 data_targeted[seed]["state"].shape[0]
             )
         write_gate5_source(
             args.output / f"g6a_targeted_round{round_index}", SEEDS,
-            {seed: (models_targeted[seed], round_summary[f"targeted_validation_loss_{seed}"])
-             for seed in SEEDS},
+            targeted_models,
             frozen, args.source / "coverage",
         )
         print(f"round {round_index}: targeted arm trained and written", flush=True)
@@ -360,6 +412,22 @@ def main():
             "collection_roots": collection_ids.tolist(),
             "hard_plans_per_stage": args.hard_plans,
             "plans_per_root": plans_per_root,
+            "root_id_namespace": {
+                "kind": "initial_states",
+                "offset": G6A_ROOT_OFFSET,
+            },
+            "augmentation_family": G6A_AUGMENTATION_FAMILY,
+            "augmentation_sources": {
+                "targeted": G6A_TARGETED_SOURCE,
+                "generic": G6A_GENERIC_SOURCE,
+            },
+            "training_contract": {
+                "sampling_scheme": "base_augmentation",
+                "expected_sampling_mass": {"base": 0.5, "augmentation": 0.5},
+                "samples_per_epoch": samples_per_epoch,
+                "epochs": args.epochs,
+                "fixed_epochs": True,
+            },
             "rounds": rounds_summary,
         },
     )

@@ -1,6 +1,6 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # Licensed under the license found in the LICENSE file in the root directory.
-"""Planner-induced coverage and a task-sufficient Buzz Wire world model.
+"""Planner-induced coverage and a 14-D privileged Buzz Wire diagnostic.
 
 This is Baseline B after Gate 0d.  It deliberately removes both learned-latent
 coordinates and scalar reward prediction:
@@ -8,7 +8,7 @@ coordinates and scalar reward prediction:
 * collection queries the frozen seed-4100 planner at CEM iterations
   1/5/10/20/30, then executes its preferred candidates in VMAS;
 * competent true-dynamics plans and local joint-action perturbations are added;
-* a small surrogate predicts the next physical state, within-block clearance,
+* a small surrogate predicts the selected 14-D state, within-block clearance,
   and collision probability;
 * CEM scores rollouts with Buzz Wire's known progress and collision cost.
 
@@ -66,6 +66,10 @@ from examples.world_model.train import load_model
 
 FAMILY_NAMES = ("behavior", "competent_local", "cem_hard")
 HARD_STAGES = (1, 5, 10, 20, 30)
+# This legacy diagnostic omits the two movable linkage bodies. An audit
+# counterexample now proves it is not Markov-sufficient; retain its dimensions
+# only so jobs 1331--1337 remain reproducible while a full-state successor is
+# implemented separately.
 STATE_DIM = 14  # two agents pos/vel, ball pos/vel, goal position
 DYNAMIC_DIM = 12
 
@@ -695,7 +699,58 @@ def evaluate_transitions(model, data, indices, device):
     return result
 
 
-def train_surrogate(data, mix, seed, args):
+def training_sampling_weights(
+    data,
+    indices,
+    scheme="family_balanced",
+    augmentation_family=None,
+):
+    """Return per-transition weights and the registered expected group mass.
+
+    Historical structured-surrogate runs balance the three collection families.
+    G6a instead needs a causal base-vs-augmentation comparison: both targeted
+    and generic additions receive exactly half of the expected optimizer draws,
+    independent of their transition count or semantic source.
+    """
+    family = data["family"][indices]
+    if scheme == "family_balanced":
+        counts = torch.bincount(family).clamp_min(1)
+        weights = (1.0 / counts[family]).double()
+        present = torch.unique(family, sorted=True)
+        mass = {
+            f"family_{int(value)}": 1.0 / present.numel()
+            for value in present
+        }
+        return weights, mass
+    if scheme != "base_augmentation":
+        raise ValueError(f"Unknown training sampling scheme: {scheme}")
+    if augmentation_family is None:
+        raise ValueError("base_augmentation sampling needs augmentation_family")
+
+    augmentation = family == augmentation_family
+    augmentation_count = int(augmentation.sum())
+    base_count = int((~augmentation).sum())
+    if not base_count or not augmentation_count:
+        raise ValueError(
+            "base_augmentation sampling requires both base and augmentation data"
+        )
+    weights = torch.empty(indices.numel(), dtype=torch.double)
+    weights[~augmentation] = 0.5 / base_count
+    weights[augmentation] = 0.5 / augmentation_count
+    return weights, {"base": 0.5, "augmentation": 0.5}
+
+
+def train_surrogate(
+    data,
+    mix,
+    seed,
+    args,
+    *,
+    sampling_scheme="family_balanced",
+    augmentation_family=None,
+    samples_per_epoch=None,
+    fixed_epochs=False,
+):
     eligible = data["family"] == 0 if mix == "behavior" else torch.ones_like(data["family"], dtype=torch.bool)
     train_mask = eligible & (data["split"] == 0)
     validation_mask = eligible & (data["split"] == 1)
@@ -706,13 +761,27 @@ def train_surrogate(data, mix, seed, args):
     negatives = train_mask.sum() - positives
     pos_weight = (negatives / positives.clamp_min(1)).to(args.device)
     indices = train_mask.nonzero(as_tuple=True)[0]
-    family_counts = torch.bincount(data["family"][indices], minlength=3).clamp_min(1)
-    weights = (1.0 / family_counts[data["family"][indices]]).double()
-    sampler = WeightedRandomSampler(weights, len(indices), replacement=True, generator=torch.Generator().manual_seed(seed))
+    weights, expected_mass = training_sampling_weights(
+        data,
+        indices,
+        scheme=sampling_scheme,
+        augmentation_family=augmentation_family,
+    )
+    if samples_per_epoch is None:
+        samples_per_epoch = len(indices)
+    if samples_per_epoch < 1:
+        raise ValueError("samples_per_epoch must be positive")
+    sampler = WeightedRandomSampler(
+        weights,
+        samples_per_epoch,
+        replacement=True,
+        generator=torch.Generator().manual_seed(seed),
+    )
     loader = DataLoader(TransitionDataset(data, indices), batch_size=args.batch_size, sampler=sampler)
     validation_indices = validation_mask.nonzero(as_tuple=True)[0]
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
     best, best_epoch, best_state, stale, history = math.inf, -1, None, 0, []
+    optimizer_steps = 0
     for epoch in range(args.epochs):
         model.train()
         running, batches = 0.0, 0
@@ -723,6 +792,7 @@ def train_surrogate(data, mix, seed, args):
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
+            optimizer_steps += 1
             running += float(loss)
             batches += 1
         model.eval()
@@ -736,11 +806,21 @@ def train_surrogate(data, mix, seed, args):
             stale = 0
         else:
             stale += 1
-            if stale >= args.patience:
+            if not fixed_epochs and stale >= args.patience:
                 break
     model.load_state_dict(best_state)
     model.eval()
-    return model, {"best_epoch": best_epoch, "validation_loss": best, "epochs": len(history), "history": history}
+    return model, {
+        "best_epoch": best_epoch,
+        "validation_loss": best,
+        "epochs": len(history),
+        "history": history,
+        "sampling_scheme": sampling_scheme,
+        "expected_sampling_mass": expected_mass,
+        "samples_per_epoch": samples_per_epoch,
+        "optimizer_steps": optimizer_steps,
+        "fixed_epochs": fixed_epochs,
+    }
 
 
 @torch.no_grad()
@@ -957,7 +1037,10 @@ def run_surrogate(args):
         env.close()
     control_summary = summarize(rows, seed=args.control_seed)
     result = {
-        "question": "Can a cheap task-sufficient learned multi-agent surrogate control Buzz Wire?",
+        "question": (
+            "Can a cheap 14-D privileged structured-state diagnostic control "
+            "Buzz Wire?"
+        ),
         "selected_objective": selected,
         "fits": records,
         "ranking_all_objectives": ranking,

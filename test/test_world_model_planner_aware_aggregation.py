@@ -4,7 +4,9 @@ import pytest
 import torch
 
 from examples.world_model.planner_aware_aggregation import (
+    G6A_ROOT_OFFSET,
     assert_disjoint_from_frozen_test_roots,
+    namespaced_g6a_root_ids,
     write_gate5_source,
 )
 
@@ -26,6 +28,13 @@ def test_disjoint_check_raises_when_collection_touches_a_frozen_root():
     collection_ids = torch.tensor([0, 1, 3])
     with pytest.raises(ValueError, match="disjoint"):
         assert_disjoint_from_frozen_test_roots(collection_ids, [3, 5, 6])
+
+
+def test_g6a_root_ids_have_a_distinct_provenance_namespace():
+    source_ids = torch.tensor([0, 7, 95])
+    namespaced = namespaced_g6a_root_ids(source_ids)
+    assert torch.equal(namespaced, source_ids + G6A_ROOT_OFFSET)
+    assert (namespaced >= G6A_ROOT_OFFSET).all()
 
 
 def test_write_gate5_source_produces_a_schema_planner_tail_failure_accepts(tmp_path):
