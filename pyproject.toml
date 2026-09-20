@@ -42,5 +42,6 @@ constraint-dependencies = [
 
 [dependency-groups]
 dev = [
+    "einops>=0.8.1",
     "pytest>=9.1.1",
 ]

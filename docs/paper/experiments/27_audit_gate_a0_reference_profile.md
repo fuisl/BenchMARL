@@ -1,7 +1,8 @@
 # Audit Gate A0: parallel LeWM reference profile
 
-Status: steps 1--2 implemented; code review pending; no scientific run
-authorized. Updated: 2026-09-20.
+Status: steps 1--3 implemented; the scheduler, action-interface and
+external-conformance items from the 2026-09-20 review are closed against
+primary sources; no scientific run authorized. Updated: 2026-09-20.
 
 ## Purpose
 
@@ -30,7 +31,8 @@ the old latent experiments.
 | weight decay | 1e-3 | R |
 | epochs / batch / gradient clip | 100 / 128 / 1 | R |
 | CUDA precision | bf16 | R |
-| scheduler | 1% linear warmup, then cosine to zero | R |
+| scheduler | 1% linear warmup, then cosine to zero, stepped per optimizer update | R |
+| action normalization | z-score fitted on valid training actions | R |
 | vector MLP encoder | task vector replaces image ViT | MA |
 | per-agent tokens and cross-agent conditioner | multi-agent extension | MA |
 | reward/termination readout | frozen-dynamics diagnostic departure | D |
@@ -77,9 +79,73 @@ single-agent SIGReg call, both multi-agent SIGReg choices, planning input
 rejection, and the MPC executed-action hook. CPU tests are mandatory and the
 planning path is also smoke-tested on CUDA when available.
 
-No training, controller evaluation, or scientific experiment was launched for
-this implementation step.
+## Step-3 reference-interface closure
 
+Three fidelity items were raised against steps 1--2. All three were resolved
+against the pinned sources rather than against our own restatement of them:
+`stable_pretraining` v0.1.7 (tag commit `bce7c8b3`, 2026-05-17, the newest
+release when LeWM `8edfeb33` was written) and LeWM `8edfeb33` itself. The two
+files the conformance tests depend on are vendored under `test/` with their
+upstream MIT licenses.
+
+**Scheduler cadence.** LeWM `train.py` requests
+`{"scheduler": {"type": "LinearWarmupCosineAnnealingLR"}, "interval": "epoch"}`.
+That interval is never acted on: `stable_pretraining/module.py` sets
+`automatic_optimization = False` and its `training_step` calls
+`schedulers[idx].step()` immediately after each `opt.step()`, which is the only
+scheduler advance in the package. Per-update stepping is therefore the pinned
+behaviour and our existing cadence was already correct; the prior review's
+inference from the `epoch` label does not hold. The defaults are also now
+sourced rather than assumed: `DEFAULT_SCHEDULER_FACTORIES` supplies
+`warmup_steps = max(1, int(0.01 * estimated_stepping_batches))`,
+`max_steps = estimated_stepping_batches`, `warmup_start_lr = 0.0` and
+`eta_min = 0.0`. Because `max_steps` counts optimizer updates, stepping per
+epoch would leave the cosine almost undecayed at the end of training.
+`test_reference_scheduler_matches_release_at_pinned_lewm_cutoff` runs our
+`LambdaLR` factor and the vendored v0.1.7 class over all 250 updates of a
+representative extent and requires bit-identical learning rates.
+
+**Action normalization.** LeWM applies `get_column_normalizer` to every
+non-pixel loaded column, including `action`, so the action encoder consumes
+z-scored actions. `lewm_reference` now fits those statistics, stores them in
+the checkpoint as `action_mean`/`action_std`, and applies them inside
+`predict`. Because `predict` is the single entry point for both the training
+step and every planner path, training and planning cannot diverge. CEM, stored
+trajectories and coverage banks stay in native VMAS units; the transform lives
+at the model boundary only. Loading a `lewm_reference` checkpoint without
+fitted statistics, or with statistics disagreeing with the `state_dict`, fails.
+
+Two conventions follow the reference rather than the blocked tensor. The
+statistics are fitted on valid **training** rows only -- the reference script
+fits on the full dataset, and this deviation is deliberate, to keep validation
+information out of the experiment. Second, LeWM normalizes the raw `action`
+column and only afterwards concatenates `frameskip` steps
+(`action_encoder.input_dim = frameskip * dataset.get_dim("action")`), so one
+statistic per primitive coordinate is shared by every position in the block.
+Our blocked `(L,N,block*A)` tensor is block-major, so the fit reduces over
+block positions and tiles the result across the blocked width. Fitting the
+blocked width directly would have produced `block * A` independent statistics,
+which is not the reference convention; a test pins the shared-statistic
+behaviour using two block positions with different column means. The corrected
+sample denominator of `torch.std` and the reference drop of non-finite rows are
+retained.
+
+**External conformance.** The earlier rollout test compared our rollout helper
+against a manual loop over our own `predict`, so it pinned our windowing but
+proved nothing about the reference. `test_single_agent_output_matches_vendored_pinned_implementation`
+now loads identical weights into the vendored LeWM `Embedder`, `ARPredictor`
+and projector `MLP` -- upstream structure and `einops` spellings retained -- and
+requires bit-identical `N=1` rollouts. Because AdaLN-zero makes the predictor
+ignore its conditioning at initialization, the test first perturbs the
+modulation weights, so the comparison actually exercises the native-to-
+normalized action boundary. Removing the action transform makes it fail.
+
+No training, controller evaluation, or scientific experiment was launched for
+any of these implementation steps. The remaining A0 item is a single-seed
+sanity run, which is not yet authorized.
+
+Pinned fixtures: `test/_lewm_pinned_8edfeb33.py`,
+`test/_stable_pretraining_pinned_v017.py`.
 Implementation: `examples/world_model/models.py`,
 `examples/world_model/model_input.py`, `examples/world_model/mpc.py`,
 `examples/world_model/plan_ranking.py`, `examples/world_model/goal_planning.py`,

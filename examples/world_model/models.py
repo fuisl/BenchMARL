@@ -191,6 +191,10 @@ class Embedder(nn.Module):
 
     def forward(self, x):
         """x: (B, T, input_dim)."""
+        # Pinned LeWM explicitly promotes actions before its Conv1d.  Keep that
+        # boundary here as well; autocast may still choose a lower-precision
+        # kernel, but callers cannot accidentally feed a float64 action path.
+        x = x.float()
         x = self.patch_embed(x.transpose(1, 2)).transpose(1, 2)
         return self.embed(x)
 
@@ -454,6 +458,8 @@ class ReferenceMultiAgentWorldModel(MultiAgentWorldModel):
         projector_hidden_dim=2048,
         obs_mean=None,
         obs_std=None,
+        action_mean=None,
+        action_std=None,
     ):
         if history_size < 1:
             raise ValueError("history_size must be positive")
@@ -478,6 +484,23 @@ class ReferenceMultiAgentWorldModel(MultiAgentWorldModel):
         self.history_size = history_size
         self.projector = ReferenceProjector(dim, projector_hidden_dim)
         self.pred_proj = ReferenceProjector(dim, projector_hidden_dim)
+        action_mean = (
+            torch.zeros(action_dim) if action_mean is None else action_mean
+        ).clone().float()
+        action_std = (
+            torch.ones(action_dim) if action_std is None else action_std
+        ).clone().float()
+        if action_mean.shape != (action_dim,) or action_std.shape != (action_dim,):
+            raise ValueError(
+                "Reference action statistics must have shape "
+                f"({action_dim},), got {action_mean.shape} and {action_std.shape}"
+            )
+        if not torch.isfinite(action_mean).all() or not torch.isfinite(action_std).all():
+            raise ValueError("Reference action statistics must be finite")
+        if not (action_std > 0).all():
+            raise ValueError("Reference action standard deviations must be positive")
+        self.register_buffer("action_mean", action_mean)
+        self.register_buffer("action_std", action_std)
 
     def encode(self, observation):
         normalized = (observation - self.obs_mean) / self.obs_std
@@ -490,8 +513,14 @@ class ReferenceMultiAgentWorldModel(MultiAgentWorldModel):
             raise ValueError(
                 f"Reference context exceeds history_size={self.history_size}"
             )
+        # CEM and stored trajectories remain in native VMAS coordinates.  The
+        # reference transform lives at the model boundary, so training and all
+        # planner entry points necessarily consume the same normalized action.
+        normalized_action = (action - self.action_mean) / self.action_std
         action_emb = self.action_encoder(
-            action.transpose(1, 2).reshape(-1, action.size(1), action.size(-1))
+            normalized_action.transpose(1, 2).reshape(
+                -1, action.size(1), action.size(-1)
+            )
         )
         batch, frames, agents = latent.shape[:3]
         action_emb = action_emb.view(batch, agents, frames, self.dim).transpose(1, 2)

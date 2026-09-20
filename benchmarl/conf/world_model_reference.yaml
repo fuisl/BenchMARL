@@ -1,8 +1,9 @@
 # Audit Gate A0.1: vector-input, reference-compatible LeWM profile.
 # The vector encoder and multi-agent conditioner are explicit adaptations; the
 # temporal width, predictor, projector and optimizer recipe match the pinned
-# LeWM contract.  Real planner history and SIGReg population semantics are A0
-# step 2 and are intentionally not claimed by this configuration yet.
+# LeWM contract. Real planner history and the registered multi-agent SIGReg
+# population semantics are implemented by A0 step 2. Action statistics are
+# fitted only on valid training rows and applied at the model boundary.
 defaults:
   - world_model
   - _self_
@@ -37,6 +38,11 @@ train:
   # `per_agent` is the registered diagnostic alternative, never selected
   # post-hoc from control results.
   sigreg_population: joint
+  # Pinned LeWM asks for interval "epoch", but stable-pretraining v0.1.7 runs
+  # with automatic_optimization disabled and steps the scheduler itself after
+  # every optimizer update, so that interval is never acted on. Per-update
+  # stepping is therefore the reference cadence. Its factory defaults are
+  # max(1, floor(1% of total updates)) warmup, zero start LR and zero eta_min.
 
 hydra:
   run:

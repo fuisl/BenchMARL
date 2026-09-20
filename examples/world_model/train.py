@@ -145,6 +145,59 @@ def observation_statistics(loader, max_frames=None):
     return mean.float(), variance.sqrt().float()
 
 
+def action_statistics(loader, max_blocks=None, action_block=1):
+    """Per-coordinate sample statistics from valid TRAINING actions only.
+
+    Pinned LeWM fits ``get_column_normalizer`` on the raw ``action`` column and
+    only afterwards concatenates ``frameskip`` steps for its action encoder, so
+    one statistic per primitive coordinate is shared by every block position.
+    We reproduce that by reducing over block positions and tiling the result
+    across the blocked width, which also keeps the transform independent of an
+    action's offset inside its block.
+
+    ``torch.std``'s default corrected (sample) denominator and the reference
+    drop of non-finite rows are retained.  We fit after the split rather than
+    on the full dataset as the reference script does, to keep validation
+    information out of this experiment.  Agent rows are samples of one shared
+    action interface.
+    """
+    total = square = None
+    count = 0
+    for batch in loader:
+        action = batch["action"]
+        valid = batch["valid"]
+        if max_blocks is not None:
+            action = action[:, :max_blocks]
+            valid = valid[:, :max_blocks]
+        width = action.size(-1)
+        if width % action_block:
+            raise ValueError(
+                f"Blocked action width {width} is not divisible by "
+                f"action_block={action_block}"
+            )
+        # (L,N,block*A) is block-major, so this recovers the primitive rows
+        # that the reference normalizer would have seen.
+        flat = action[valid].reshape(-1, width // action_block).double()
+        flat = flat[torch.isfinite(flat).all(dim=1)]
+        if not flat.numel():
+            continue
+        batch_total = flat.sum(dim=0)
+        batch_square = flat.square().sum(dim=0)
+        total = batch_total if total is None else total + batch_total
+        square = batch_square if square is None else square + batch_square
+        count += flat.size(0)
+    if count < 2:
+        raise ValueError(
+            "Reference action normalization needs at least two finite valid "
+            f"training primitive actions, got {count}"
+        )
+    mean = total / count
+    variance = ((square - total.square() / count) / (count - 1)).clamp_min(1e-8)
+    return mean.float().repeat(action_block), variance.sqrt().float().repeat(
+        action_block
+    )
+
+
 def block_reward(batch):
     """Sum primitive rewards inside each action block: (B,L,block,N,1) -> (B,L,N,1).
 
@@ -414,7 +467,15 @@ REPORTED_METRICS = {
 }
 
 
-def world_model_from_config(cfg, shapes, observation_mean, observation_std, device):
+def world_model_from_config(
+    cfg,
+    shapes,
+    observation_mean,
+    observation_std,
+    device,
+    action_mean=None,
+    action_std=None,
+):
     """Construct the recorded model profile without guessing from its weights."""
     profile = cfg.model.get("profile", "legacy_compact")
     common = {
@@ -439,6 +500,8 @@ def world_model_from_config(cfg, shapes, observation_mean, observation_std, devi
         model = ReferenceMultiAgentWorldModel(
             history_size=cfg.model.history_size,
             projector_hidden_dim=cfg.model.projector_hidden_dim,
+            action_mean=action_mean,
+            action_std=action_std,
             **common,
         )
     else:
@@ -482,6 +545,15 @@ def run_training(cfg, output: Path):
         else None
     )
     mean, std = observation_statistics(train_loader, reference_frames)
+    reference = cfg.model.get("profile", "legacy_compact") == "lewm_reference"
+    if reference:
+        action_mean, action_std = action_statistics(
+            train_loader,
+            max_blocks=cfg.model.history_size,
+            action_block=cfg.data.action_block,
+        )
+    else:
+        action_mean = action_std = None
 
     sample = next(iter(train_loader))
     frames, agents, obs_dim = sample["observation"].shape[1:]
@@ -493,7 +565,15 @@ def run_training(cfg, output: Path):
         "action_dim": action_dim,
         "frames": frames,
     }
-    model = world_model_from_config(cfg, shapes, mean, std, device)
+    model = world_model_from_config(
+        cfg,
+        shapes,
+        mean,
+        std,
+        device,
+        action_mean=action_mean,
+        action_std=action_std,
+    )
     sigreg = SIGReg(cfg.train.sigreg_knots, cfg.train.sigreg_projections).to(device)
 
     # BenchMARL's own convention, so these runs group and aggregate like every
@@ -613,18 +693,22 @@ def run_training(cfg, output: Path):
     metrics["dynamics_parameters"] = counts["dynamics_total"]
 
     checkpoint = output / "model.pt"
-    torch.save(
-        {
-            "kind": cfg.model.kind,
-            "profile": model.profile,
-            "state_dict": model.state_dict(),
-            "config": OmegaConf.to_container(cfg, resolve=True),
-            "observation_mean": mean,
-            "observation_std": std,
-            "shapes": shapes,
-        },
-        checkpoint,
-    )
+    checkpoint_payload = {
+        "kind": cfg.model.kind,
+        "profile": model.profile,
+        "state_dict": model.state_dict(),
+        "config": OmegaConf.to_container(cfg, resolve=True),
+        "observation_mean": mean,
+        "observation_std": std,
+        "shapes": shapes,
+    }
+    if reference:
+        checkpoint_payload.update(
+            action_mean=action_mean,
+            action_std=action_std,
+            action_normalization="train_valid_sample_std",
+        )
+    torch.save(checkpoint_payload, checkpoint)
     metrics["checkpoint_reload_max_difference"] = verify_reload(
         checkpoint, sample, device
     )
@@ -674,12 +758,31 @@ def load_model(checkpoint_path, device="cpu"):
             "Checkpoint model profile disagrees with its recorded config: "
             f"{recorded_profile} != {configured_profile}"
         )
+    action_mean = checkpoint.get("action_mean")
+    action_std = checkpoint.get("action_std")
+    if recorded_profile == "lewm_reference":
+        if action_mean is None or action_std is None:
+            raise ValueError(
+                "lewm_reference checkpoint is missing fitted action statistics"
+            )
+        state = checkpoint["state_dict"]
+        if (
+            "action_mean" not in state
+            or "action_std" not in state
+            or not torch.equal(state["action_mean"], action_mean)
+            or not torch.equal(state["action_std"], action_std)
+        ):
+            raise ValueError(
+                "lewm_reference checkpoint action statistics disagree with state_dict"
+            )
     model = world_model_from_config(
         cfg,
         shapes,
         checkpoint["observation_mean"],
         checkpoint["observation_std"],
         device,
+        action_mean=action_mean,
+        action_std=action_std,
     )
     model.load_state_dict(checkpoint["state_dict"])
     model.eval()
