@@ -228,3 +228,57 @@ def test_legacy_14d_state_is_provably_non_markov_when_link_state_differs():
     finally:
         source.close()
         paired.close()
+
+
+def test_paired_blockify_differs_only_in_the_state_representation():
+    """A1.2 compares legacy14 against full32 on identical transitions.
+
+    Nothing upstream of blockify depends on the state profile, so one raw
+    trajectory must yield two banks whose every non-state column is bit
+    identical. If this ever drifts, the A1.2 comparison stops isolating the
+    Markov repair and starts confounding it with different data.
+    """
+    count, steps, agents, action_dim = 3, 4, 2, 2
+    torch.manual_seed(5)
+    agent_state = torch.randn(count, steps, agents, 6)
+    package_state = torch.randn(count, steps, 3, 6)
+    data = {
+        "observation": torch.randn(count, steps, agents, 6),
+        "action": torch.randn(count, steps, agents, action_dim),
+        "reward": torch.randn(count, steps, agents, 1),
+        "valid": torch.ones(count, steps, dtype=torch.bool),
+        "agent_state": agent_state,
+        "next_agent_state": agent_state + 0.1,
+        "package_state": package_state,
+        "next_package_state": package_state + 0.1,
+    }
+    split = torch.tensor([0, 1, 2])
+    root_id = torch.tensor([11, 12, 13])
+    common = dict(family=0, source=1, action_block=2)
+    legacy = blockify(
+        data, split, root_id=root_id, stage=-1, state_profile="legacy14", **common
+    )
+    full = blockify(
+        data, split, root_id=root_id, stage=-1, state_profile="full32", **common
+    )
+    assert legacy["state"].shape[-1] == LEGACY_SPEC.state_dim
+    assert full["state"].shape[-1] == FULL_SPEC.state_dim
+    shared = [key for key in legacy if key not in ("state", "next_state")]
+    assert set(shared) >= {
+        "action",
+        "collision",
+        "minimum_clearance",
+        "team_reward",
+        "progress",
+        "split",
+        "root_id",
+        "stage",
+    }
+    for key in shared:
+        assert torch.equal(legacy[key], full[key]), key
+    # The shared physical quantities must also agree across representations.
+    torch.testing.assert_close(
+        legacy["state"][:, LEGACY_SPEC.ball_position],
+        full["state"][:, FULL_SPEC.ball_position],
+    )
+    torch.testing.assert_close(legacy["state"][:, 12:14], full["state"][:, 30:32])

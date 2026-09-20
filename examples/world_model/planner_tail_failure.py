@@ -36,10 +36,10 @@ from examples.world_model.mpc import action_bounds, task_outcome, unpack_actions
 from examples.world_model.plan_ranking import spearman
 from examples.world_model.snapshot_restore import broadcast_state
 from examples.world_model.structured_surrogate import (
-    STATE_DIM,
     StructuredSurrogate,
     bank_state,
     live_structured_state,
+    state_spec,
     surrogate_cost,
     wire_clearance,
 )
@@ -47,6 +47,33 @@ from examples.world_model.structured_surrogate import (
 
 STAGES = (1, 5, 10, 20, 30)
 TOPKS = (1, 5, 10, 30)
+# Which structured state each registered protocol is allowed to measure.
+# `gate5_legacy14` is the frozen job-1331 diagnostic and must keep refusing any
+# successor state, so the historical lineage stays interpretable. `a1_paired`
+# is the A1.2 tail-localization protocol; it accepts either profile because its
+# whole purpose is to measure both under one identical procedure.
+PROTOCOLS = {
+    "gate5_legacy14": ("legacy14",),
+    "a1_paired": ("legacy14", "full32"),
+}
+
+
+def state_slices(spec):
+    """Named coordinate groups of one structured state profile.
+
+    A1.2 reports ball and linkage error separately, so the indices cannot stay
+    hardcoded to legacy14's layout. `link_bodies` is empty for legacy14, which
+    is exactly the omission A1.1 demonstrated.
+    """
+    entities = 2 * spec.agent_width
+    ball = slice(entities, entities + spec.entity_width)
+    return {
+        "agents": slice(0, entities),
+        "ball_position": slice(ball.start, ball.start + 2),
+        "ball_velocity": slice(ball.start + 2, ball.start + 4),
+        "link_bodies": slice(ball.stop, spec.dynamic_dim),
+        "goal": slice(spec.dynamic_dim, spec.state_dim),
+    }
 BUFFER_NAMES = (
     "state_mean",
     "state_std",
@@ -65,8 +92,8 @@ def write_json(path, value):
     path.write_text(json.dumps(value, indent=2, allow_nan=False) + "\n")
 
 
-def information_contract():
-    """Declare information roles without pretending Gate 5 is deployable."""
+def information_contract(spec):
+    """Declare information roles without pretending this is deployable."""
     variables = {
         "agent_pose_velocity": "P",
         "ball_pose_velocity": "P",
@@ -100,15 +127,17 @@ def information_contract():
             role == "O" for role in candidate_selection.values()
         ),
         "diagnostic_only": True,
+        "state_profile": spec.name,
+        "state_fields": spec.fields,
         "reason": (
-            "The frozen job-1331 model requires exact 14-D structured state. "
-            "Gate 5 diagnoses that legacy privileged-state controller; it is "
+            f"The model requires exact {spec.state_dim}-D structured state. "
+            "This protocol diagnoses a privileged-state controller; it is "
             "not evidence for a deployable observation model."
         ),
     }
 
 
-def load_surrogate(path, device):
+def load_surrogate(path, device, protocol="gate5_legacy14"):
     checkpoint = torch.load(path, map_location="cpu", weights_only=False)
     state = checkpoint["state_dict"]
     hidden = state["body.0.weight"].shape[0]
@@ -121,10 +150,12 @@ def load_surrogate(path, device):
             f"Checkpoint records {recorded_profile} but its tensors describe "
             f"{model.state_profile}"
         )
-    if model.state_profile != "legacy14":
+    allowed = PROTOCOLS[protocol]
+    if model.state_profile not in allowed:
         raise ValueError(
-            "The frozen job-1331 Gate-5 diagnostic accepts only legacy14; "
-            "a full32 successor needs a separately registered diagnostic"
+            f"Protocol {protocol} accepts {allowed}; this checkpoint is "
+            f"{model.state_profile}. The frozen job-1331 Gate-5 protocol in "
+            "particular must never silently accept a successor state."
         )
     model.load_state_dict(state)
     model.eval()
@@ -158,14 +189,14 @@ def validate_frozen_protocol(prior, stored, seeds):
     return test_ids, expected
 
 
-def body_positions(state):
+def body_positions(state, spec):
     return torch.stack(
-        [state[..., 0:2], state[..., 4:6], state[..., 8:10]], dim=-2
+        [state[..., item] for item in spec.body_positions], dim=-2
     )
 
 
 @torch.no_grad()
-def simulator_trajectory(task, snapshot, candidates, action_block, device):
+def simulator_trajectory(task, snapshot, candidates, action_block, device, spec):
     """Evaluate candidates in VMAS after planning, retaining structured truth."""
     roots, count, horizon, plan_dim = candidates.shape
     primitive = unpack_actions(candidates.to(device), action_block)
@@ -181,7 +212,7 @@ def simulator_trajectory(task, snapshot, candidates, action_block, device):
     outcome = task_outcome("vmas/buzz_wire")
     td = TensorDict({}, batch_size=[roots * count], device=device)
     live = ~env._env.done()
-    frozen_state = live_structured_state(env).clone()
+    frozen_state = live_structured_state(env, spec.name).clone()
     states = [frozen_state.cpu()]
     rewards, collisions, clearances = [], [], []
     live_starts, dynamics_valid = [], []
@@ -201,8 +232,10 @@ def simulator_trajectory(task, snapshot, candidates, action_block, device):
                 reward_sum += reward.masked_fill(~before, 0)
                 _success, crash, _distance = outcome(env)
                 collided |= before & crash
-                current = live_structured_state(env)
-                clearance = wire_clearance(body_positions(current)).min(dim=-1).values
+                current = live_structured_state(env, spec.name)
+                clearance = wire_clearance(
+                    body_positions(current, spec)
+                ).min(dim=-1).values
                 minimum = torch.minimum(
                     minimum, clearance.masked_fill(~before, float("inf"))
                 )
@@ -248,8 +281,10 @@ def surrogate_trajectories(model, truth, candidates, action_block, device):
     actions = actions.permute(0, 1, 2, 4, 3, 5).reshape(
         roots * count, horizon, agents, action_block * primitive
     ).to(device)
+    slices = state_slices(state_spec(model.state_profile))
+    ball, goal = slices["ball_position"], slices["goal"]
     true_state = truth["state"].reshape(
-        roots * count, horizon + 1, STATE_DIM
+        roots * count, horizon + 1, model.state_dim
     ).to(device)
     recursive_state = true_state[:, 0]
     recursive_states = [recursive_state.cpu()]
@@ -274,9 +309,9 @@ def surrogate_trajectories(model, truth, candidates, action_block, device):
             next_state, clearance, logits, penalty = model(state, actions[:, step])
             probability = torch.sigmoid(logits)
             progress = (
-                torch.linalg.vector_norm(state[:, 8:10] - state[:, 12:14], dim=-1)
+                torch.linalg.vector_norm(state[:, ball] - state[:, goal], dim=-1)
                 - torch.linalg.vector_norm(
-                    next_state[:, 8:10] - next_state[:, 12:14], dim=-1
+                    next_state[:, ball] - next_state[:, goal], dim=-1
                 )
             )
             reward = 2 * progress - 20 * probability
@@ -301,7 +336,7 @@ def surrogate_trajectories(model, truth, candidates, action_block, device):
         }
     output["recursive"]["state"] = torch.stack(
         recursive_states, dim=1
-    ).reshape(roots, count, horizon + 1, STATE_DIM)
+    ).reshape(roots, count, horizon + 1, model.state_dim)
     return output
 
 
@@ -389,7 +424,7 @@ def rank_and_tail_metrics(predicted, truth, collision, predicted_collision, orac
     return aggregate
 
 
-def path_metrics(path, comparison_state, truth, horizon, population_count):
+def path_metrics(path, comparison_state, truth, horizon, population_count, slices):
     index = horizon - 1
     state = path["next_state"][:, :population_count, index]
     target = comparison_state[:, :population_count, index + 1]
@@ -399,21 +434,36 @@ def path_metrics(path, comparison_state, truth, horizon, population_count):
         path["minimum_clearance"][:, :population_count, index]
         - truth["minimum_clearance"][:, :population_count, index]
     )
+    agents, ball = slices["agents"], slices["ball_position"]
+    velocity, links = slices["ball_velocity"], slices["link_bodies"]
     return {
         "agent_state_coordinate_rmse": vector_rmse(
-            state[..., :8] - target[..., :8], valid, coordinate=True
+            state[..., agents] - target[..., agents], valid, coordinate=True
         ),
         "ball_position_rmse": vector_rmse(
-            state[..., 8:10] - target[..., 8:10], valid
+            state[..., ball] - target[..., ball], valid
         ),
         "ball_velocity_rmse": vector_rmse(
-            state[..., 10:12] - target[..., 10:12], valid
+            state[..., velocity] - target[..., velocity], valid
+        ),
+        # None for legacy14, which has no linkage coordinates to predict.
+        "link_body_coordinate_rmse": (
+            vector_rmse(
+                state[..., links] - target[..., links], valid, coordinate=True
+            )
+            if links.stop > links.start
+            else None
+        ),
+        "full_dynamic_coordinate_rmse": vector_rmse(
+            state[..., : links.stop] - target[..., : links.stop],
+            valid,
+            coordinate=True,
         ),
         "clearance_rmse": scalar_rmse(clearance_error, outcome),
     }
 
 
-def analyze_stage(seed, iteration, truth, paths, population_count):
+def analyze_stage(seed, iteration, truth, paths, population_count, slices):
     rows = []
     for horizon in range(1, truth["block_reward"].shape[-1] + 1):
         true_cost = truth["cost"][:, :population_count, horizon - 1]
@@ -429,7 +479,9 @@ def analyze_stage(seed, iteration, truth, paths, population_count):
                 dim=-1,
             )
             oracle_cost = path["cost"][:, population_count, horizon - 1]
-            metrics = path_metrics(path, truth["state"], truth, horizon, population_count)
+            metrics = path_metrics(
+                path, truth["state"], truth, horizon, population_count, slices
+            )
             metrics["cost_rmse"] = float((predicted - true_cost).square().mean().sqrt())
             metrics.update(calibration(probability, true_collision))
             metrics.update(
@@ -446,22 +498,27 @@ def analyze_stage(seed, iteration, truth, paths, population_count):
         index = horizon - 1
         valid = truth["dynamics_valid"][:, :population_count, index]
         outcome = truth["live_start"][:, :population_count, index]
+        def gap(part):
+            return (
+                recursive["next_state"][:, :population_count, index, part]
+                - teacher["next_state"][:, :population_count, index, part]
+            )
+
+        links = slices["link_bodies"]
         row["recursive_vs_teacher_forced"] = {
             "agent_state_coordinate_rmse": vector_rmse(
-                recursive["next_state"][:, :population_count, index, :8]
-                - teacher["next_state"][:, :population_count, index, :8],
-                valid,
-                coordinate=True,
+                gap(slices["agents"]), valid, coordinate=True
             ),
             "ball_position_rmse": vector_rmse(
-                recursive["next_state"][:, :population_count, index, 8:10]
-                - teacher["next_state"][:, :population_count, index, 8:10],
-                valid,
+                gap(slices["ball_position"]), valid
             ),
             "ball_velocity_rmse": vector_rmse(
-                recursive["next_state"][:, :population_count, index, 10:12]
-                - teacher["next_state"][:, :population_count, index, 10:12],
-                valid,
+                gap(slices["ball_velocity"]), valid
+            ),
+            "link_body_coordinate_rmse": (
+                vector_rmse(gap(links), valid, coordinate=True)
+                if links.stop > links.start
+                else None
             ),
             "clearance_rmse": scalar_rmse(
                 recursive["minimum_clearance"][:, :population_count, index]
@@ -488,6 +545,9 @@ def summarize(rows):
         "ball_position_rmse",
         "ball_velocity_rmse",
         "agent_state_coordinate_rmse",
+        # None throughout a legacy14 run, which is the point of the comparison.
+        "link_body_coordinate_rmse",
+        "full_dynamic_coordinate_rmse",
         "clearance_rmse",
         "cost_rmse",
         "collision_brier",
@@ -513,6 +573,7 @@ def summarize(rows):
         "ball_position_rmse",
         "ball_velocity_rmse",
         "agent_state_coordinate_rmse",
+        "link_body_coordinate_rmse",
         "clearance_rmse",
         "cost_rmse",
     )
@@ -524,11 +585,15 @@ def summarize(rows):
                 values = [item[path].get(key) for item in items]
                 values = [value for value in values if value is not None]
                 row[path][key] = sum(values) / len(values) if values else None
-        row["recursive_vs_teacher_forced"] = {
-            key: sum(item["recursive_vs_teacher_forced"][key] for item in items)
-            / len(items)
-            for key in gap_keys
-        }
+        gaps = {}
+        for key in gap_keys:
+            values = [
+                item["recursive_vs_teacher_forced"][key]
+                for item in items
+                if item["recursive_vs_teacher_forced"][key] is not None
+            ]
+            gaps[key] = sum(values) / len(values) if values else None
+        row["recursive_vs_teacher_forced"] = gaps
         output.append(row)
     return output
 
@@ -551,9 +616,13 @@ def registered_branch_result(rows):
             ratios = {}
             for key in ("ball_position_rmse", "clearance_rmse", "cost_rmse"):
                 denominator = early[key]
+                # A horizon with no valid entries measures nothing, so the
+                # ratio is absent rather than zero in either position.
                 ratios[key] = (
                     None
-                    if denominator is None or denominator <= 0
+                    if denominator is None
+                    or denominator <= 0
+                    or late[key] is None
                     else late[key] / denominator
                 )
             ood_ratios[str(seed)][str(horizon)] = ratios
@@ -579,7 +648,12 @@ def registered_branch_result(rows):
         predicted_tail = final["recursive"][
             "predicted_collision_given_predicted_top10"
         ]
-        if true_tail >= 0.25 and true_tail - predicted_tail >= 0.15:
+        if (
+            true_tail is not None
+            and predicted_tail is not None
+            and true_tail >= 0.25
+            and true_tail - predicted_tail >= 0.15
+        ):
             false_safe_seeds.append(seed)
 
     fired = {
@@ -661,20 +735,64 @@ def main():
     )
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--device", default="cuda")
+    parser.add_argument(
+        "--protocol",
+        choices=tuple(PROTOCOLS),
+        default="gate5_legacy14",
+        help=(
+            "gate5_legacy14 is the frozen job-1331 diagnostic; a1_paired is "
+            "the A1.2 tail-localization protocol over the paired banks"
+        ),
+    )
+    parser.add_argument(
+        "--coverage",
+        type=Path,
+        default=None,
+        help="coverage directory; defaults to <source>/coverage",
+    )
+    parser.add_argument("--seeds", default="9100,9101,9102")
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
 
+    coverage = args.coverage or args.source / "coverage"
     prior = json.loads((args.source / "result/result.json").read_text())
     stored = torch.load(
-        args.source / "coverage/oracle_plans.pt", map_location="cpu", weights_only=False
+        coverage / "oracle_plans.pt", map_location="cpu", weights_only=False
     )
-    seeds = (9100, 9101, 9102)
-    test_ids, frozen = validate_frozen_protocol(prior, stored, seeds)
-    contract = information_contract()
+    seeds = tuple(int(value) for value in args.seeds.split(","))
+    if args.protocol == "gate5_legacy14":
+        test_ids, frozen = validate_frozen_protocol(prior, stored, seeds)
+    else:
+        # A1.2 measures a freshly collected bank, so the frozen 16 job-1331
+        # roots do not apply. The roots come from this run's own test split and
+        # the CEM extent is read from the run that trained the models, so both
+        # profiles are planned under one identical procedure.
+        test_ids = (stored["split"] == 2).nonzero(as_tuple=True)[0]
+        config = prior["config"]
+        frozen = {
+            "horizon": int(config["horizon"]),
+            "num_samples": int(config["num_samples"]),
+            "num_elites": int(config["num_elites"]),
+            "num_iters": int(config["num_iters"]),
+            "control_seed": int(config["control_seed"]),
+        }
+        if frozen["num_iters"] < max(STAGES):
+            raise ValueError(
+                f"A1.2 needs at least {max(STAGES)} CEM iterations, "
+                f"the source run used {frozen['num_iters']}"
+            )
+    profile = prior.get("state_profile", "legacy14")
+    if profile not in PROTOCOLS[args.protocol]:
+        raise ValueError(
+            f"Protocol {args.protocol} does not measure {profile}"
+        )
+    spec = state_spec(profile)
+    slices = state_slices(spec)
+    contract = information_contract(spec)
     block = 5
     task = VmasTask.BUZZ_WIRE.get_from_yaml()
     snapshot = take_snapshot(stored["snapshot"], test_ids, args.device)
-    initial_state = bank_state(task, snapshot, args.device)
+    initial_state = bank_state(task, snapshot, args.device, spec.name)
     oracle = stored["plans"][test_ids]
 
     env = task.get_env_fun(test_ids.numel(), True, 0, args.device)()
@@ -691,8 +809,12 @@ def main():
     all_rows = []
     for seed in seeds:
         model, _checkpoint = load_surrogate(
-            args.source / f"result/model_full_{seed}.pt", args.device
+            args.source / f"result/model_full_{seed}.pt", args.device, args.protocol
         )
+        if model.state_profile != spec.name:
+            raise ValueError(
+                f"Model {seed} is {model.state_profile}, run records {spec.name}"
+            )
 
         def cost_fn(candidates):
             # Only the frozen initial P-state, actions and surrogate enter this
@@ -736,7 +858,7 @@ def main():
             # its percentile in the frozen candidate population.
             evaluated = torch.cat([candidates, oracle[:, None]], dim=1)
             truth = simulator_trajectory(
-                task, snapshot, evaluated, block, args.device
+                task, snapshot, evaluated, block, args.device, spec
             )
             paths = surrogate_trajectories(
                 model, truth, evaluated, block, args.device
@@ -752,7 +874,9 @@ def main():
                     f"Recorded recursive cost differs from planner by {difference}"
                 )
             all_rows.extend(
-                analyze_stage(seed, iteration, truth, paths, population_count)
+                analyze_stage(
+                    seed, iteration, truth, paths, population_count, slices
+                )
             )
             torch.save(
                 {
@@ -779,7 +903,9 @@ def main():
             "Does the structured planner fail from one-step OOD error, recursive "
             "accumulation, or false-safe collision tails?"
         ),
-        "source_job": 1331,
+        "protocol": args.protocol,
+        "state_profile": spec.name,
+        "source": str(args.source),
         "information_contract": contract,
         "frozen_protocol": {
             **frozen,
@@ -798,7 +924,9 @@ def main():
     write_json(args.output / "result.json", result)
     render(summary, args.output)
     write_json(args.output / "information_contract.json", contract)
-    print(f"wrote Gate 5 results to {args.output}", flush=True)
+    print(
+        f"wrote {args.protocol} ({spec.name}) results to {args.output}", flush=True
+    )
 
 
 if __name__ == "__main__":

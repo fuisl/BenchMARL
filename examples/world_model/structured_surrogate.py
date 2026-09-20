@@ -404,9 +404,18 @@ def collect_coverage(args):
     if manifest["task_name"] != "vmas/buzz_wire":
         raise ValueError("Structured surrogate is scoped to Buzz Wire")
     block = manifest["action_block"]
-    spec = state_spec(args.state_profile)
+    # A1.2 needs D_raw -> {D_legacy14, D_full32} with every non-state column
+    # identical.  Nothing upstream of blockify() depends on the state profile:
+    # the CEM cost uses the latent model and observations, and the oracle uses
+    # the simulator.  So one collection pass can emit both representations of
+    # the same transitions, which is stronger than two seed-matched runs.
+    specs = [state_spec(name) for name in args.state_profile]
+    if len({spec.name for spec in specs}) != len(specs):
+        raise ValueError("Repeated state profile in --state-profile")
+    paired = len(specs) > 1
     task = VmasTask.BUZZ_WIRE.get_from_yaml()
-    records, collection_summary = [], {}
+    records = {spec.name: [] for spec in specs}
+    collection_summary = {}
 
     anchors = torch.load(args.data / "anchors.pt", map_location="cpu", weights_only=False)
     for source, regime in enumerate(("independent", "correlated")):
@@ -414,18 +423,19 @@ def collect_coverage(args):
             args.data / f"samples_{regime}.pt", map_location="cpu", weights_only=False
         )
         split = anchors["split"][samples["anchor_id"]]
-        records.append(
-            blockify(
-                samples,
-                split,
-                family=0,
-                source=source,
-                root_id=samples["anchor_id"],
-                stage=-1,
-                action_block=block,
-                state_profile=spec.name,
+        for spec in specs:
+            records[spec.name].append(
+                blockify(
+                    samples,
+                    split,
+                    family=0,
+                    source=source,
+                    root_id=samples["anchor_id"],
+                    stage=-1,
+                    action_block=block,
+                    state_profile=spec.name,
+                )
             )
-        )
 
     rows = checkpoint_rows(args.runs, "physical", "correlated", args.model_seed)
     run, config = next((row for row in rows if row[1]["model"]["kind"] == args.kind), (None, None))
@@ -484,18 +494,19 @@ def collect_coverage(args):
         split = anchors["split"][ids].repeat_interleave(plan_count)
         root_id = ids.repeat_interleave(plan_count)
         stage = torch.tensor(stage_values).repeat(ids.numel())
-        records.append(
-            blockify(
-                data,
-                split,
-                family=2,
-                source=4,
-                root_id=root_id,
-                stage=stage,
-                action_block=block,
-                state_profile=spec.name,
+        for spec in specs:
+            records[spec.name].append(
+                blockify(
+                    data,
+                    split,
+                    family=2,
+                    source=4,
+                    root_id=root_id,
+                    stage=stage,
+                    action_block=block,
+                    state_profile=spec.name,
+                )
             )
-        )
         summary = trajectory_summary(data, stage)
         for key, value in summary.items():
             hard_summaries[key].append(value)
@@ -574,42 +585,57 @@ def collect_coverage(args):
         split = initial["split"][ids].repeat_interleave(count)
         root_id = (1_000_000 + ids).repeat_interleave(count)
         variant = torch.tensor([0] + [1] * args.local_plans).repeat(ids.numel())
-        records.append(
-            blockify(
-                data,
-                split,
-                family=1,
-                source=2 + variant,
-                root_id=root_id,
-                stage=-1,
-                action_block=block,
-                state_profile=spec.name,
+        for spec in specs:
+            records[spec.name].append(
+                blockify(
+                    data,
+                    split,
+                    family=1,
+                    source=2 + variant,
+                    root_id=root_id,
+                    stage=-1,
+                    action_block=block,
+                    state_profile=spec.name,
+                )
             )
-        )
         summary = trajectory_summary(data, variant)
         for key, value in summary.items():
             competent_summaries[key].append(value)
         print(f"oracle roots {ids[-1].item() + 1}/{root_count}", flush=True)
 
-    coverage = cat_records(records)
-    if coverage["state"].shape[1] != spec.state_dim:
-        raise ValueError("Unexpected structured state width")
-    root_splits = {}
-    for root, split in zip(coverage["root_id"].tolist(), coverage["split"].tolist()):
-        if root in root_splits and root_splits[root] != split:
-            raise ValueError("Root leaked across splits")
-        root_splits[root] = split
-    torch.save(coverage, output / "coverage.pt")
-    torch.save(
-        {
-            "plans": oracle_plans,
-            "split": initial["split"][:root_count],
-            "snapshot": tree_map(
-                initial["snapshot"], lambda value: value[:root_count]
-            ),
-        },
-        output / "oracle_plans.pt",
-    )
+    banks = {}
+    for spec in specs:
+        bank = cat_records(records[spec.name])
+        if bank["state"].shape[1] != spec.state_dim:
+            raise ValueError("Unexpected structured state width")
+        root_splits = {}
+        for root, split in zip(bank["root_id"].tolist(), bank["split"].tolist()):
+            if root in root_splits and root_splits[root] != split:
+                raise ValueError("Root leaked across splits")
+            root_splits[root] = split
+        banks[spec.name] = bank
+    # The pairing claim is the point of a paired collection, so check it here
+    # rather than asserting it in prose: every column except the state itself
+    # must be bit-identical across profiles, row for row.
+    reference_name, reference_bank = next(iter(banks.items()))
+    for name, bank in banks.items():
+        if name == reference_name:
+            continue
+        for key, value in reference_bank.items():
+            if key in ("state", "next_state"):
+                continue
+            if not torch.equal(bank[key], value):
+                raise ValueError(
+                    f"Paired collection diverged between {reference_name} and "
+                    f"{name} in column {key!r}"
+                )
+    oracle_payload = {
+        "plans": oracle_plans,
+        "split": initial["split"][:root_count],
+        "snapshot": tree_map(
+            initial["snapshot"], lambda value: value[:root_count]
+        ),
+    }
 
     def pooled(parts):
         result = {}
@@ -622,52 +648,67 @@ def collect_coverage(args):
             )
         return result
 
-    summary = {
-        "seconds": perf_counter() - started,
-        "checkpoint": str(run),
-        "transitions": int(coverage["state"].shape[0]),
-        "by_split_family": {
-            SPLITS[split]: {
-                FAMILY_NAMES[family]: int(
-                    ((coverage["split"] == split) & (coverage["family"] == family)).sum()
+    summaries = {}
+    for spec in specs:
+        coverage = banks[spec.name]
+        # A paired collection keeps each profile self-contained, so a consumer
+        # points --coverage at one directory and needs nothing else.
+        destination = output / spec.name if paired else output
+        destination.mkdir(parents=True, exist_ok=True)
+        torch.save(coverage, destination / "coverage.pt")
+        torch.save(oracle_payload, destination / "oracle_plans.pt")
+        summary = {
+            "seconds": perf_counter() - started,
+            "checkpoint": str(run),
+            "state_profile": spec.name,
+            "paired_profiles": [item.name for item in specs],
+            "transitions": int(coverage["state"].shape[0]),
+            "by_split_family": {
+                SPLITS[split]: {
+                    FAMILY_NAMES[family]: int(
+                        ((coverage["split"] == split) & (coverage["family"] == family)).sum()
+                    )
+                    for family in range(len(FAMILY_NAMES))
+                }
+                for split in range(len(SPLITS))
+            },
+            "collision_rate_by_family": {
+                FAMILY_NAMES[family]: float(
+                    coverage["collision"][coverage["family"] == family].float().mean()
                 )
                 for family in range(len(FAMILY_NAMES))
-            }
-            for split in range(len(SPLITS))
-        },
-        "collision_rate_by_family": {
-            FAMILY_NAMES[family]: float(
-                coverage["collision"][coverage["family"] == family].float().mean()
-            )
-            for family in range(len(FAMILY_NAMES))
-        },
-        "hard_by_cem_stage": {
-            key: pooled(value) for key, value in sorted(hard_summaries.items(), key=lambda x: int(x[0]))
-        },
-        "competent": {
-            "oracle": pooled(competent_summaries["0"]),
-            "local": pooled(competent_summaries["1"]),
-        },
-        "root_split_leakage": False,
-    }
-    write_json(output / "collection_summary.json", summary)
-    write_json(
-        output / "manifest.json",
-        {
-            "task_name": manifest["task_name"],
-            "action_block": block,
-            "state_profile": spec.name,
-            "state_dim": spec.state_dim,
-            "dynamic_dim": spec.dynamic_dim,
-            "state_fields": spec.fields,
-            "entity_order": spec.entity_names,
-            "families": FAMILY_NAMES,
-            "hard_stages": HARD_STAGES,
-            "source_data": str(args.data),
-            "commit": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
-            "config": {key: str(value) if isinstance(value, Path) else value for key, value in vars(args).items()},
-        },
-    )
+            },
+            "hard_by_cem_stage": {
+                key: pooled(value) for key, value in sorted(hard_summaries.items(), key=lambda x: int(x[0]))
+            },
+            "competent": {
+                "oracle": pooled(competent_summaries["0"]),
+                "local": pooled(competent_summaries["1"]),
+            },
+            "root_split_leakage": False,
+        }
+        write_json(destination / "collection_summary.json", summary)
+        write_json(
+            destination / "manifest.json",
+            {
+                "task_name": manifest["task_name"],
+                "action_block": block,
+                "state_profile": spec.name,
+                "state_dim": spec.state_dim,
+                "dynamic_dim": spec.dynamic_dim,
+                "state_fields": spec.fields,
+                "entity_order": spec.entity_names,
+                "families": FAMILY_NAMES,
+                "hard_stages": HARD_STAGES,
+                "paired_profiles": [item.name for item in specs],
+                "paired_columns_verified": paired,
+                "source_data": str(args.data),
+                "commit": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
+                "config": {key: str(value) if isinstance(value, Path) else value for key, value in vars(args).items()},
+            },
+        )
+        summaries[spec.name] = summary
+    summary = summaries if paired else next(iter(summaries.values()))
     print(json.dumps(summary, indent=2), flush=True)
 
 
@@ -1052,11 +1093,7 @@ def controller_cost(model, action_block, objective):
     return costs
 
 
-def render_results(result, output):
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
+def render_control(result, output, plt):
     labels, success, returns, distance, collision = [], [], [], [], []
     for name, summary in result["control_summary"].items():
         labels.append(name)
@@ -1074,6 +1111,16 @@ def render_results(result, output):
     figure.savefig(output / "structured_control.png", dpi=180)
     figure.savefig(output / "structured_control.pdf")
     plt.close(figure)
+
+
+def render_results(result, output):
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    # A run that withheld control has no control figure to draw.
+    if result["control_summary"]:
+        render_control(result, output, plt)
 
     rows = result["ranking"]
     labels = [f"{row['mix']} s{row['seed']}" for row in rows]
@@ -1177,56 +1224,63 @@ def run_surrogate(args):
         )
 
     test_ids = (stored["split"] == 2).nonzero(as_tuple=True)[0]
-    initial_state = take_snapshot(stored["snapshot"], test_ids, args.device)
-    env = task.get_env_fun(test_ids.numel(), True, 0, args.device)()
-    env.reset()
-    cem_config = CEMConfig(
-        horizon=args.horizon,
-        num_samples=args.num_samples,
-        num_elites=args.num_elites,
-        num_iters=args.num_iters,
-    )
-    mpc_config = MPCConfig(receding_horizon=1, action_block=block)
-    rows, timings = [], {}
-    try:
-        reference_seed = args.control_seed
-        for policy, callable_policy in (("random", "random"), ("zero", zero_policy)):
-            episode_rows, timing, _ = evaluate_policy(
-                env,
-                initial_state,
-                policy=callable_policy,
-                generator=torch.Generator(device=args.device).manual_seed(reference_seed),
-                cem_config=cem_config,
-                mpc_config=mpc_config,
-                outcome_fn=task_outcome(manifest["task_name"]),
-            )
-            for row in episode_rows:
-                row["policy"] = policy
-            rows.extend(episode_rows)
-            timings[policy] = timing
-        for (mix, seed), model in models.items():
-            policy = f"structured_{mix}_{seed}"
-            episode_rows, timing, _ = evaluate_policy(
-                env,
-                initial_state,
-                policy="mpc",
-                generator=torch.Generator(device=args.device).manual_seed(args.control_seed),
-                cem_config=cem_config,
-                mpc_config=mpc_config,
-                outcome_fn=task_outcome(manifest["task_name"]),
-                plan_costs=controller_cost(model, block, selected[mix]),
-                observe=lambda active_env, profile=profile: live_structured_state(
-                    active_env, profile
-                ),
-            )
-            for row in episode_rows:
-                row["policy"] = policy
-            rows.extend(episode_rows)
-            timings[policy] = timing
-            print(f"controlled {policy}", flush=True)
-    finally:
-        env.close()
-    control_summary = summarize(rows, seed=args.control_seed)
+    if args.skip_control:
+        # A1.2's first pass is a ranking and tail-localization diagnostic.
+        # Control is withheld so that no model, seed or objective can be
+        # chosen on closed-loop performance, and so the held-out roots are
+        # not spent before the pre-registered control run.
+        rows, timings, control_summary = [], {}, {}
+    else:
+        initial_state = take_snapshot(stored["snapshot"], test_ids, args.device)
+        env = task.get_env_fun(test_ids.numel(), True, 0, args.device)()
+        env.reset()
+        cem_config = CEMConfig(
+            horizon=args.horizon,
+            num_samples=args.num_samples,
+            num_elites=args.num_elites,
+            num_iters=args.num_iters,
+        )
+        mpc_config = MPCConfig(receding_horizon=1, action_block=block)
+        rows, timings = [], {}
+        try:
+            reference_seed = args.control_seed
+            for policy, callable_policy in (("random", "random"), ("zero", zero_policy)):
+                episode_rows, timing, _ = evaluate_policy(
+                    env,
+                    initial_state,
+                    policy=callable_policy,
+                    generator=torch.Generator(device=args.device).manual_seed(reference_seed),
+                    cem_config=cem_config,
+                    mpc_config=mpc_config,
+                    outcome_fn=task_outcome(manifest["task_name"]),
+                )
+                for row in episode_rows:
+                    row["policy"] = policy
+                rows.extend(episode_rows)
+                timings[policy] = timing
+            for (mix, seed), model in models.items():
+                policy = f"structured_{mix}_{seed}"
+                episode_rows, timing, _ = evaluate_policy(
+                    env,
+                    initial_state,
+                    policy="mpc",
+                    generator=torch.Generator(device=args.device).manual_seed(args.control_seed),
+                    cem_config=cem_config,
+                    mpc_config=mpc_config,
+                    outcome_fn=task_outcome(manifest["task_name"]),
+                    plan_costs=controller_cost(model, block, selected[mix]),
+                    observe=lambda active_env, profile=profile: live_structured_state(
+                        active_env, profile
+                    ),
+                )
+                for row in episode_rows:
+                    row["policy"] = policy
+                rows.extend(episode_rows)
+                timings[policy] = timing
+                print(f"controlled {policy}", flush=True)
+        finally:
+            env.close()
+        control_summary = summarize(rows, seed=args.control_seed)
     result = {
         "question": (
             f"Can the privileged {profile} structured-state model control "
@@ -1239,6 +1293,7 @@ def run_surrogate(args):
         "ranking": compact_ranking,
         "control_summary": control_summary,
         "control_rows": rows,
+        "control_skipped": bool(args.skip_control),
         "timing": timings,
         "test_root_ids": test_ids.tolist(),
         "config": {key: str(value) if isinstance(value, Path) else value for key, value in vars(args).items()},
@@ -1259,8 +1314,13 @@ def build_parser():
     collect.add_argument(
         "--state-profile",
         choices=tuple(STATE_SPECS),
-        default="legacy14",
-        help="legacy14 reproduces jobs 1331--1337; full32 includes linkage state",
+        nargs="+",
+        default=["legacy14"],
+        help=(
+            "legacy14 reproduces jobs 1331--1337; full32 includes linkage "
+            "state. Naming both emits paired banks from one collection, which "
+            "is what A1.2 compares."
+        ),
     )
     collect.add_argument("--model-seed", type=int, default=4100)
     collect.add_argument("--kind", default="joint")
@@ -1307,6 +1367,14 @@ def build_parser():
     run.add_argument("--num-elites", type=int, default=30)
     run.add_argument("--num-iters", type=int, default=30)
     run.add_argument("--control-seed", type=int, default=8700)
+    run.add_argument(
+        "--skip-control",
+        action="store_true",
+        help=(
+            "train and rank only. A1.2's first pass withholds closed-loop "
+            "control so nothing is selected on control performance."
+        ),
+    )
     return parser
 
 

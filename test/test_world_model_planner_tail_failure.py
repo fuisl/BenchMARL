@@ -6,17 +6,22 @@ from examples.world_model.planner_tail_failure import (
     load_surrogate,
     rank_and_tail_metrics,
     registered_branch_result,
+    state_slices,
     surrogate_trajectories,
 )
 from examples.world_model.mpc import unpack_actions
 from examples.world_model.structured_surrogate import (
     StructuredSurrogate,
+    state_spec,
     surrogate_cost,
 )
 
 
 class DriftModel:
     """A locally deterministic model whose recursion visibly accumulates."""
+
+    state_profile = "legacy14"
+    state_dim = 14
 
     def __call__(self, state, action):
         next_state = state.clone()
@@ -60,12 +65,16 @@ def test_tail_collision_metric_is_conditioned_on_predicted_topk():
     assert metrics["selected_regret"] == 3.0
 
 
-def test_information_contract_marks_legacy_state_as_privileged():
-    contract = information_contract()
+@pytest.mark.parametrize("profile", ["legacy14", "full32"])
+def test_information_contract_marks_structured_state_as_privileged(profile):
+    contract = information_contract(state_spec(profile))
     assert contract["candidate_selection_inputs"]["initial_structured_state"] == "P"
     assert contract["future_truth_used_by_candidate_selection"] is False
     assert contract["deployment_contract_satisfied"] is False
     assert contract["diagnostic_only"] is True
+    # The successor state is privileged for exactly the same reason, so the
+    # contract must not quietly become deployable when the width changes.
+    assert contract["state_profile"] == profile
 
 
 def test_recorded_recursive_cost_exactly_matches_planner_cost():
@@ -118,8 +127,15 @@ def test_frozen_gate5_rejects_full32_checkpoint(tmp_path):
         {"state_dict": model.state_dict(), "state_profile": "full32"},
         checkpoint,
     )
-    with pytest.raises(ValueError, match="separately registered diagnostic"):
-        load_surrogate(checkpoint, "cpu")
+    # The frozen job-1331 protocol must keep refusing the successor state
+    # under its default and when named explicitly.
+    for call in (lambda: load_surrogate(checkpoint, "cpu"),
+                 lambda: load_surrogate(checkpoint, "cpu", "gate5_legacy14")):
+        with pytest.raises(ValueError, match="never silently accept a successor"):
+            call()
+    # A1.2's own protocol is the registered place where full32 is measured.
+    model, _checkpoint = load_surrogate(checkpoint, "cpu", "a1_paired")
+    assert model.state_profile == "full32"
 
 
 def test_frozen_gate5_loads_historical_checkpoint_without_profile(tmp_path):
@@ -171,3 +187,79 @@ def test_registered_branch_prioritizes_upstream_ood():
     result = registered_branch_result(rows)
     assert result["all_rules"]["G6a_planner_aware_aggregation"] is True
     assert result["primary_next_intervention"] == "G6a_planner_aware_aggregation"
+
+
+@pytest.mark.parametrize(
+    "profile,expected",
+    [
+        (
+            "legacy14",
+            {
+                "agents": (0, 8),
+                "ball_position": (8, 10),
+                "ball_velocity": (10, 12),
+                "link_bodies": (12, 12),
+                "goal": (12, 14),
+            },
+        ),
+        (
+            "full32",
+            {
+                "agents": (0, 12),
+                "ball_position": (12, 14),
+                "ball_velocity": (14, 16),
+                "link_bodies": (18, 30),
+                "goal": (30, 32),
+            },
+        ),
+    ],
+)
+def test_state_slices_match_each_registered_profile(profile, expected):
+    """A1.2 reports ball and linkage error apart, so the indices must follow
+    the profile rather than legacy14's layout. legacy14's linkage group is
+    empty, which is the omission A1.1 demonstrated."""
+    spec = state_spec(profile)
+    slices = state_slices(spec)
+    assert {
+        name: (item.start, item.stop) for name, item in slices.items()
+    } == expected
+    # The ball slice the surrogate itself uses must agree with the report's.
+    assert (slices["ball_position"].start, slices["ball_position"].stop) == (
+        spec.ball_position.start,
+        spec.ball_position.stop,
+    )
+
+
+def test_full32_rollout_uses_its_own_ball_and_goal_coordinates():
+    """A full32 rollout must read the ball and goal at 12:14 and 30:32.
+
+    Reusing legacy14's indices would silently score the progress term on the
+    wrong coordinates, which no shape check would catch.
+    """
+    torch.manual_seed(11)
+    model = StructuredSurrogate(
+        torch.zeros(32),
+        torch.ones(32),
+        torch.zeros(20),
+        torch.ones(20),
+        torch.zeros(30),
+        torch.ones(30),
+        torch.zeros(1),
+        torch.ones(1),
+        torch.zeros(1),
+        torch.ones(1),
+        hidden=16,
+    )
+    roots, candidates, horizon = 1, 3, 2
+    truth = {"state": torch.randn(roots, candidates, horizon + 1, 32)}
+    actions = torch.randn(roots, candidates, horizon, 20)
+    paths = surrogate_trajectories(
+        model, truth, actions, action_block=5, device="cpu"
+    )
+    assert paths["recursive"]["state"].shape[-1] == 32
+    assert paths["teacher_forced"]["next_state"].shape[-1] == 32
+    # The goal coordinates are carried, never predicted, by either path.
+    torch.testing.assert_close(
+        paths["recursive"]["state"][..., 30:32],
+        truth["state"][..., :1, 30:32].expand(roots, candidates, horizon + 1, 2),
+    )
