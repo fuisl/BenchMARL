@@ -263,7 +263,10 @@ drifted from the vendored sources cannot produce checkpoints.
 |---|---|---|
 | 1497 | T-A1 | **COMPLETE** |
 | 1498 | T-A2 stage 1 | **COMPLETE** — 48/48 checkpoints |
-| 1499 | T-A2 stage 2 | running |
+| 1499 | T-A2 stage 2 | **failed at bash parse time**; produced nothing |
+| 1500 | T-A2 stage 2 | **COMPLETE** — superseded by 1502 for labelling only |
+| 1501 | T-A2 stage 2 | **COMPLETE** — superseded by 1502 for labelling only |
+| 1502 | T-A2 stage 2 | **COMPLETE** — the reported run |
 
 ### T-A1 (job 1497): the cross blocks are large, and active everywhere
 
@@ -339,6 +342,7 @@ exclusion was made by the rule, not by inspecting any model result.
 * **This is the simulator, not a model.** T-A1 says the effect exists. It says
   nothing about whether any learned model recovers it.
 
+
 #### Defect found and repaired
 
 Job 1497 computed and wrote the complete Jacobian, then crashed formatting a
@@ -347,3 +351,110 @@ omitted the anchor count the report reads. The repair touches only that path, so
 every computed value in the job's JSON is unaffected and the artifact is kept
 rather than regenerated. Pinned by
 `test_bootstrap_reports_an_empty_cell_instead_of_crashing_the_report`.
+
+### T-A2 (job 1502): the conditioned models do not resolve the effect — but not because they lack it
+
+48 checkpoints, 3 kinds x 2 regimes x 8 seeds, both probe families, 13,424
+scored anchor-cells per arm. Artifacts: `outputs/ta2_fidelity_1502/`.
+
+Cross block, one action block, linear probe (MLP in parentheses where it
+differs materially):
+
+| Regime | Arm | `E_CF` | cosine | magnitude ratio | oracle per-anchor gain |
+|---|---|---:|---:|---:|---:|
+| correlated | **H0** independent | **1.0000** | +0.000 | 0.000 | 1.000 |
+| correlated | **H1** joint | 1.1367 (1.1864) | +0.400 | 0.898 | 0.528 |
+| correlated | **H2** relational | 1.0506 (1.0786) | +0.408 | 0.740 | 0.507 |
+| independent | **H0** independent | **1.0000** | +0.000 | 0.000 | 1.000 |
+| independent | **H1** joint | 1.0795 (1.1270) | +0.453 | 0.857 | 0.513 |
+| independent | **H2** relational | 1.0482 (1.0834) | +0.449 | 0.762 | 0.506 |
+
+Paired by seed, cross block:
+
+| Comparison | linear | MLP |
+|---|---|---|
+| correlated, H1 vs H0 | +0.137, **0/8** seeds | +0.186, **0/8** |
+| correlated, H2 vs H1 | −0.086, **8/8** | −0.108, **8/8** |
+| independent, H1 vs H0 | +0.080, **0/8** | +0.127, **0/8** |
+| independent, H2 vs H1 | −0.031, **6/8** | −0.044, **7/8** |
+
+#### The measurement is valid
+
+The cross-block probe floor is 0.173–0.234 relative, a resolution ratio of
+**4.3–5.8x**, clearing the registered 3x rule in every cell. **Both probe
+families agree on every ordering** — unlike experiment 14, where swapping
+linear for MLP reversed the winner. So this is not the instrument.
+
+The shared-body cells are **not** reported as a model ordering: their floor is
+0.58–0.63, a ratio of about 1.6x, which fails the rule. Self blocks are
+well captured by every arm (`E_CF` 0.46–0.51, cosine ~0.92) and do not
+discriminate, which is the expected sanity result.
+
+`independent` scores **exactly** 1.0000 with cosine 0.000 and magnitude 0.000 on
+every cross cell, to machine precision, in both probe families. The structural
+zero is confirmed empirically rather than assumed.
+
+#### Registered verdict: the headline claim fails
+
+**H1 does not beat H0. It loses on 0/8 seeds in every cell, under both probes.**
+Both conditioned arms sit *above* 1, meaning their cross-agent prediction is
+worse, in squared error, than predicting no cross-agent response at all. Two
+registered rows fire — "H1 ≈ H0" and "all arms `E_CF` ≥ 1" — so under the
+criterion fixed before the run, **no arm resolves the cross-agent effect that
+T-A1 proved the simulator has.**
+
+#### But the failure is gain, not absence of information
+
+`E_CF` alone would say conditioning makes things worse. That reading is wrong,
+and the decomposition registered alongside it is what shows why:
+
+* cosine is **+0.39 to +0.45**, far from the 0.000 that an uninformed predictor
+  produces. The conditioned arms genuinely detect the coupling.
+* the magnitude ratio is **0.74–0.96** — roughly the right size.
+* correcting the gain separately at each anchor would put `E_CF` at
+  **0.51–0.55**, roughly halving the error against the zero baseline.
+
+So the models carry substantial cross-agent information and emit a response of
+approximately the correct magnitude that is **inconsistently directed across
+states**. A response of the right size pointing the wrong way scores worse than
+silence; that is why H0's structural zero wins a metric it cannot possibly
+understand.
+
+**The oracle bound is an oracle.** Its minimising gain differs at every anchor
+and depends on the true response, so it is not deployable and it is *not*
+evidence that one global rescaling would work. It bounds how much of the gap is
+gain rather than direction. Whether any state-conditional calibration learnable
+from data closes it is untested.
+
+#### K22 gets support it was not expected to get
+
+The registration recorded H2-beats-H1 as "open, and expected to be weak,"
+because H1 and H2 hold identical information and `N=2` is fixed. Instead
+**relational beats joint on the cross block in all four cells** — 8/8, 8/8, 6/8
+and 7/8 seeds — with both probe families agreeing. Relational also predicts a
+*smaller* cross response (0.74–0.83 against 0.86–0.96), which is what moves it
+closer to 1 given similar cosine.
+
+This is a genuine inductive-bias effect at fixed information and matched
+capacity. It is bounded: both arms remain above 1, so the honest statement is
+**relational is consistently less wrong, not that relational works.** It does
+not license a relational architecture claim, which still needs
+`N_train != N_test`.
+
+#### What this means for Task A
+
+The result converges with K17 and K18 rather than contradicting them. The latent
+is not empty of cross-agent structure — cosine ~0.4 is real signal — but what it
+carries is not accurate enough, state by state, to serve as a counterfactual
+model. That is the **representation** half of the Task A question answering in
+the negative, measured directly, on cells proven above the instrument's floor,
+with the structural baseline behaving exactly as theory says it must.
+
+#### Boundaries
+
+* One task, one bank, 16 root episodes, one horizon (one action block).
+* `E_CF` pools the four intervention cells per block type; the axis asymmetry
+  T-A1 found (56% of self in x, 12% in y) is not resolved per arm here.
+* The oracle gain bound is an upper bound on what calibration could buy, not a
+  method.
+* No control, no planner, no Task B claim of any kind.

@@ -165,8 +165,9 @@ planned claim failed its direct test; **open** = not yet tested well enough;
 | K18 | Useful task information in a latent guarantees that the planning interface and recursive rollout can use it. | **Falsified on Buzz Wire** | True-latent progress ranks plans well, the reward interface does not, and recursive rollout demotes the known-good plan; later CEM populations lose true quality. [22](paper/experiments/22_decision_information_localization.md) |
 | K19 | Removing latent coordinates and scalar reward is sufficient for a cheap physical world model to control Buzz Wire. | **Falsified for Baseline B** | Full-coverage structured models make replicated distance progress but do not achieve positive return or safe success. [23](paper/experiments/23_planner_coverage_structured_surrogate.md) |
 | K20 | Buzz Wire's true cross-agent effect is large enough, and on enough held-out states, to grade a model on it. | **Established (job 1497), bounded to 16 root episodes** | Every off-diagonal cell is active on **100%** of 117 held-out anchors, the two agents are near-symmetric, and cross response is 21.6% of the total at one block rising to 32.4% at three. The coupling is strongly axis-dependent: 56% of self in x, 12% in y. H0 is therefore structurally misspecified here by a large margin. Agent cells are authorized for T-A2; shared-body cells are **not** (probe floor 1.8x, failing the registered 3x rule). [30](paper/experiments/30_task_a_counterfactual_fidelity.md) |
-| K21 | Joint-action conditioning is necessary to predict interacting latent dynamics (H1 beats H0). | **Open — T-A2 stage 1 submitted (job 1498)** | The registered headline claim of Task A. H0 sets every cross block to exactly zero by construction, so it is the structural floor, not a competitor. [30](paper/experiments/30_task_a_counterfactual_fidelity.md) |
-| K22 | Relational structure adds something beyond access to joint information (H2 beats H1). | **Open, and expected to be weak** | H1 and H2 hold identical information, so any gap is inductive bias. K1 favours relational on Buzz Wire, K7 favours joint on Balance, and "general relational advantage" is already recorded as not supported. With `N=2` fixed, a joint MLP can represent what the relational model can; a real architecture claim needs `N_train != N_test`. [30](paper/experiments/30_task_a_counterfactual_fidelity.md) |
+| K21 | Joint-action conditioning is necessary to predict interacting latent dynamics (H1 beats H0). | **Falsified as stated (job 1502)** | H1 loses to H0 on **0/8 seeds** in every cell under both probe families, and both conditioned arms sit *above* `E_CF = 1` — worse in squared error than predicting no cross-agent response. The measurement is above floor (resolution 4.3–5.8x) and both probes agree, so this is not the instrument. [30](paper/experiments/30_task_a_counterfactual_fidelity.md) |
+| K21b | The conditioned models carry no cross-agent information. | **Rejected — the failure is gain, not absence** | Cosine is +0.39 to +0.45 against exactly 0.000 for H0, magnitude ratio 0.74–0.96, and correcting the gain per anchor would put `E_CF` at 0.51–0.55. The models emit a roughly correct-sized cross response that is inconsistently directed across states, which scores worse than silence. The per-anchor bound is an **oracle** and is not evidence that one global rescaling would work. [30](paper/experiments/30_task_a_counterfactual_fidelity.md) |
+| K22 | Relational structure adds something beyond access to joint information (H2 beats H1). | **Supported on the cross block (job 1502), bounded** | Registered as "expected to be weak" and it was not: relational beats joint on 8/8, 8/8, 6/8 and 7/8 seeds across the four cells, both probe families agreeing, at identical information and matched capacity. Bounded hard — **both arms remain above 1**, so the claim is that relational is consistently *less wrong*, not that it works. An architecture claim still needs `N_train != N_test`. [30](paper/experiments/30_task_a_counterfactual_fidelity.md) |
 | K23 | An `E_CF < 1` criterion removes the measurement-floor problem on its own. | **Rejected a priori** | If probe reconstruction error on true encodings exceeds the true effect, `E_CF > 1` for every model including a perfect one, and the number measures the instrument. Every Task A result must carry the true effect size, the probe floor, and their ratio. This is how K8 was retired. [30](paper/experiments/30_task_a_counterfactual_fidelity.md) |
 
 ## 5. What went wrong
@@ -268,7 +269,7 @@ partial jobs remain evidence but must not be pooled with completed comparisons.
 | Planner coverage and Baseline B | [23](paper/experiments/23_planner_coverage_structured_surrogate.md) | Split-safe competent/CEM-query collection and behavior-vs-full structured physical control. | Complete three-seed registered gate; coverage improves intermediate metrics and motion, while safe control fails. |
 | Reference-profile repair | [27](paper/experiments/27_audit_gate_a0_reference_profile.md), [28](paper/experiments/28_full_structured_state_successor.md) | `lewm_reference` pinned to LeWM `8edfeb33` against vendored sources; `full32` removes the demonstrated `legacy14` linkage alias. | Implementation and one-seed sanity complete; no comparison authorized from them. |
 | Planner-tail localization | [29](paper/experiments/29_a1_2_full_state_tail_localization.md) | Late-CEM teacher-forced growth survives the Markov repair (2.28x in full32); better dynamics came with worse decisions and a higher false-safe rate. | Complete. Registered branch C **deferred** as Task B work by the 2026-09-21 direction; registration intact. |
-| **Task A — counterfactual fidelity** | [30](paper/experiments/30_task_a_counterfactual_fidelity.md) | True interaction Jacobian and measurement floor (T-A1), effect-normalized counterfactual fidelity across H0/H1/H2 (T-A2), counterfactual ordering (T-A3). | **T-A1 complete (job 1497): the off-diagonal is real, active on 100% of anchors, and axis-dependent.** T-A2 stage 1 complete (1498, 48/48); stage 2 running (1500). T-A3 gated on T-A2. |
+| **Task A — counterfactual fidelity** | [30](paper/experiments/30_task_a_counterfactual_fidelity.md) | True interaction Jacobian and measurement floor (T-A1), effect-normalized counterfactual fidelity across H0/H1/H2 (T-A2), counterfactual ordering (T-A3). | **Complete through T-A2.** T-A1 (1497): the off-diagonal is real, active on 100% of anchors, axis-dependent. T-A2 (1498 + 1502): no arm resolves it — H1 loses to H0 on 0/8 seeds — but cosine ~0.4 shows the failure is gain, not absent information, and relational consistently beats joint. T-A3 remains gated on an arm passing T-A2; none did. |
 
 ## 8. Complete document catalog
 
@@ -350,10 +351,15 @@ currently disagree.
 
 ### Unresolved scientific work
 
-- **Task A is the current work and is unreported.** Jobs 1497 (T-A1) and 1498
-  (T-A2 stage 1) were submitted 2026-09-21 against the registered design in
-  [experiment 30](paper/experiments/30_task_a_counterfactual_fidelity.md). T-A2
-  stage 2 and T-A3 are registered but not yet implemented.
+- **Task A is reported through T-A2 and its next step is open.** T-A3 was
+  registered as conditional on an arm passing T-A2, and none did, so running it
+  as written would measure ordering on models that cannot resolve the effect.
+  The result instead poses a sharper question the current design does not
+  answer: **is the inconsistent direction of the learned cross response
+  correctable by any state-conditional calibration learnable from data, or is
+  the latent itself the limit?** The oracle per-anchor gain bound (0.51–0.55)
+  is what makes that question worth asking and does not answer it.
+  [experiment 30](paper/experiments/30_task_a_counterfactual_fidelity.md)
 - **A1.2 branch C is deferred, not withdrawn.** The sampler-matched G6a on
   `full32` and the G6c calibration run are Task B work on the structured
   surrogate; the G6a implementation is already repaired and unrun. See
