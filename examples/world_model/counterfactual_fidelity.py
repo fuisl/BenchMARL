@@ -217,9 +217,19 @@ def reference_context(anchors, rows, data_root, history_size, block, observed):
         # Each past position carries the `block` primitive actions that produced
         # the frame after it, in the same time-then-coordinate order `blocked`
         # uses, so training and evaluation agree on the layout.
+        #
+        # A position whose SOURCE frame was clamped describes an artificial
+        # padding transition (o_0 -> o_0), and the registered convention in
+        # `model_input.PlanningContext` is explicit that "observation is
+        # repeated and historical actions are zero". Carrying a real action
+        # across a padded transition would tell the predictor that motion
+        # occurred between two identical frames.
         window = []
         for offset in reversed(range(1, history_size)):
-            start = max(0, s - offset * block)
+            start = s - offset * block
+            if start < 0:
+                window.append(torch.zeros(block, *source["action"].shape[2:]))
+                continue
             span = [min(start + i, source["action"].shape[1] - 1) for i in range(block)]
             window.append(source["action"][e, span])  # (block, N, A)
         stacked = torch.stack(window)  # (history_size-1, block, N, A)
@@ -244,9 +254,13 @@ def rolled_latent(model, observation, plan, device, context=None, source_step=No
 
     `lewm_reference` refuses a one-frame rollout by design (A0 step 2), because
     silently reconstructing history from the current frame is the defect that
-    guard exists to prevent. A restored anchor has no past, so it uses the same
-    episode-start convention `model_input.PlanningContext` registers: the frame
-    repeated `history_size` times and zero past actions.
+    guard exists to prevent.
+
+    A restored mid-episode anchor **does** have a past: it lives in the source
+    trajectory, and the branch object simply does not carry it. That anchor must
+    therefore be supplied its authentic source-trajectory context. The synthetic
+    repeated-frame / null-action context is valid **only** at a genuine episode
+    boundary. Asserting otherwise is what audit F13 records.
     """
     if getattr(model, "profile", "legacy_compact") != "lewm_reference":
         return predicted_latent(model, observation, plan, device)
@@ -502,6 +516,15 @@ def run(args):
     # Audit F13: give the reference predictor the context it was trained on.
     source_step = anchors["source_step"][rows]
     context = None
+    results_context = {
+        "context_mode": "synthetic_episode_start",
+        "context_history_frames": int(args.history_frames),
+        "context_block_stride": None,
+        "mid_episode_anchors": int((source_step > 0).sum()),
+        "episode_start_anchors": int((source_step == 0).sum()),
+        "padded_transitions_use_zero_actions": True,
+        "superseded_by": "audit F13 -- pre-repair behaviour, retained only to regenerate old numbers",
+    }
     if not args.synthetic_start_context:
         any_branch = next(iter(branches.values()))["low"]
         context = reference_context(
@@ -509,6 +532,16 @@ def run(args):
             any_branch["observation"][:, 0],
         )
         mid = int((source_step > 0).sum())
+        # Artifact self-description (audit): six months from now the JSON alone
+        # must say whether a result is pre- or post-F13.
+        results_context = {
+            "context_mode": "authentic_block_strided",
+            "context_history_frames": int(args.history_frames),
+            "context_block_stride": int(block),
+            "mid_episode_anchors": mid,
+            "episode_start_anchors": int(len(rows) - mid),
+            "padded_transitions_use_zero_actions": True,
+        }
         print(
             f"  real reference context: frames {tuple(context[0].shape)}, "
             f"past actions {tuple(context[1].shape)}, stride {block}, "
@@ -536,6 +569,7 @@ def run(args):
         raise FileNotFoundError(f"No checkpoints with model.pt under {args.runs}")
 
     results = summarize(scored, episode_ids, args)
+    results["context"] = results_context
     output = Path(args.out)
     output.mkdir(parents=True, exist_ok=True)
     (output / "counterfactual_fidelity.json").write_text(json.dumps(results, indent=2))

@@ -437,23 +437,46 @@ def test_reference_context_rejects_a_misaligned_anchor(tmp_path):
         )
 
 
-def test_reference_context_clamps_at_an_episode_start(tmp_path):
-    """At step 0 every frame clamps to the first, which is the only case where
-    the synthetic-start convention is legitimate."""
+@pytest.mark.parametrize("step", [0, 5, 10, 15, 20])
+def test_reference_context_zeroes_actions_across_padded_transitions(tmp_path, step):
+    """A padded transition must carry a ZERO action, not a real one.
+
+    `model_input.PlanningContext` registers the convention verbatim:
+    "observation is repeated and historical actions are zero". A position whose
+    source frame was clamped describes an artificial o_0 -> o_0 transition, and
+    carrying a real action across it tells the predictor that motion occurred
+    between two identical frames.
+
+    The first version of the F13 repair got this wrong at `step = 0` -- 32 of
+    117 test anchors -- because the episode-start test checked only the frames.
+    """
     _cf_bank(tmp_path)
     source = torch.load(
         tmp_path / f"trajectories_{CF_SOURCE_REGIMES[0]}.pt", weights_only=True
     )
+    block, history = 5, 3
     anchors = {
         "episode_id": torch.tensor([0]),
-        "source_step": torch.tensor([0]),
+        "source_step": torch.tensor([step]),
         "source_regime": torch.tensor([0]),
     }
-    frames, _ = reference_context(
-        anchors, torch.tensor([0]), tmp_path, 3, 5,
-        source["observation"][0, 0].unsqueeze(0),
+    frames, actions = reference_context(
+        anchors, torch.tensor([0]), tmp_path, history, block,
+        source["observation"][0, step].unsqueeze(0),
     )
-    assert torch.equal(frames[0, 0], frames[0, 2])
+    for position in range(history - 1):
+        origin = step - (history - 1 - position) * block
+        padded = origin < 0
+        nonzero = bool(actions[0, position].abs().sum() > 0)
+        assert nonzero is not padded, (
+            f"step={step} position={position}: padded={padded} but "
+            f"action {'is' if nonzero else 'is not'} nonzero"
+        )
+    # Frames themselves clamp, and the newest is always the anchor.
+    assert torch.equal(frames[0, -1], source["observation"][0, step])
+    if step == 0:
+        assert torch.equal(frames[0, 0], frames[0, 2])
+        assert float(actions.abs().sum()) == 0.0
 
 
 def _reference_model(agents=2, obs=3, action=4):
