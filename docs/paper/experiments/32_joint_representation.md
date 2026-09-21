@@ -104,6 +104,79 @@ If history recovers the mediating state, `z_G` built from history is the
 indicated architecture. If it does not, no architecture over these observations
 can succeed and the honest conclusion is a task-design one.
 
+### G0b result (job 1509): history helps, saturates around R ≈ 0.4, and never reaches the gate
+
+Six window lengths, shared conditions only (they are model-independent), same
+interventions, same scale, same head. Blind floor `E_CF` 0.8951 / cosine +0.459;
+physical ceiling 0.4645 / +0.873.
+
+| frames `k` | `E_CF` | 95% CI | `R` on `E_CF` | cosine | `R` on cosine |
+|---:|---:|---|---:|---:|---:|
+| 1 (single frame) | 0.8882 | [0.742, 1.007] | **0.016** | +0.741 | 0.681 |
+| 2 | 0.8148 | [0.701, 0.913] | 0.187 | +0.764 | 0.736 |
+| 3 | 0.7634 | [0.644, 0.865] | 0.306 | +0.750 | 0.702 |
+| 5 | 0.7870 | [0.656, 0.900] | 0.251 | +0.748 | 0.698 |
+| 8 | 0.7235 | [0.603, 0.826] | **0.399** | +0.775 | 0.762 |
+| 12 | 0.7414 | [0.614, 0.848] | 0.357 | +0.777 | 0.766 |
+
+#### Registered verdict: PARTIAL, and it does not improve with more history
+
+The best recovery is **`R = 0.399` at `k = 8`**, inside the registered
+`0.2 < R < 0.5` band. Per the rule fixed before the run: **report the fraction
+and treat H3 as exploratory, not confirmatory.**
+
+The sweep adds something the single `k=3` measurement could not: the gain
+**saturates**. `R` climbs from 0.016 to roughly 0.3-0.4 by `k=3` and then moves
+within noise — 0.306, 0.251, 0.399, 0.357 across `k = 3, 5, 8, 12`. With 16 root
+episodes the intervals are wide and those four values are **not resolvable from
+one another**; the defensible statement is a rise then a plateau, not a rank
+ordering among the longer windows. No window length approaches the 0.5 gate, let
+alone the **0.871** that handing over the ball state achieves.
+
+#### Direction is nearly free; scale is what history cannot buy
+
+The two metrics separate sharply, and they say different things:
+
+* **cosine is already at `R = 0.68` from a single frame** and rises only to 0.77.
+  The *direction* of the cross-agent response is largely determined by the
+  actions and the agents' own visible state.
+* **`E_CF` recovery starts at 0.016** and saturates near 0.4. The
+  state-dependent **magnitude** is the part history only partially recovers.
+
+This is the same direction/scale dissociation T-A2b found in the latent, now
+shown to be a property of **the observation stream itself** rather than of any
+encoder. It also explains why every trained arm behaved identically: they were
+all reading an input whose scale information is largely absent.
+
+#### What this means for the architecture
+
+Two rigid joints constrain the ball to at most two solutions given the agents'
+positions, so motion *should* disambiguate it — and it partly does, which is why
+`R` moves at all. But on this bank it recovers at most ~40% of the gap and stops
+improving.
+
+So a learned `z_G` over observation history would be built on at most ~40% of
+the missing information. Combined with the constraint below — that a `z_G`
+pooled from same-timestep latents is a re-parameterization and cannot help at
+all — the honest reading is:
+
+```math
+\boxed{\text{On Buzz Wire, no architecture over the agents' observations can be}}
+```
+```math
+\boxed{\text{counterfactually sufficient. The observation is the binding constraint.}}
+```
+
+That is the **task-design outcome** note 32 registered as acceptable. The
+indicated repair is to change what the agents observe — give them the ball, which
+`latent ⊕ ball` shows recovers 86-88% immediately — not to add machinery on top
+of an input that does not carry the answer.
+
+H3 and H4 remain registered. H3 is now explicitly **exploratory**: it may still
+be worth knowing whether a world token extracts that ~40% better than a flat
+history window does, but it cannot produce a counterfactually sufficient model on
+this observation set, and it must not be presented as if it could.
+
 ### A constraint on `z_G` that follows from T-A2b, not from taste
 
 **A world token computed from the same-timestep agent latents cannot help.**
