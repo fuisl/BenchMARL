@@ -1,7 +1,7 @@
 # Research knowledge index and source-of-truth map
 
-**Last consolidated:** 2026-09-18
-**Scope:** all 42 Markdown documents under `docs/paper/`
+**Last consolidated:** 2026-09-21
+**Scope:** all 44 Markdown documents under `docs/paper/`
 **Purpose:** make the research record navigable, distinguish current evidence
 from historical plans, and prevent a new experiment from silently rewriting an
 old conclusion.
@@ -27,8 +27,19 @@ source currently has authority, what has been withdrawn, and what remains open.
 
 ### Research question
 
-Can an interaction-aware latent world model generalize to unseen joint actions,
-rank candidate plans, and improve closed-loop cooperative control?
+**Restructured 2026-09-21** by [direction](paper/direction_2026-09-21.md). The
+project is split into two problems with separate success criteria, Task A first:
+
+* **Task A — learn the world model.** Can a latent predictive world model learn a
+  control-sufficient representation of multi-agent counterfactual dynamics? Graded
+  on effect-normalized counterfactual fidelity, not on downstream control.
+* **Task B — plan with it.** Given that model, how should the joint action be
+  optimized? Frozen out of Task A entirely.
+
+The historical single-chain question — can an interaction-aware latent world
+model generalize to unseen joint actions, rank candidate plans, and improve
+closed-loop cooperative control? — is what the evidence below was gathered
+against, and its end-to-end form is what failed.
 
 ### Current evidence
 
@@ -73,6 +84,9 @@ from this index.
 When two documents disagree, use this order:
 
 1. **Experiment note for the correcting job** plus its saved artifacts.
+1b. **Current direction:** [direction, 2026-09-21](paper/direction_2026-09-21.md)
+   for what the project is trying to establish and in what order. It is an intent
+   document and never overrides a measured result.
 2. **Latest project synthesis:**
    [project report, 2026-09-17](paper/project_report_2026-09-17.md).
 3. **Rolling claim ledger:**
@@ -102,6 +116,7 @@ Recommended reading paths:
 | Knowledge area | Primary source | Supporting sources | Authority note |
 |---|---|---|---|
 | Current project state and final narrative | [project report](paper/project_report_2026-09-17.md) | [status](paper/status_2026-09-16.md), [outline](paper/outline.md) | Project report is the current synthesis; status and outline contain older layers. |
+| Current research question and ordering | [direction, 2026-09-21](paper/direction_2026-09-21.md) | [registered Task A ladder](paper/experiments/30_task_a_counterfactual_fidelity.md) | Current intent: Task A before Task B, graded on counterfactual fidelity with an explicit measurement floor. |
 | Original research question and scope | [direction](paper/direction.md) | [proposal](paper/multi_agent_latent_mpc_proposal.md), [impact notes](paper/multi_agent_world_model_impact_notes.md) | Historical intent. Their expected positive chain is now partly falsified. |
 | Literature and positioning | [literature review](paper/litreview.md) | [EBM review](paper/EBM.md), method references inside the review | Background, not experimental evidence. Several documents contain search-tool citation placeholders that need conversion before publication. |
 | CEM-MPC concepts and mathematics | [centralized CEM-MPC](paper/centralized-cem-mpc.md) | [oracle validation](paper/experiments/02_oracle_validation.md) | The explainer is conceptual. The implementation note supersedes its assumed LeWM hyperparameters and execution cadence. |
@@ -149,6 +164,10 @@ planned claim failed its direct test; **open** = not yet tested well enough;
 | K17 | The current latent transition preserves sufficiently accurate agent position for planning. | **Falsified on the fixed Buzz Wire bank** | With a head fitted on predicted latents, all 144 checkpoints are worse than persistence and 3.84–13.13× worse than matched direct models. Both MLP and linear heads agree; the error is already present at h=1. [21](paper/experiments/21_latent_position_validation.md) |
 | K18 | Useful task information in a latent guarantees that the planning interface and recursive rollout can use it. | **Falsified on Buzz Wire** | True-latent progress ranks plans well, the reward interface does not, and recursive rollout demotes the known-good plan; later CEM populations lose true quality. [22](paper/experiments/22_decision_information_localization.md) |
 | K19 | Removing latent coordinates and scalar reward is sufficient for a cheap physical world model to control Buzz Wire. | **Falsified for Baseline B** | Full-coverage structured models make replicated distance progress but do not achieve positive return or safe success. [23](paper/experiments/23_planner_coverage_structured_surrogate.md) |
+| K20 | Buzz Wire's true cross-agent effect is large enough, and on enough held-out states, to grade a model on it. | **Open — T-A1 submitted (job 1497)** | Measured on the simulator alone, before any model is trained, so it cannot be contaminated or selected post hoc. Decides which Jacobian cells T-A2 may report. [30](paper/experiments/30_task_a_counterfactual_fidelity.md) |
+| K21 | Joint-action conditioning is necessary to predict interacting latent dynamics (H1 beats H0). | **Open — T-A2 stage 1 submitted (job 1498)** | The registered headline claim of Task A. H0 sets every cross block to exactly zero by construction, so it is the structural floor, not a competitor. [30](paper/experiments/30_task_a_counterfactual_fidelity.md) |
+| K22 | Relational structure adds something beyond access to joint information (H2 beats H1). | **Open, and expected to be weak** | H1 and H2 hold identical information, so any gap is inductive bias. K1 favours relational on Buzz Wire, K7 favours joint on Balance, and "general relational advantage" is already recorded as not supported. With `N=2` fixed, a joint MLP can represent what the relational model can; a real architecture claim needs `N_train != N_test`. [30](paper/experiments/30_task_a_counterfactual_fidelity.md) |
+| K23 | An `E_CF < 1` criterion removes the measurement-floor problem on its own. | **Rejected a priori** | If probe reconstruction error on true encodings exceeds the true effect, `E_CF > 1` for every model including a perfect one, and the number measures the instrument. Every Task A result must carry the true effect size, the probe floor, and their ratio. This is how K8 was retired. [30](paper/experiments/30_task_a_counterfactual_fidelity.md) |
 
 ## 5. What went wrong
 
@@ -247,6 +266,9 @@ partial jobs remain evidence but must not be pooled with completed comparisons.
 | Latent physical validation | [21](paper/experiments/21_latent_position_validation.md) | Direct-vs-latent comparison, true/predicted latent heads, recursive physical curves, and filmstrips. | Complete 144-checkpoint MLP sweep plus linear control; current evidence that the latent pipeline loses position at the first transition. |
 | Decision-information localization | [22](paper/experiments/22_decision_information_localization.md) | Separates true-latent information, reward/progress interfaces, recursive rollout, and successive CEM populations. | Complete three-seed Gate 0d; current evidence for two distinct interface/rollout failures and optimizer exploitation. |
 | Planner coverage and Baseline B | [23](paper/experiments/23_planner_coverage_structured_surrogate.md) | Split-safe competent/CEM-query collection and behavior-vs-full structured physical control. | Complete three-seed registered gate; coverage improves intermediate metrics and motion, while safe control fails. |
+| Reference-profile repair | [27](paper/experiments/27_audit_gate_a0_reference_profile.md), [28](paper/experiments/28_full_structured_state_successor.md) | `lewm_reference` pinned to LeWM `8edfeb33` against vendored sources; `full32` removes the demonstrated `legacy14` linkage alias. | Implementation and one-seed sanity complete; no comparison authorized from them. |
+| Planner-tail localization | [29](paper/experiments/29_a1_2_full_state_tail_localization.md) | Late-CEM teacher-forced growth survives the Markov repair (2.28x in full32); better dynamics came with worse decisions and a higher false-safe rate. | Complete. Registered branch C **deferred** as Task B work by the 2026-09-21 direction; registration intact. |
+| **Task A — counterfactual fidelity** | [30](paper/experiments/30_task_a_counterfactual_fidelity.md) | True interaction Jacobian and measurement floor (T-A1), effect-normalized counterfactual fidelity across H0/H1/H2 (T-A2), counterfactual ordering (T-A3). | **Registered, running.** Jobs 1497 and 1498 submitted 2026-09-21; no result yet. |
 
 ## 8. Complete document catalog
 
@@ -269,6 +291,7 @@ Every Markdown file under `docs/paper/` appears below.
 
 | Document | Contains | Use now |
 |---|---|---|
+| [direction_2026-09-21.md](paper/direction_2026-09-21.md) | The Task A / Task B split, the H0/H1/H2 hypotheses and what actually separates them, centralized vs decentralized counterfactuals, the three-level Task A success ladder, the measurement-floor requirement, why JEPA (abstraction, not compute), and what relational must do to earn its place. | **Current statement of intent.** |
 | [direction.md](paper/direction.md) | Concise original research question, architecture, minimal experiment, scope. | Historical framing; its expected positive chain is not the result. |
 | [multi_agent_latent_mpc_proposal.md](paper/multi_agent_latent_mpc_proposal.md) | Full proposal: gap, hypotheses, architecture, objectives, CEM, evaluation, expected contributions, slide summary. | Design background; implementation revision is dated and later results supersede expectations. |
 | [multi_agent_world_model_impact_notes.md](paper/multi_agent_world_model_impact_notes.md) | Counterfactual-generalization framing, dataset regimes, oracle evaluation, plan ranking, compositionality, paper positioning. | Conceptual motivation; positive final claim is no longer current. |
@@ -307,7 +330,9 @@ Every Markdown file under `docs/paper/` appears below.
 | [20_agent_position_validation.md](paper/experiments/20_agent_position_validation.md) | Direct shared per-agent position model, physical metrics, paired seed analysis, and latent-model boundary. | Complete 144-fit registered sweep. |
 | [21_latent_position_validation.md](paper/experiments/21_latent_position_validation.md) | True-latent probe floor, predicted-latent planning head, direct-model comparison, recursive physical rollout, and rendered filmstrips. | Complete 144-checkpoint MLP result plus linear control. |
 | [22_decision_information_localization.md](paper/experiments/22_decision_information_localization.md) | True-latent versus rollout reward/progress ranking and CEM-stage population truth. | Current decision-level failure localization. |
-| [23_planner_coverage_structured_surrogate.md](paper/experiments/23_planner_coverage_structured_surrogate.md) | Planner-induced coverage collection, structured physical surrogate, held-out ranking, and closed-loop control. | Latest registered experiment; failed control gate with positive coverage effect. |
+| [23_planner_coverage_structured_surrogate.md](paper/experiments/23_planner_coverage_structured_surrogate.md) | Planner-induced coverage collection, structured physical surrogate, held-out ranking, and closed-loop control. | Registered experiment; failed control gate with positive coverage effect. |
+| [29_a1_2_full_state_tail_localization.md](paper/experiments/29_a1_2_full_state_tail_localization.md) | Paired legacy14/full32 tail localization; the optimizer tail survives the Markov repair. | Complete; branch C deferred as Task B work, registration intact. |
+| [30_task_a_counterfactual_fidelity.md](paper/experiments/30_task_a_counterfactual_fidelity.md) | Registered Task A ladder: true interaction Jacobian and floor (T-A1), effect-normalized counterfactual fidelity (T-A2), counterfactual ordering (T-A3), with decision rules fixed before any result. | **Latest registered experiment; running.** |
 
 ## 9. Documentation gaps
 
@@ -325,6 +350,14 @@ currently disagree.
 
 ### Unresolved scientific work
 
+- **Task A is the current work and is unreported.** Jobs 1497 (T-A1) and 1498
+  (T-A2 stage 1) were submitted 2026-09-21 against the registered design in
+  [experiment 30](paper/experiments/30_task_a_counterfactual_fidelity.md). T-A2
+  stage 2 and T-A3 are registered but not yet implemented.
+- **A1.2 branch C is deferred, not withdrawn.** The sampler-matched G6a on
+  `full32` and the G6c calibration run are Task B work on the structured
+  surrogate; the G6a implementation is already repaired and unrun. See
+  [direction](paper/direction_2026-09-21.md) §9.
 - **Iterative on-policy coverage remains open.** Job 1331's hard negatives came
   from the frozen latent/reward planner, not from the newly fitted structured
   planner whose errors CEM ultimately exploited.

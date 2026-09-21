@@ -8,6 +8,11 @@ Every job that produced a result, where its artifacts live, and which note
 documents it. Written 2026-09-16 because the results had spread across
 `outputs/`, wandb and three levels of `docs/` with no single place to look.
 
+**Current direction:** [`../direction_2026-09-21.md`](../direction_2026-09-21.md)
+— the project is split into Task A (learn the world model) and Task B (plan with
+it), Task A first, graded on counterfactual intervention fidelity rather than on
+the end-to-end chain. Its registered experiments are note `30`.
+
 **Start here:** [`../status_2026-09-16.md`](../status_2026-09-16.md) — where the
 project stands after jobs 1217-1233, with every claim's current confidence and
 what must not be claimed. Then [`../outline.md`](../outline.md) for which paper
@@ -60,6 +65,8 @@ without trusting the current tree.
 | 1237 | `balance_control_1237/` | Gate 1: simulator MPC on Balance, execute-5 vs execute-1, 32 independent train roots. COMPLETED 5:30 | [`13_balance_control_gate.md`](13_balance_control_gate.md) |
 | 1469 | `a0_reference_sanity_1469/` | Audit Gate A0 step 4: one-seed sanity run of the repaired `lewm_reference` profile. Trains stably, action-conditioned, no latent collapse; reward readout matches the historical Buzz Wire norm. COMPLETED 1:08 | [`27_audit_gate_a0_reference_profile.md`](27_audit_gate_a0_reference_profile.md) |
 | 1470 | `a1_tail_localization_1470/` | **A1.2**: paired legacy14/full32 tail localization. Teacher-forced error still grows 2.28x from CEM iteration 1 to 30 in full32 (3.11x in the capacity-matched legacy14), so the optimizer tail **survives** the Markov repair — registered branch C. full32 improves every physical metric but its false-safe elite rate rises to 0.623. COMPLETED 56:53 | [`29_a1_2_full_state_tail_localization.md`](29_a1_2_full_state_tail_localization.md) |
+| 1497 | `ta1_interaction_jacobian_1497/` | **T-A1**: the true interaction Jacobian on the simulator alone, all four blocks in common physical coordinates, on 117 held-out anchors. Decides which cells T-A2 may report. No learned model. SUBMITTED | [`30_task_a_counterfactual_fidelity.md`](30_task_a_counterfactual_fidelity.md) |
+| 1498 | `ta2_reference_baselines_1498/` | **T-A2 stage 1**: independent/joint/relational on the `lewm_reference` profile at matched capacity, 3 kinds x 2 regimes x 8 seeds. Checkpoints only; no counterfactual metric computed here. SUBMITTED | [`30_task_a_counterfactual_fidelity.md`](30_task_a_counterfactual_fidelity.md) |
 | — | `review_20260916/` | The review's own CPU diagnostics: policy identity, positional gradients, both rollout windows | [`../review_2026-09-16.md`](../review_2026-09-16.md) |
 
 Failed and cancelled jobs are listed because the audit requires failed-run
@@ -103,6 +110,8 @@ their directories remain on disk.
 | `26_g6a_planner_aware_aggregation.md` | Experiment 24/G6a audit repair: equal optimizer mass/steps for targeted and generic arms; rerun blocked on state repair |
 | `27_audit_gate_a0_reference_profile.md` | Audit Gate A0: preserve the compact legacy model and add reference architecture, real temporal MPC context, and SIGReg semantics |
 | `28_full_structured_state_successor.md` | Audit Gate A1: parallel full32 state with agents, ball, linkage bodies, and goal; implementation only |
+| `29_a1_2_full_state_tail_localization.md` | A1.2 paired legacy14/full32 tail localization; branch C, now deferred as Task B work |
+| `30_task_a_counterfactual_fidelity.md` | **Registered Task A ladder**: true interaction Jacobian and measurement floor (T-A1), counterfactual effect fidelity (T-A2), counterfactual ordering (T-A3) |
 
 Two notes share the number `02` and three share `05`. They are not renumbered
 here because other documents link to them by filename; new notes continue from

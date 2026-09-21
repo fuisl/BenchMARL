@@ -1,5 +1,14 @@
 # Experiment plan
 
+> **Restructured 2026-09-21.** [`direction_2026-09-21.md`](direction_2026-09-21.md)
+> splits the work into Task A (learn the world model) and Task B (plan with it),
+> with separate success criteria and Task A first. M5's "connect prediction,
+> ranking and control" framing is therefore Task B work and is paused; the
+> current registered experiments are the Task A ladder in
+> [`experiments/30_task_a_counterfactual_fidelity.md`](experiments/30_task_a_counterfactual_fidelity.md).
+> The milestones below remain the record of how the machinery was built and
+> validated, and M0-M4 are unchanged.
+
 Build on [direction.md](direction.md), the [proposal](multi_agent_latent_mpc_proposal.md), and the [impact notes](multi_agent_world_model_impact_notes.md). Use the broader [literature review](litreview.md) as background. Follow [coding_rules.md](coding_rules.md) for implementation.
 
 **Main question:** Does explicit interaction modelling improve prediction of unseen joint-action combinations, plan ranking, and closed-loop multi-agent MPC?
