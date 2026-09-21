@@ -85,8 +85,9 @@ When two documents disagree, use this order:
 
 1. **Experiment note for the correcting job** plus its saved artifacts.
 1b. **Current direction:** [direction, 2026-09-21](paper/direction_2026-09-21.md)
-   for what the project is trying to establish and in what order. It is an intent
-   document and never overrides a measured result.
+   for Task A, and [planning direction, 2026-09-21](paper/direction_planning_2026-09-21.md)
+   for the Task B architecture and gate order. Both are intent documents and
+   never override a measured result.
 2. **Latest project synthesis:**
    [project report, 2026-09-17](paper/project_report_2026-09-17.md).
 3. **Rolling claim ledger:**
@@ -117,6 +118,7 @@ Recommended reading paths:
 |---|---|---|---|
 | Current project state and final narrative | [project report](paper/project_report_2026-09-17.md) | [status](paper/status_2026-09-16.md), [outline](paper/outline.md) | Project report is the current synthesis; status and outline contain older layers. |
 | Current research question and ordering | [direction, 2026-09-21](paper/direction_2026-09-21.md) | [registered Task A ladder](paper/experiments/30_task_a_counterfactual_fidelity.md) | Current intent: Task A before Task B, graded on counterfactual fidelity with an explicit measurement floor. |
+| Planning architecture and gate order | [planning direction, 2026-09-21](paper/direction_planning_2026-09-21.md) | [registered planning ladder](paper/experiments/31_planning_ladder.md) | Current Task B intent. Gates 2-4 carry a hard precondition: no control compute until a model reaches `E_CF < 1` on the interaction cells. |
 | Original research question and scope | [direction](paper/direction.md) | [proposal](paper/multi_agent_latent_mpc_proposal.md), [impact notes](paper/multi_agent_world_model_impact_notes.md) | Historical intent. Their expected positive chain is now partly falsified. |
 | Literature and positioning | [literature review](paper/litreview.md) | [EBM review](paper/EBM.md), method references inside the review | Background, not experimental evidence. Several documents contain search-tool citation placeholders that need conversion before publication. |
 | CEM-MPC concepts and mathematics | [centralized CEM-MPC](paper/centralized-cem-mpc.md) | [oracle validation](paper/experiments/02_oracle_validation.md) | The explainer is conceptual. The implementation note supersedes its assumed LeWM hyperparameters and execution cadence. |
@@ -293,6 +295,7 @@ Every Markdown file under `docs/paper/` appears below.
 
 | Document | Contains | Use now |
 |---|---|---|
+| [direction_planning_2026-09-21.md](paper/direction_planning_2026-09-21.md) | Task B architecture (structured tokens, world token, relational transition, reward head and terminal value, receding-horizon CEM then MPPI, optional joint-model ensemble), the H1-H4 chain, selected regret as the success definition, and the control precondition. | **Current Task B intent.** |
 | [direction_2026-09-21.md](paper/direction_2026-09-21.md) | The Task A / Task B split, the H0/H1/H2 hypotheses and what actually separates them, centralized vs decentralized counterfactuals, the three-level Task A success ladder, the measurement-floor requirement, why JEPA (abstraction, not compute), and what relational must do to earn its place. | **Current statement of intent.** |
 | [direction.md](paper/direction.md) | Concise original research question, architecture, minimal experiment, scope. | Historical framing; its expected positive chain is not the result. |
 | [multi_agent_latent_mpc_proposal.md](paper/multi_agent_latent_mpc_proposal.md) | Full proposal: gap, hypotheses, architecture, objectives, CEM, evaluation, expected contributions, slide summary. | Design background; implementation revision is dated and later results supersede expectations. |
@@ -334,6 +337,7 @@ Every Markdown file under `docs/paper/` appears below.
 | [22_decision_information_localization.md](paper/experiments/22_decision_information_localization.md) | True-latent versus rollout reward/progress ranking and CEM-stage population truth. | Current decision-level failure localization. |
 | [23_planner_coverage_structured_surrogate.md](paper/experiments/23_planner_coverage_structured_surrogate.md) | Planner-induced coverage collection, structured physical surrogate, held-out ranking, and closed-loop control. | Registered experiment; failed control gate with positive coverage effect. |
 | [29_a1_2_full_state_tail_localization.md](paper/experiments/29_a1_2_full_state_tail_localization.md) | Paired legacy14/full32 tail localization; the optimizer tail survives the Markov repair. | Complete; branch C deferred as Task B work, registration intact. |
+| [31_planning_ladder.md](paper/experiments/31_planning_ladder.md) | Gates 0-4 with decision rules fixed before results: true-dynamics control (passed, K4), counterfactual fidelity including `E_CF(h)`, fixed candidate ranking with H3, optimizer-induced shift, closed-loop MPC on fresh roots. | **Registered; Gate 1 running.** |
 | [30_task_a_counterfactual_fidelity.md](paper/experiments/30_task_a_counterfactual_fidelity.md) | Registered Task A ladder: true interaction Jacobian and floor (T-A1), effect-normalized counterfactual fidelity (T-A2), counterfactual ordering (T-A3), with decision rules fixed before any result. | **Latest registered experiment; running.** |
 
 ## 9. Documentation gaps

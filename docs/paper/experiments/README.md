@@ -8,6 +8,10 @@ Every job that produced a result, where its artifacts live, and which note
 documents it. Written 2026-09-16 because the results had spread across
 `outputs/`, wandb and three levels of `docs/` with no single place to look.
 
+**Planning direction:** [`../direction_planning_2026-09-21.md`](../direction_planning_2026-09-21.md)
+— the Task B architecture and the Gates 0-4 ladder, registered in note `31`.
+Gates 2-4 are blocked until a model reaches `E_CF < 1` on the interaction cells.
+
 **Current direction:** [`../direction_2026-09-21.md`](../direction_2026-09-21.md)
 — the project is split into Task A (learn the world model) and Task B (plan with
 it), Task A first, graded on counterfactual intervention fidelity rather than on
@@ -69,6 +73,9 @@ without trusting the current tree.
 | 1498 | `ta2_reference_baselines_1498/` | **T-A2 stage 1**: independent/joint/relational on the `lewm_reference` profile at matched capacity, 3 kinds x 2 regimes x 8 seeds. COMPLETED, 48/48 checkpoints | [`30_task_a_counterfactual_fidelity.md`](30_task_a_counterfactual_fidelity.md) |
 | 1499 | — | **T-A2 stage 2**, first attempt. Died at bash parse time on an unbalanced quote; produced nothing and created no output directory | [`30_task_a_counterfactual_fidelity.md`](30_task_a_counterfactual_fidelity.md) |
 | 1500, 1501 | `ta2_fidelity_1500/`, `ta2_fidelity_1501/` | **T-A2 stage 2**, earlier passes. Numerically identical to 1502 on every shared metric; superseded only because 1501's gain bound was mislabelled as a global rescaling when it is a per-anchor oracle. Retained | [`30_task_a_counterfactual_fidelity.md`](30_task_a_counterfactual_fidelity.md) |
+| 1503 | `ta2b_localization_1503/` | **T-A2b**: current-latent sufficiency with a state-blind floor and a physical ceiling. RUNNING | [`30_task_a_counterfactual_fidelity.md`](30_task_a_counterfactual_fidelity.md) |
+| 1504 | — | T-A2c, first submission. Cancelled before start: requested 48G against 35G free while 1503 held the node. Produced nothing | [`31_planning_ladder.md`](31_planning_ladder.md) |
+| 1505 | `ta2c_horizon_1505/` | **Gate 1 extension**: `E_CF(h)` for h=1,2,3, 48 checkpoints, both probe families. RUNNING concurrently on the full A100 | [`31_planning_ladder.md`](31_planning_ladder.md) |
 | 1502 | `ta2_fidelity_1502/` | **T-A2 stage 2, the reported run**: E_CF per Jacobian block, 48 checkpoints, both probe families, 13,424 anchor-cells per arm. H1 loses to H0 on **0/8 seeds** everywhere and both conditioned arms exceed E_CF=1, so no arm resolves the cross-agent effect; but cosine +0.39..+0.45 against H0's exact 0.000 shows the failure is **gain, not absent information**. Relational beats joint 8/8, 8/8, 6/8, 7/8. Both probe families agree. COMPLETED | [`30_task_a_counterfactual_fidelity.md`](30_task_a_counterfactual_fidelity.md) |
 | — | `review_20260916/` | The review's own CPU diagnostics: policy identity, positional gradients, both rollout windows | [`../review_2026-09-16.md`](../review_2026-09-16.md) |
 
@@ -114,6 +121,7 @@ their directories remain on disk.
 | `27_audit_gate_a0_reference_profile.md` | Audit Gate A0: preserve the compact legacy model and add reference architecture, real temporal MPC context, and SIGReg semantics |
 | `28_full_structured_state_successor.md` | Audit Gate A1: parallel full32 state with agents, ball, linkage bodies, and goal; implementation only |
 | `29_a1_2_full_state_tail_localization.md` | A1.2 paired legacy14/full32 tail localization; branch C, now deferred as Task B work |
+| `31_planning_ladder.md` | **Registered planning ladder**: Gates 0-4, the H1-H4 chain, selected regret as the success definition, and the hard control precondition |
 | `30_task_a_counterfactual_fidelity.md` | **Registered Task A ladder**: true interaction Jacobian and measurement floor (T-A1), counterfactual effect fidelity (T-A2), counterfactual ordering (T-A3) |
 
 Two notes share the number `02` and three share `05`. They are not renumbered
