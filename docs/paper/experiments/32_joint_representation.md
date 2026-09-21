@@ -119,19 +119,21 @@ physical ceiling 0.4645 / +0.873.
 | 8 | 0.7235 | [0.603, 0.826] | **0.399** | +0.775 | 0.762 |
 | 12 | 0.7414 | [0.614, 0.848] | 0.357 | +0.777 | 0.766 |
 
-#### Registered verdict: PARTIAL, and it does not improve with more history
+#### Registered verdict: PARTIAL, and it does not improve over the tested windows
 
 The best recovery is **`R = 0.399` at `k = 8`**, inside the registered
 `0.2 < R < 0.5` band. Per the rule fixed before the run: **report the fraction
 and treat H3 as exploratory, not confirmatory.**
 
-The sweep adds something the single `k=3` measurement could not: the gain
-**saturates**. `R` climbs from 0.016 to roughly 0.3-0.4 by `k=3` and then moves
-within noise — 0.306, 0.251, 0.399, 0.357 across `k = 3, 5, 8, 12`. With 16 root
-episodes the intervals are wide and those four values are **not resolvable from
-one another**; the defensible statement is a rise then a plateau, not a rank
-ordering among the longer windows. No window length approaches the 0.5 gate, let
-alone the **0.871** that handing over the ball state achieves.
+The sweep adds something the single `k=3` measurement could not: recovery rises
+with short history and then shows **no resolved further improvement over the
+tested windows**. `R` climbs from 0.016 to roughly 0.3 by `k=3`, then 0.251,
+0.399, 0.357 at `k = 5, 8, 12`. With 16 root episodes the intervals are wide and
+those four values are **not resolvable from one another**, so this is an
+*observed plateau over `k ≤ 12`*, not evidence that recoverability fundamentally
+saturates — a longer window or a better-matched (e.g. recurrent) belief model
+could do better. The largest point estimate is `R = 0.399`; no tested window
+approaches the 0.5 gate, against **0.871** for handing over the ball state.
 
 #### Direction is nearly free; scale is what history cannot buy
 
@@ -156,21 +158,39 @@ positions, so motion *should* disambiguate it — and it partly does, which is w
 improving.
 
 So a learned `z_G` over observation history would be built on at most ~40% of
-the missing information. Combined with the constraint below — that a `z_G`
-pooled from same-timestep latents is a re-parameterization and cannot help at
-all — the honest reading is:
+the missing information recovered here. Combined with the constraint below —
+that a `z_G` pooled from same-timestep latents is a re-parameterization and
+cannot help at all — the supported reading is:
 
 ```math
-\boxed{\text{On Buzz Wire, no architecture over the agents' observations can be}}
-```
-```math
-\boxed{\text{counterfactually sufficient. The observation is the binding constraint.}}
+\boxed{\begin{array}{c}\text{On Buzz Wire, the standard observation stream is the binding}\\
+\text{\emph{empirical} constraint under the tested history windows.}\end{array}}
 ```
 
-That is the **task-design outcome** note 32 registered as acceptable. The
-indicated repair is to change what the agents observe — give them the ball, which
-`latent ⊕ ball` shows recovers 86-88% immediately — not to add machinery on top
-of an input that does not carry the answer.
+**Withdrawn as an overclaim (2026-09-21).** An earlier draft of this note wrote
+"no architecture over the agents' observations can be counterfactually
+sufficient." That is stronger than the experiment supports and is retracted.
+`R_history < 0.5` over `k ≤ 12` with a flattened-history MLP does **not** establish
+
+```math
+I(H_\infty;\,s_{\rm ball})\approx 0 .
+```
+
+A recurrent or otherwise better-matched belief model, a longer window, or a
+temporal statistic this diagnostic did not learn could extract more. What is
+established is a statement about **this** function class and **these** windows:
+
+> Within the tested 1-12 frame observation histories and diagnostic function
+> class, standard Buzz Wire observations recover only a minority of the
+> state-dependent cross-agent effect *magnitude*, whereas exposing the omitted
+> ball/linkage state recovers most of it.
+
+**The engineering decision is unchanged**, which is why the weaker claim is
+sufficient: adding architectural structure cannot recover information absent
+from the input, and we therefore do not treat further architectural complexity
+over the original Buzz Wire observation as a promising confirmatory route. The
+indicated intervention is at the **observation boundary** — `latent ⊕ ball`
+recovers 86-88% immediately — not inside the network.
 
 H3 and H4 remain registered. H3 is now explicitly **exploratory**: it may still
 be worth knowing whether a world token extracts that ~40% better than a flat

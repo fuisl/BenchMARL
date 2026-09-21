@@ -192,6 +192,56 @@ models evaluated on the held-out joint-action region, paired by seed.
 | H1 ≈ H0 | the latent model does not recover a cross-agent effect the simulator has; a **representation** failure, not a factorization one |
 | all arms `E_CF ≥ 1` | no arm resolves the effect; report and go to §"if Task A fails" |
 
+## Audit finding F13 — T-A2 evaluated the reference models on a fabricated context
+
+**Found 2026-09-21 by audit, not by a failing run. Affects T-A2 (job 1502) and
+T-A2c (job 1505). Does NOT affect T-A1, T-A2b, G0 or G0b.**
+
+`counterfactual_fidelity.rolled_latent` gives a `lewm_reference` model the
+episode-start convention at every anchor: the current frame repeated
+`history_size` times, with **zero** past actions. That convention is correct at a
+true episode boundary, and `model_input.PlanningContext` registers it for exactly
+that case.
+
+But the anchors are **restored mid-episode states**. Of the 117 test anchors,
+**85 (73%) have `source_step > 0`**, median 20. Meanwhile
+`train.reference_training_view` always feeds real 4-frame windows with real past
+actions. So a model trained exclusively on genuine temporal context was
+evaluated on a degenerate one that asserts *nothing has moved and no actions
+were taken* — false for a mid-episode anchor with agents in motion.
+
+**Scope, checked against the code rather than assumed:**
+
+| Result | Path | Affected? |
+|---|---|---|
+| T-A1 (job 1497) | simulator only, no model | **No** |
+| T-A2 (job 1502) | `rolled_latent` | **Yes** |
+| T-A2c horizons (job 1505) | `rolled_latent` | **Yes** |
+| T-A2b / G0 / G0b latent conditions | `encoded()` on a single frame, no rollout | **No** |
+
+The localization results are therefore clean, and the observability conclusion
+that drives the current course correction does not rest on the affected path.
+
+**What it can and cannot change.** T-A2b bounds what *any* predictor reading
+`z_t` could score on this metric at roughly **0.89** — that is what a fitted head
+with the same information achieves. T-A2's models scored **1.05-1.19**. The gap
+of ~0.16-0.30 is attributable to the predictor, the probe and the context
+together, and the fabricated context is now a named candidate for part of it. So
+F13 may mean the conditioned models are **better than T-A2 reported** — but it
+cannot lift them past the ~0.89 information ceiling, so it does not overturn
+"the observation is the binding constraint."
+
+Comparisons within T-A2 are **fair**: every arm received the identical context,
+and H0 predicts exactly zero cross-response regardless. So K21 (H1 never beats
+H0, 0/8 everywhere) and K22 (relational beats joint) are unaffected in
+direction. The *absolute* `E_CF` levels, and the horizon decay in K24, are the
+quantities placed in doubt.
+
+**Registered repair.** `history_window` is now validated and available, so the
+repair is to give `rolled_latent` the real pre-anchor context at mid-episode
+anchors and rerun T-A2 at `h = 1,2,3`. Until that runs, T-A2's absolute `E_CF`
+levels carry this caveat and must not be quoted without it.
+
 ## T-A2b — counterfactual information localization (registered)
 
 **Status: registered 2026-09-21, before Test A exists.** T-A2 scored the
