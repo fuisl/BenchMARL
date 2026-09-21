@@ -242,6 +242,68 @@ repair is to give `rolled_latent` the real pre-anchor context at mid-episode
 anchors and rerun T-A2 at `h = 1,2,3`. Until that runs, T-A2's absolute `E_CF`
 levels carry this caveat and must not be quoted without it.
 
+### F13 repair: registered before the corrected run (2026-09-21)
+
+**Preregistered comparisons.** The corrected run is judged on the same two
+paired quantities the original T-A2 used, so "does it replicate" is answerable
+rather than negotiable:
+
+```math
+\Delta_{10}=E_{\rm CF}^{H1}-E_{\rm CF}^{H0},
+\qquad
+\Delta_{21}=E_{\rm CF}^{H2}-E_{\rm CF}^{H1}
+```
+
+on the cross block, paired by seed, both probe families, both regimes.
+
+| Condition | Verdict |
+|---|---|
+| signs and seed counts of `Δ10`, `Δ21` survive | **K21 and K22 are strengthened** — they replicate under the correct reference context |
+| a sign flips or seed consistency collapses | the malformed context **interacted with architecture**; K21/K22 are re-opened and the original numbers withdrawn |
+| absolute `E_CF` falls but stays above ~0.89 | consistent with the T-A2b diagnostic reference; F13 hurt the predictor, the information limit still binds |
+| absolute `E_CF` falls **below** ~0.89 | the T-A2b reference bound is not what it appears; re-examine that diagnostic before anything else |
+
+**K21/K22 are not declared untouched in the meantime.** Equal corruption across
+arms does not imply equal *bias*: H1 and H2 consume conditioning information
+that H0 structurally ignores, so a degenerate context could plausibly penalise
+them differently. Their directional status is provisional until this run lands.
+
+**On the ~0.89 figure.** It is an **empirical diagnostic reference under the
+tested head**, not an information-theoretic ceiling — the same scoping that
+retracted the K30 overclaim applies here. It bounds what that fitted head
+achieved from `z_t`, not what is achievable in principle.
+
+**T-A2c is rerun too, not just `h=1`.** K24 is more exposed than the one-step
+result: a malformed initial context propagates through recursive rollout, so the
+observed horizon decay may mix true compounding with initial-context OOD.
+Correcting the context is what separates them.
+
+### A second stride defect found while building the repair
+
+The reference trainer's "frames" are **block boundaries**, not primitive steps:
+`dataset.py` builds the observation sequence as
+`[observation[0]] + next_observation[block-1::block]`, and actions are blocked to
+`(L, N, block*A)`. So a 3-frame context spans **15 primitive steps at stride 5**,
+not 3 consecutive steps.
+
+The G0/G0b history diagnostic deliberately uses **stride 1**, which is a valid
+answer to its own question ("is the effect recoverable from recent observations")
+but is **not** the model's context layout. Building the T-A2 repair on that
+window would have introduced a second defect of exactly F13's kind. The repair
+therefore uses a separate **block-strided** context builder, with the same
+alignment assertion.
+
+**Consequence for G0b that must be carried forward:** its longest tested window,
+`k = 12` at stride 1, spans 12 primitive steps — *shorter in wall-clock than the
+model's own 3-frame context of 15 steps*. So G0b's plateau is a statement about
+short, dense windows, and it may understate what is available at the model's own
+stride. The observation-contract gate should test block-strided history as well.
+
+**Hard contract, registered.** `source_step > 0` now **forbids** the
+synthetic-start context. Only a genuine episode start may use a repeated first
+observation with null past actions. This applies to candidate ranking and MPC
+evaluation too, not only to T-A2.
+
 ## T-A2b — counterfactual information localization (registered)
 
 **Status: registered 2026-09-21, before Test A exists.** T-A2 scored the
