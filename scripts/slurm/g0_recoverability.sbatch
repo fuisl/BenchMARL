@@ -48,6 +48,8 @@ jacobian="${G0_JACOBIAN:?Set TA2B_JACOBIAN to the T-A1 interaction_jacobian.json
 data="${G0_DATA:-outputs/buzz_wire_1196/data}"
 horizon="${G0_HORIZON:-1}"
 seed="${G0_SEED:-7301}"
+# 3 matches the reference profile history_size; 1 disables the condition.
+history_frames="${G0_HISTORY_FRAMES:-3}"
 output="${SLURM_SUBMIT_DIR}/outputs/g0_recoverability_${SLURM_JOB_ID}"
 mkdir -p "$output/source"
 exec > >(tee -a "$output/batch.log") 2>&1
@@ -76,6 +78,7 @@ trap 'kill "$gpu_monitor_pid" 2>/dev/null || true' EXIT
 srun --ntasks=1 .venv/bin/python -u -m examples.world_model.counterfactual_localization \
     "$runs" --data "$data" --jacobian "$jacobian" \
     --out "$output/result" --horizon "$horizon" --seed "$seed" \
+    --history-frames "$history_frames" \
     --device cuda 2>&1 | tee "$output/run.log"
 
 test -s "$output/result/counterfactual_localization.json"
