@@ -247,8 +247,10 @@ from examples.world_model.counterfactual_localization import (  # noqa: E402
 )
 
 
-def _localization_branch(anchors=6, steps=5, agents=2, bodies=1):
+def _localization_branch(anchors=6, steps=5, agents=2, bodies=1, obs=6):
+    """Mirrors what `collect.rollout_actions` records, including `observation`."""
     return {
+        "observation": torch.randn(anchors, steps, agents, obs),
         "next_agent_state": torch.randn(anchors, steps, agents, 6),
         "next_package_state": torch.randn(anchors, steps, bodies, 6),
         "agent_state": torch.randn(anchors, steps, agents, 6),
@@ -276,6 +278,8 @@ def test_build_rows_keeps_the_action_block_width_across_cells():
         branches, 5, 4, 2, scale, torch.arange(6), None
     )
     assert rows["actions_only"].shape == (24, 40)
+    # 2 agents x 6 observation dims, plus the 40 action columns.
+    assert rows["observation_raw"].shape == (24, 12 + 40)
     assert target.shape == (24, 12)
     assert columns["cross"].shape == columns["self"].shape == (24, 4)
     assert episodes.shape[0] == 24

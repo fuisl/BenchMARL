@@ -188,7 +188,14 @@ def latent_features(model, branches, shaped, device):
 
 def build_rows(branches, block, step, agents, scale, episode_ids, latents):
     """Stack every (anchor, reference, cell) into one design matrix per input."""
-    rows = {"actions_only": [], "physical": [], "latent": [], "latent_plus_state": []}
+    rows = {
+        "actions_only": [],
+        "observation_raw": [],
+        "physical": [],
+        "latent": [],
+        "latent_plus_agentphys": [],
+        "latent_plus_state": [],
+    }
     targets, episodes = [], []
     columns = {"cross": [], "self": []}
     for key, endpoints in sorted(branches.items()):
@@ -213,7 +220,20 @@ def build_rows(branches, block, step, agents, scale, episode_ids, latents):
             ],
             dim=1,
         ).double()
+        observation = endpoints["low"]["observation"][:, 0].reshape(
+            actions.shape[0], -1
+        ).double()
+        agent_physical = endpoints["low"]["agent_state"][:, 0].reshape(
+            actions.shape[0], -1
+        ).double()
         rows["actions_only"].append(actions[mask])
+        # The RAW observation, unencoded. If it beats the latent, the encoder is
+        # discarding cross-agent information it was given -- a JEPA result. If
+        # they match, the encoder preserved what was there and the deficit is
+        # the observation itself.
+        rows["observation_raw"].append(
+            torch.cat([observation, actions], dim=1)[mask]
+        )
         rows["physical"].append(torch.cat([physical, actions], dim=1)[mask])
         if latents is not None:
             rows["latent"].append(torch.cat([latents[key], actions], dim=1)[mask])
@@ -227,6 +247,12 @@ def build_rows(branches, block, step, agents, scale, episode_ids, latents):
             ).double()
             rows["latent_plus_state"].append(
                 torch.cat([latents[key], shared_state, actions], dim=1)[mask]
+            )
+            # Agent rotation and angular velocity, which the observation omits
+            # but which are NOT the mediating body. Separates "the ball is
+            # required" from "any omitted physical state would do".
+            rows["latent_plus_agentphys"].append(
+                torch.cat([latents[key], agent_physical, actions], dim=1)[mask]
             )
         targets.append(true_delta[mask])
         groups = column_groups(agents, 0, intervened)
@@ -342,7 +368,7 @@ def run(args):
         shared[name] = build_rows(
             branches[name], block, step, agents, scale, episode_ids[name], None
         )
-    for condition in ("actions_only", "physical"):
+    for condition in ("actions_only", "observation_raw", "physical"):
         net, decay, stats = select_and_fit(
             shared["train"][0][condition], shared["train"][1],
             shared["train"][3], args.device, args.seed,
@@ -383,7 +409,7 @@ def run(args):
                 branches[name], block, step, agents, scale, episode_ids[name], latents
             )
         key = f"{config['data']['regime']}__{config['model']['kind']}__{config['seed']}"
-        for condition in ("latent", "latent_plus_state"):
+        for condition in ("latent", "latent_plus_agentphys", "latent_plus_state"):
             net, decay, stats = select_and_fit(
                 fitted["train"][0][condition], fitted["train"][1],
                 fitted["train"][3], args.device, args.seed,
