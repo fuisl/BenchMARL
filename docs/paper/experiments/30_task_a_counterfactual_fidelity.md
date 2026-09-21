@@ -282,6 +282,46 @@ If either precondition fails, the correct report is "the diagnostic did not
 work", not a claim about `z_t`. The smoke numbers above are a pipeline check on
 a superseded head and are **not** evidence.
 
+### T-A2b-2 — the mechanism test, registered before T-A2b reports
+
+If Test A returns `R ≈ 0` for every arm, the registered verdict is
+"representation failure". That is a *localization*, not a mechanism, and the
+obvious mechanism here is observability rather than the JEPA objective.
+
+Buzz Wire's observation is exactly
+
+```python
+[agent.state.pos, agent.state.vel, agent.state.pos - goal.state.pos]
+```
+
+— six dimensions, verified against the installed `vmas==1.5.2` scenario source.
+It contains **no ball, no linkage body and no partner**. The ball is rigidly
+jointed to both agents and is the variable that mediates the cross-agent effect.
+Two agent positions constrain the ball but do not determine it (two circles meet
+in up to two points) and say nothing about its velocity. So a per-agent encoder
+over these observations may be *structurally incapable* of counterfactual
+sufficiency, independently of the encoder, the objective or the conditioner.
+
+**Registered test.** Add one input condition to Test A:
+
+```math
+g(z_t \oplus s^{\rm ball}_t,\ a^{\rm low},\ a^{\rm high})\rightarrow \Delta Y
+```
+
+— the same head, same budget, same selection, on the latent **concatenated with
+the recorded ball and linkage state**.
+
+| Condition | Verdict |
+|---|---|
+| `latent ⊕ ball` reaches the `physical` ceiling | the deficit **is** the missing mediating state; the encoder and JEPA objective are exonerated, and the world token `z^G` in the planning direction is the indicated repair |
+| `latent ⊕ ball` stays at the blind floor | the ball is not the missing ingredient; the encoder discards something else, and this becomes a genuine result about the JEPA abstraction |
+| in between | report the recovery fraction; claim neither |
+
+This distinction matters for what the paper says. "A latent world model was not
+counterfactually sufficient" is a much weaker and less interesting claim than
+either "because the observation omitted the mediating state, which a world token
+fixes" or "even given the mediating state, the learned abstraction discarded it."
+
 ### Why T-A3 is not next
 
 T-A3 was registered as conditional on an arm passing T-A2; none did. Beyond the
