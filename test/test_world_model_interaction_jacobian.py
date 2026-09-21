@@ -202,11 +202,13 @@ def test_bootstrap_reports_an_empty_cell_instead_of_crashing_the_report():
     assert empty["mean"] != empty["mean"]  # NaN, not a silent zero
 
 
-def test_rescaling_bound_matches_the_closed_form():
-    """min over r of ||r*u - v|| / ||v|| is sqrt(1 - cos^2), attained at r = cos.
+def test_oracle_per_anchor_gain_bound_matches_the_closed_form():
+    """min over r of ||r*u - v|| / ||v|| is sqrt(1 - cos^2), at a per-anchor r.
 
-    This is what separates "the model has no cross-agent information" from
-    "it has the information and the wrong gain".
+    The minimising r depends on the TRUE response, so this is an oracle bound.
+    It separates "the model has no cross-agent information" from "it has the
+    information and the wrong gain"; it does not claim one global scalar would
+    do as well.
     """
     torch.manual_seed(0)
     true = torch.randn(64, 4).double()

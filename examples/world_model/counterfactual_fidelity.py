@@ -260,8 +260,7 @@ def score_checkpoint(directory, args, samples, train_rows, branches, agents,
             cells[(reference, intervened, axis, name)] = {
                 # ||dY_predicted|| / ||dY_true||. With E_CF and cosine this
                 # separates a response of the wrong SIZE from one pointing the
-                # wrong WAY -- two failures a single ratio cannot tell apart,
-                # and only one of which a rescaling could fix.
+                # wrong WAY -- two failures a single ratio cannot tell apart.
                 "magnitude_ratio": (
                     predicted_delta[:, columns].norm(dim=1) / denominator
                 )[mask],
@@ -333,12 +332,14 @@ def summarize(scored, episode_ids, args):
                         "resolution_ratio": 1.0 / max(floor_mean, 1e-12),
                         "cosine_mean": float(pool["cosine"].mean()),
                         "magnitude_ratio_mean": float(pool["magnitude_ratio"].mean()),
-                        # Best E_CF a single rescaling of this arm's response
-                        # could reach: min over r of ||r*u - v||/||v|| is
-                        # sqrt(1 - cos^2) at r = cos. Below 1 means the
-                        # DIRECTION already carries enough to beat predicting
-                        # nothing, and the shortfall is calibration.
-                        "best_rescaled_e_cf": float(
+                        # E_CF if the gain were corrected SEPARATELY AT EVERY
+                        # ANCHOR: min over r of ||r*u - v||/||v|| is
+                        # sqrt(1 - cos^2), attained at a per-anchor r. This is
+                        # an ORACLE bound -- it needs the true response to pick
+                        # each r, so it is not deployable and is not a claim
+                        # that one global scalar would do as well. It isolates
+                        # how much of the gap is direction and how much is gain.
+                        "oracle_per_anchor_gain_e_cf": float(
                             (1.0 - pool["cosine"].clamp(-1, 1) ** 2).clamp_min(0).sqrt().mean()
                         ),
                         "fraction_below_one": float((pool["e_cf"] < 1.0).double().mean()),
@@ -453,7 +454,7 @@ def print_report(results):
             f"  {name:<40} E_CF {arm['mean']:.4f} [{arm['low']:.4f}, {arm['high']:.4f}]  "
             f"floor {arm['probe_floor_mean']:.4f}  "
             f"cos {arm['cosine_mean']:+.3f}  mag {arm['magnitude_ratio_mean']:.3f}  "
-            f"rescaled {arm['best_rescaled_e_cf']:.3f}  "
+            f"oracle-gain {arm['oracle_per_anchor_gain_e_cf']:.3f}  "
             f"<1 in {arm['fraction_below_one']:.3f}  n={arm['anchors']}"
         )
     print("\nPaired seed comparisons (negative delta favours the first arm)\n")
