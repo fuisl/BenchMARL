@@ -160,6 +160,78 @@ Two design differences could produce that, and they are not separated:
 `Y` also differs — full informative body state here, MOTION-only there — though
 on Buzz Wire the agent columns coincide (rotation is constant and dropped).
 
+### G0d result (job 1515): cell pooling confirmed — and it changes the conclusion
+
+Intervention design, anchors, seeds, scale, head family and `--fit-target` all
+held fixed; only which `(agent, axis)` cells enter the fit changes.
+
+| arm | `R_O` | `R_H` |
+|---|---:|---:|
+| pooled, all 4 cells — **G0/G0b's convention** | **0.293** | 0.316 |
+| single cell `1:0` | **0.605** | 0.627 |
+| single cell `0:0` | **0.638** | 0.697 |
+
+The pooled arm reproduces job 1514 exactly, and the two mirrored single cells
+agree with each other, so this is not direction-specific. **Cell pooling roughly
+halves the measured recovery.**
+
+#### The instrument is now fully explained
+
+| convention | `R_O` |
+|---|---:|
+| pooled head, fitted to the full `ΔY` — **G0b as published** | **0.016** |
+| pooled head, fitted to the cross block | 0.293 |
+| per-cell head, fitted to the cross block | **0.605–0.638** |
+| per-cell, sampled reference, full informative `Y` — the benchmark | 0.683 |
+
+Nothing unexplained remains. The residual 0.605 → 0.683 is the `Y` definition
+and reference count.
+
+#### This overturns the headline conclusion, and that must be said plainly
+
+K30 states that Buzz Wire's observation is the binding empirical constraint. It
+rests on recovery fractions measured under a convention that is **doubly
+depressive**: a head fitted to the whole next-state response, serving four
+heterogeneous intervention cells at once.
+
+Under a per-cell, cross-fitted head the observation recovers **0.605–0.638** of
+the blind-to-reference gap — a clear majority, and above the 0.5 gate this note
+registered. The honest revision is:
+
+> Buzz Wire's observation carries a **majority** of the cross-agent effect that
+> the privileged state carries. Exposing the ball adds the remainder. It is not
+> true that the observation carries essentially nothing.
+
+**Which convention is correct is a real question, not a formality.** They answer
+different things:
+
+* **Per-cell** asks *is the information present?* It is an upper bound on
+  availability and is the right gate for an information audit, because pooling
+  charges the input for a representational burden that is not about information.
+* **Pooled** asks *can one function serve the whole intervention space?* That is
+  closer to what a world model actually faces.
+
+For G0's registered purpose — "is the mediating state recoverable from
+legitimate observations?" — **per-cell is the correct convention**, and the
+admission benchmark already uses it. G0/G0b used the other one without ever
+choosing it.
+
+#### Consequences, recorded before any re-measurement
+
+* **K28, K29 and K30 are provisionally in doubt for every absolute fraction and
+  every gate decision derived from one.** Their relative orderings were measured
+  under one consistent instrument and survive.
+* **T-A2b's latent conclusion is the one to re-measure first.** Its `R ≈ 0.02`
+  for the latent and `R ≈ 0.86` for latent-plus-ball were both pooled full-`ΔY`
+  fits. The *ordering* is almost certainly robust; whether the latent clears any
+  gate is not.
+* **The admission benchmark's convention is now justified rather than
+  accidental**, and the note records why.
+
+This is the third revision of this claim, and each one moved because of the
+instrument rather than the task. That is itself the most transferable result
+this project has produced.
+
 ### Sampled-reference ladder: the change landed, the control still fails
 
 The information ladder now uses G0's sampled-reference design; the 3x3 midpoint
