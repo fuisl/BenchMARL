@@ -259,9 +259,91 @@ drifted from the vendored sources cannot produce checkpoints.
 
 ## Results
 
-*(none yet — this note is registered ahead of its runs)*
-
 | Job | Step | Status |
 |---|---|---|
-| — | T-A1 | submitted |
-| — | T-A2 stage 1 | submitted |
+| 1497 | T-A1 | **COMPLETE** |
+| 1498 | T-A2 stage 1 | **COMPLETE** — 48/48 checkpoints |
+| 1499 | T-A2 stage 2 | running |
+
+### T-A1 (job 1497): the cross blocks are large, and active everywhere
+
+117 test anchors over **16 root episodes**, 4 reference actions, horizons 1–5
+blocks. Replay determinism exactly `0.0` on next agent state, next package
+state and reward. Artifacts: `outputs/ta1_interaction_jacobian_1497/`.
+
+Scaled `|ΔY|` per unit action-range step, at one action block (5 primitive
+steps), with 95% episode-clustered intervals:
+
+| Block | Intervention → responder | mean | 95% CI | active |
+|---|---|---:|---|---:|
+| self | `a0` x → agent 0 | 3.969 | [3.640, 4.321] | 1.000 |
+| **cross** | **`a0` x → agent 1** | **2.231** | [2.068, 2.362] | **1.000** |
+| self | `a1` x → agent 1 | 4.094 | [3.801, 4.441] | 1.000 |
+| **cross** | **`a1` x → agent 0** | **2.152** | [2.018, 2.273] | **1.000** |
+| self | `a0` y → agent 0 | 7.005 | [6.887, 7.116] | 1.000 |
+| cross | `a0` y → agent 1 | 0.815 | [0.699, 0.948] | 1.000 |
+| self | `a1` y → agent 1 | 6.923 | [6.834, 6.998] | 1.000 |
+| cross | `a1` y → agent 0 | 0.846 | [0.751, 0.961] | 1.000 |
+
+**The off-diagonal is real and it is everywhere.** Every cross cell is active on
+**100%** of anchors, and the two agents are near-symmetric (2.231 against 2.152
+in x; 0.815 against 0.846 in y), which is what a shared rigid linkage should
+produce and is a free correctness check on the measurement.
+
+**The coupling is strongly axis-dependent.** In x, cross reaches 56% of self
+(2.231 / 3.969). In y it reaches 12% (0.815 / 7.005). That is physically
+coherent for a horizontal wire: lateral motion drags the partner through the
+rigid links, vertical motion largely does not. **This is not something the task
+description told us, and it is the kind of structure that a single
+"is there interaction?" number would have hidden.**
+
+**Cross-agent effects compound with horizon:**
+
+| horizon (blocks) | mean self | mean cross | cross/self | cross share of total |
+|---:|---:|---:|---:|---:|
+| 1 | 5.498 | 1.511 | 0.275 | 0.216 |
+| 2 | 5.095 | 1.817 | 0.357 | 0.263 |
+| 3 | 3.936 | 1.886 | 0.479 | 0.324 |
+| 4–5 | — | — | — | — |
+
+Horizons 4 and 5 are **not measured**: under the maximal constant-action
+intervention every anchor has terminated by then, and they are reported as NaN
+with a zero count rather than as a silent zero.
+
+The historical bank convention — reflecting agent 1's sampled x about the action
+midpoint — gives 1.120 at h1, the same order as the endpoint measurement, so the
+two conventions agree about the existence and scale of the effect.
+
+#### Registered verdict
+
+**K20 supported.** The cross blocks are far from zero, active on every anchor,
+and above the probe floor by roughly 5x in the pilot measurement of that floor.
+Buzz Wire can carry Task A, and **H0 is structurally misspecified here by a
+large margin**: it sets to exactly zero a quantity that accounts for 21.6% of
+the total measured response at one block and 32.4% at three.
+
+T-A2 is authorized on the self and cross cells. The shared-body (ball and
+linkage) cells are **not** authorized: the probe floor there is about 0.56
+relative, a resolution ratio of 1.8x, which fails the registered 3x rule. That
+exclusion was made by the rule, not by inspecting any model result.
+
+#### Boundaries on this result
+
+* **16 root episodes.** 117 anchors is not 117 independent samples; the
+  intervals above rest on 16 clusters. This bounds precision, not direction.
+* **One task, one bank.** Nothing here generalizes to Wheel, Dropout or
+  Transport, where earlier probes found few or no active anchors (K9).
+* **Endpoint interventions are maximal.** They make the blocks comparable and
+  they are why deep horizons terminate. A smaller step would measure a more
+  local derivative and survive longer.
+* **This is the simulator, not a model.** T-A1 says the effect exists. It says
+  nothing about whether any learned model recovers it.
+
+#### Defect found and repaired
+
+Job 1497 computed and wrote the complete Jacobian, then crashed formatting a
+horizon-4 cell whose anchors had all terminated: the empty-group return path
+omitted the anchor count the report reads. The repair touches only that path, so
+every computed value in the job's JSON is unaffected and the artifact is kept
+rather than regenerated. Pinned by
+`test_bootstrap_reports_an_empty_cell_instead_of_crashing_the_report`.
