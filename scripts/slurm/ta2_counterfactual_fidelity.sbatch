@@ -37,7 +37,7 @@ export PYTHONUNBUFFERED=1
 export PYTHONPATH="${SLURM_SUBMIT_DIR}${PYTHONPATH:+:$PYTHONPATH}"
 
 runs="${TA2_RUNS:?Set TA2_RUNS to the stage-1 runs directory}"
-jacobian="${TA2_JACOBIAN:?Set TA2_JACOBIAN to T-A1's interaction_jacobian.json}"
+jacobian="${TA2_JACOBIAN:?Set TA2_JACOBIAN to the T-A1 interaction_jacobian.json}"
 data="${TA2_DATA:-outputs/buzz_wire_1196/data}"
 horizon="${TA2_HORIZON:-1}"
 references="${TA2_REFERENCES:-4}"
