@@ -368,3 +368,89 @@ def test_history_window_shape_and_episode_start_clamping(tmp_path):
     # All three frames are the same clamped frame, and it is the observed one.
     assert torch.equal(frames[0], frames[2])
     assert torch.allclose(frames[2], observed[0].double())
+
+
+# --- F13: authentic reference context ---------------------------------------
+
+from examples.world_model.counterfactual_fidelity import (  # noqa: E402
+    SOURCE_REGIMES as CF_SOURCE_REGIMES,
+    reference_context,
+)
+
+
+def _cf_bank(tmp_path, episodes=4, steps=40, agents=2, obs=6, act=2):
+    for index, name in enumerate(CF_SOURCE_REGIMES):
+        torch.save(
+            {
+                "observation": torch.arange(
+                    episodes * steps * agents * obs, dtype=torch.float32
+                ).reshape(episodes, steps, agents, obs)
+                + index * 100000.0,
+                "action": torch.arange(
+                    episodes * steps * agents * act, dtype=torch.float32
+                ).reshape(episodes, steps, agents, act)
+                + index * 100000.0,
+            },
+            tmp_path / f"trajectories_{name}.pt",
+        )
+
+
+def test_reference_context_uses_the_block_stride_not_consecutive_steps(tmp_path):
+    """A reference frame is a BLOCK BOUNDARY.
+
+    `dataset.py` builds the sequence as [observation[0]] +
+    next_observation[block-1::block], so a 3-frame context spans 2*block
+    primitive steps. Using the stride-1 diagnostic window here would reproduce
+    F13 in a new place.
+    """
+    _cf_bank(tmp_path)
+    block, history = 5, 3
+    source = torch.load(
+        tmp_path / f"trajectories_{CF_SOURCE_REGIMES[0]}.pt", weights_only=True
+    )
+    anchors = {
+        "episode_id": torch.tensor([0]),
+        "source_step": torch.tensor([20]),
+        "source_regime": torch.tensor([0]),
+    }
+    observed = source["observation"][0, 20].unsqueeze(0)
+    frames, actions = reference_context(
+        anchors, torch.tensor([0]), tmp_path, history, block, observed
+    )
+    assert frames.shape == (1, history, 2, 6)
+    assert actions.shape == (1, history - 1, 2, block * 2)
+    # Frames at steps 10, 15, 20 -- stride `block`, not 18, 19, 20.
+    for position, step in enumerate((10, 15, 20)):
+        assert torch.equal(frames[0, position], source["observation"][0, step])
+
+
+def test_reference_context_rejects_a_misaligned_anchor(tmp_path):
+    _cf_bank(tmp_path)
+    anchors = {
+        "episode_id": torch.tensor([0]),
+        "source_step": torch.tensor([20]),
+        "source_regime": torch.tensor([0]),
+    }
+    with pytest.raises(ValueError, match="misaligned"):
+        reference_context(
+            anchors, torch.tensor([0]), tmp_path, 3, 5, torch.zeros(1, 2, 6)
+        )
+
+
+def test_reference_context_clamps_at_an_episode_start(tmp_path):
+    """At step 0 every frame clamps to the first, which is the only case where
+    the synthetic-start convention is legitimate."""
+    _cf_bank(tmp_path)
+    source = torch.load(
+        tmp_path / f"trajectories_{CF_SOURCE_REGIMES[0]}.pt", weights_only=True
+    )
+    anchors = {
+        "episode_id": torch.tensor([0]),
+        "source_step": torch.tensor([0]),
+        "source_regime": torch.tensor([0]),
+    }
+    frames, _ = reference_context(
+        anchors, torch.tensor([0]), tmp_path, 3, 5,
+        source["observation"][0, 0].unsqueeze(0),
+    )
+    assert torch.equal(frames[0, 0], frames[0, 2])

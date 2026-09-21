@@ -176,8 +176,70 @@ def verify_against_jacobian(branches, agents, block, scale_agent, recorded, hori
     return len(observed)
 
 
+# Anchor `source_regime` indexes these in this order, verified bit-exactly
+# against each branch's own step-0 observation.
+SOURCE_REGIMES = ("independent", "correlated")
+
+
+def reference_context(anchors, rows, data_root, history_size, block, observed):
+    """The model's OWN context layout at a restored anchor: block-strided.
+
+    Audit F13: `rolled_latent` used to hand `lewm_reference` the episode-start
+    convention -- current frame repeated, zero past actions -- at anchors that
+    are 73% mid-episode. Training always fed real windows, so the model was
+    evaluated out of distribution.
+
+    The stride matters and is easy to get wrong. `dataset.py` builds the
+    reference sequence as ``[observation[0]] + next_observation[block-1::block]``
+    with actions blocked to ``(L, N, block*A)``, so a frame is a BLOCK BOUNDARY.
+    A 3-frame context spans ``2*block`` primitive steps, not 2. Reusing the
+    stride-1 window that the G0 diagnostic uses would reproduce F13 in a new
+    place.
+
+    Returns observations ``(B, history_size, N, O)`` and blocked past actions
+    ``(B, history_size-1, N, block*A)``, both ending at the anchor.
+    """
+    episode = anchors["episode_id"][rows]
+    step = anchors["source_step"][rows]
+    regime = anchors["source_regime"][rows]
+    trajectories = {
+        index: torch.load(
+            data_root / f"trajectories_{name}.pt", map_location="cpu", weights_only=True
+        )
+        for index, name in enumerate(SOURCE_REGIMES)
+    }
+
+    frames, actions = [], []
+    for e, s, r in zip(episode.tolist(), step.tolist(), regime.tolist()):
+        source = trajectories[r]
+        frame_steps = [max(0, s - offset * block) for offset in reversed(range(history_size))]
+        frames.append(source["observation"][e, frame_steps])
+        # Each past position carries the `block` primitive actions that produced
+        # the frame after it, in the same time-then-coordinate order `blocked`
+        # uses, so training and evaluation agree on the layout.
+        window = []
+        for offset in reversed(range(1, history_size)):
+            start = max(0, s - offset * block)
+            span = [min(start + i, source["action"].shape[1] - 1) for i in range(block)]
+            window.append(source["action"][e, span])  # (block, N, A)
+        stacked = torch.stack(window)  # (history_size-1, block, N, A)
+        agents, action_dim = stacked.shape[2], stacked.shape[3]
+        actions.append(
+            stacked.permute(0, 2, 1, 3).reshape(history_size - 1, agents, block * action_dim)
+        )
+    frames = torch.stack(frames)
+    actions = torch.stack(actions)
+
+    if not torch.equal(frames[:, -1], observed):
+        raise ValueError(
+            "Reference context is misaligned with the anchor it describes: the "
+            f"frame at source_step differs by {float((frames[:, -1] - observed).abs().max()):.3e}"
+        )
+    return frames, actions
+
+
 @torch.no_grad()
-def rolled_latent(model, observation, plan, device):
+def rolled_latent(model, observation, plan, device, context=None, source_step=None):
     """Roll `plan` from a restored anchor, honouring the model's own profile.
 
     `lewm_reference` refuses a one-frame rollout by design (A0 step 2), because
@@ -190,11 +252,24 @@ def rolled_latent(model, observation, plan, device):
         return predicted_latent(model, observation, plan, device)
 
     frames = model.history_size
-    history = observation.unsqueeze(1).expand(-1, frames, -1, -1).to(device)
-    latent_history = model.encode(history)
-    past_actions = torch.zeros(
-        plan.shape[0], frames - 1, plan.shape[2], plan.shape[3], device=device
-    )
+    if context is None:
+        # Registered contract (audit F13): only a genuine episode start may use
+        # the synthetic repeated-frame context. A mid-episode anchor has a real
+        # past and must be given it.
+        if source_step is not None and int((source_step > 0).sum()):
+            raise ValueError(
+                f"{int((source_step > 0).sum())} anchors have source_step > 0 but "
+                "no real context was supplied; synthetic-start context is "
+                "forbidden off an episode boundary (audit F13)"
+            )
+        history = observation.unsqueeze(1).expand(-1, frames, -1, -1).to(device)
+        past_actions = torch.zeros(
+            plan.shape[0], frames - 1, plan.shape[2], plan.shape[3], device=device
+        )
+    else:
+        history, past_actions = context
+        history = history.to(device)
+        past_actions = past_actions.to(device)
     rolled = model.rollout_from_context(latent_history, past_actions, plan.to(device))
     return rolled[:, -1].cpu().double()
 
@@ -219,7 +294,8 @@ def column_groups(agents, shared_bodies, intervened):
 
 
 def score_checkpoint(directory, args, samples, train_rows, branches, agents,
-                     shared_bodies, block, scale, horizon):
+                     shared_bodies, block, scale, horizon, context=None,
+                     source_step=None):
     """One model's E_CF, probe floor and direction on every Jacobian block."""
     config = yaml.safe_load((directory / "resolved_config.yaml").read_text())
     state_input = config["data"].get("state_input", "observation")
@@ -242,7 +318,9 @@ def score_checkpoint(directory, args, samples, train_rows, branches, agents,
             source = endpoints[name]
             start = shaped(source, every, 0, False)
             plan = blocked(source["action"][:, : step + 1], block)
-            latent = rolled_latent(model, start, plan, args.device)
+            latent = rolled_latent(
+                model, start, plan, args.device, context, source_step
+            )
             predicted[name] = readout(probes, latent, all_agents)
             # The probe's own ceiling on the SAME quantity: read the response
             # straight off TRUE encodings. A perfect dynamics model scores this.
@@ -420,6 +498,23 @@ def run(args):
     )
     print(f"  regenerated interventions reproduce {checked} T-A1 cells", flush=True)
 
+    # Audit F13: give the reference predictor the context it was trained on.
+    source_step = anchors["source_step"][rows]
+    context = None
+    if not args.synthetic_start_context:
+        any_branch = next(iter(branches.values()))["low"]
+        context = reference_context(
+            anchors, rows, data_root, args.history_frames, block,
+            any_branch["observation"][:, 0],
+        )
+        mid = int((source_step > 0).sum())
+        print(
+            f"  real reference context: frames {tuple(context[0].shape)}, "
+            f"past actions {tuple(context[1].shape)}, stride {block}, "
+            f"{mid}/{len(rows)} anchors mid-episode, alignment verified",
+            flush=True,
+        )
+
     # Probes are fitted on anchors no evaluation touches.
     train_rows = (anchors["split"] == 0).nonzero(as_tuple=True)[0]
     train_rows = train_rows[samples["valid"][train_rows, 0]]
@@ -431,6 +526,7 @@ def run(args):
         config, cells, strengths = score_checkpoint(
             directory, args, samples, train_rows, branches,
             agents, shared_bodies, block, scale, args.horizon,
+            context, source_step,
         )
         key = (config["data"]["regime"], config["model"]["kind"], config["seed"])
         scored[key] = {"cells": cells, "probe_strengths": strengths}
@@ -480,6 +576,14 @@ def main():
     parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--max-anchors", type=int, default=None)
     parser.add_argument("--probe", choices=("linear", "mlp"), default="linear")
+    parser.add_argument("--history-frames", type=int, default=3)
+    parser.add_argument(
+        "--synthetic-start-context",
+        action="store_true",
+        help="reproduce the pre-F13 behaviour: repeated current frame and null "
+        "past actions at every anchor. Retained only to regenerate the "
+        "superseded numbers; it is wrong off an episode boundary.",
+    )
     parser.add_argument("--device", default="cpu")
     run(parser.parse_args())
 
