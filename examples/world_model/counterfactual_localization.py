@@ -340,6 +340,23 @@ def block_e_cf(predicted, truth, columns):
     )
 
 
+def restrict_to_block(target, columns, block):
+    """Gather one block's columns into a fixed-width target.
+
+    The cross columns depend on which agent was intervened, so they vary row by
+    row and cannot be sliced with a fixed index. Gathering makes the head
+    predict that block DIRECTLY instead of predicting the whole next-state
+    response and having a subset read off it afterwards.
+
+    That distinction is the whole point of this switch: on Buzz Wire the shared
+    response is 7.43 against a 2.24 cross term, so a head minimising MSE over
+    the full target spends its capacity elsewhere.
+    """
+    gathered = target.gather(1, columns[block])
+    identity = torch.arange(gathered.shape[1]).unsqueeze(0).expand(gathered.shape[0], -1)
+    return gathered, {"cross": identity, "self": identity}
+
+
 def score(net, stats, rows, device, seed, decay):
     """E_CF on both blocks, on TRAIN and TEST.
 
@@ -437,16 +454,22 @@ def run(args):
     conditions = ["actions_only", "observation_raw", "physical"]
     if args.history_frames > 1:
         conditions.insert(2, "history")
+    def fitted_view(entry, condition):
+        design, target, columns, episodes = entry
+        if args.fit_target != "full":
+            target, columns = restrict_to_block(target, columns, args.fit_target)
+        return design[condition], target, columns, episodes
+
     for condition in conditions:
+        train_design, train_target, _, train_episodes = fitted_view(
+            shared["train"], condition
+        )
         net, decay, stats = select_and_fit(
-            shared["train"][0][condition], shared["train"][1],
-            shared["train"][3], args.device, args.seed,
+            train_design, train_target, train_episodes, args.device, args.seed
         )
         summary = score(
             net, stats,
-            {split: (shared[split][0][condition], shared[split][1],
-                     shared[split][2], shared[split][3])
-             for split in ("train", "test")},
+            {split: fitted_view(shared[split], condition) for split in ("train", "test")},
             args.device, args.seed, decay,
         )
         results["shared"][condition] = summary
@@ -482,14 +505,15 @@ def run(args):
             )
         key = f"{config['data']['regime']}__{config['model']['kind']}__{config['seed']}"
         for condition in ("latent", "latent_plus_agentphys", "latent_plus_state"):
+            train_design, train_target, _, train_episodes = fitted_view(
+                fitted["train"], condition
+            )
             net, decay, stats = select_and_fit(
-                fitted["train"][0][condition], fitted["train"][1],
-                fitted["train"][3], args.device, args.seed,
+                train_design, train_target, train_episodes, args.device, args.seed
             )
             summary = score(
                 net, stats,
-                {split: (fitted[split][0][condition], fitted[split][1],
-                         fitted[split][2], fitted[split][3])
+                {split: fitted_view(fitted[split], condition)
                  for split in ("train", "test")},
                 args.device, args.seed, decay,
             )
@@ -579,6 +603,13 @@ def main():
     parser.add_argument("--max-anchors", type=int, default=None)
     # 3 matches the reference profile's history_size. 1 disables the condition.
     parser.add_argument("--history-frames", type=int, default=3)
+    parser.add_argument(
+        "--fit-target", choices=("full", "cross", "self"), default="full",
+        help="what the diagnostic head is fitted to predict. `full` is the "
+        "historical behaviour -- fit the whole next-state response, score a "
+        "subset. `cross` fits the cross block directly, which is the better-"
+        "posed question when asking whether the cross effect is recoverable.",
+    )
     parser.add_argument(
         "--shared-only",
         action="store_true",
