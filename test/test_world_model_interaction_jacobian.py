@@ -188,3 +188,15 @@ def test_verify_against_jacobian_rejects_a_drifted_intervention():
     drifted = {"a0_axis0__agent_0__h1": {"mean": 0.25}}
     with pytest.raises(ValueError, match="do not reproduce T-A1"):
         verify_against_jacobian(branches, 2, 5, scale, drifted, 1)
+
+
+def test_bootstrap_reports_an_empty_cell_instead_of_crashing_the_report():
+    """Deep-horizon cells can have every anchor terminated.
+
+    Job 1497 computed and wrote the whole Jacobian and then died formatting a
+    horizon-4 cell whose anchors had all terminated.
+    """
+    empty = bootstrap_by_episode(torch.empty(0), torch.empty(0, dtype=torch.long))
+    assert empty["episodes"] == 0
+    assert empty["anchors"] == 0
+    assert empty["mean"] != empty["mean"]  # NaN, not a silent zero

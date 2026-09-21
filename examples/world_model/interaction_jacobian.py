@@ -144,7 +144,15 @@ def bootstrap_by_episode(values, episode_ids, samples=2000, seed=7301):
     groups = [values[episode_ids == episode] for episode in unique.tolist()]
     groups = [group for group in groups if group.numel() > 0]
     if not groups:
-        return {"mean": float("nan"), "low": float("nan"), "high": float("nan"), "episodes": 0}
+        # A deep-horizon cell can have every anchor terminated. Report it as
+        # empty rather than crashing the caller that formats it.
+        return {
+            "mean": float("nan"),
+            "low": float("nan"),
+            "high": float("nan"),
+            "episodes": 0,
+            "anchors": 0,
+        }
     generator = torch.Generator().manual_seed(seed)
     means = []
     for _ in range(samples):
