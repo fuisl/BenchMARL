@@ -330,6 +330,86 @@ with `E_CF ≥ 1` rank interventions correctly risks exactly the failure mode th
 audit catalogues — a downstream metric obscuring an unlocalized upstream defect.
 T-A3 stays registered and stays gated.
 
+### T-A2b result (job 1503): the predictor is exonerated; the latent is not sufficient for *scale*
+
+48 checkpoints, 683 train / 117 test anchors, 4 references. Artifacts:
+`outputs/ta2b_localization_1503/`.
+
+**Head adequacy passes**, so the decision table may be read. The self block is
+well predicted from every input (0.12 physical, 0.28 latent, 0.40 blind), train
+tracks test, and the blind-to-ceiling gap is 0.431 with separated intervals — against
+0.04 under the superseded head.
+
+| Input | cross `E_CF` | cross cosine | self `E_CF` |
+|---|---:|---:|---:|
+| `actions_only` (state-blind floor) | 0.8951 [0.804, 0.997] | +0.459 | 0.3993 |
+| **`physical` (ceiling)** | **0.4645** [0.402, 0.526] | **+0.873** | **0.1193** |
+| latent, independent | 0.8811 | +0.7128 | 0.2752 |
+| latent, joint | 0.8953 | +0.7151 | 0.2756 |
+| latent, relational | 0.8898 | +0.7130 | 0.2770 |
+
+#### Registered verdict
+
+Recovery fraction on the registered metric:
+
+```math
+R_{E_{\rm CF}}=+0.032,\ -0.001,\ +0.012
+\quad\text{(independent, joint, relational)}
+```
+
+All inside the registered `R ≤ 0.25` branch: **`z_t` is not counterfactually
+sufficient.** The diagnostic is informative — the true physical state resolves
+the same effect at 0.4645 through the identical head — so this is a property of
+the latent, not of the instrument.
+
+**The predictor is exonerated.** The effect is already lost *before* `P` runs, so
+no change to the relational conditioner or the rollout can recover it. Combined
+with Test B (`probe_floor` 0.173–0.234: the encoder *does* represent the realized
+difference after it happens) this is your row 2, not row 3.
+
+**Architecture is irrelevant here, as it must be.** All three kinds land within
+0.014 of each other on `E_CF` and within 0.002 on cosine. They share an encoder
+architecture and an observation; the conditioner acts downstream. A difference
+here would have indicated a leak, so this is a passed control.
+
+#### The nuance `E_CF` alone hides
+
+Reading only `E_CF` would say the latent adds nothing. Splitting the recovery
+fraction by metric says something sharper:
+
+| Metric | blind | ceiling | latent | recovery `R` |
+|---|---:|---:|---:|---:|
+| cross `E_CF` | 0.8951 | 0.4645 | ~0.889 | **+0.00 to +0.03** |
+| cross **cosine** | +0.459 | +0.873 | ~0.713 | **+0.61** |
+| self `E_CF` | 0.3993 | 0.1193 | ~0.276 | **+0.44** |
+
+**The latent recovers about 61% of the directional gap and none of the scale.**
+It knows roughly *which way* the partner will be pushed and not *how much*. Much
+of the direction is action-determined anyway — the blind floor already reaches
++0.459 — but the latent lifts it to +0.713 against a ceiling of +0.873.
+
+So the precise claim is **not** "the latent contains no cross-agent
+information." It is:
+
+```math
+\boxed{\text{the latent is partially sufficient for the \emph{direction} of the
+cross-agent effect and insufficient for its \emph{magnitude}.}}
+```
+
+That is consistent with T-A2, where the conditioned models produced a response
+of roughly correct size pointing inconsistently, and it now locates the missing
+quantity one stage earlier: the state-dependent **gain** is absent from `z_t`.
+
+#### Boundaries
+
+* One task, one bank, 16 root episodes, one horizon (`h=1`).
+* The recovery fraction is a ratio of two fitted quantities; both endpoints are
+  fitted heads, so it inherits their variance.
+* The head sees **both** agents' latents concatenated, so this is not about a
+  missing partner token.
+* "Not sufficient" is a statement about this observation set and this encoder,
+  which is exactly what T-A2b-2 (job 1506) is registered to disambiguate.
+
 ## T-A4 — coverage × architecture interaction (registered, K22b)
 
 **Status: design registered 2026-09-21, not implemented.** Promotes the
