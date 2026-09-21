@@ -188,7 +188,7 @@ def latent_features(model, branches, shaped, device):
 
 def build_rows(branches, block, step, agents, scale, episode_ids, latents):
     """Stack every (anchor, reference, cell) into one design matrix per input."""
-    rows = {"actions_only": [], "physical": [], "latent": []}
+    rows = {"actions_only": [], "physical": [], "latent": [], "latent_plus_state": []}
     targets, episodes = [], []
     columns = {"cross": [], "self": []}
     for key, endpoints in sorted(branches.items()):
@@ -217,6 +217,17 @@ def build_rows(branches, block, step, agents, scale, episode_ids, latents):
         rows["physical"].append(torch.cat([physical, actions], dim=1)[mask])
         if latents is not None:
             rows["latent"].append(torch.cat([latents[key], actions], dim=1)[mask])
+            # T-A2b-2: the latent PLUS the mediating state the observation omits.
+            # Buzz Wire's observation is [pos, vel, pos - goal] -- no ball, no
+            # linkage, no partner -- while the ball is rigidly jointed to both
+            # agents and mediates the cross-agent effect. If this reaches the
+            # physical ceiling, the deficit IS that omitted state.
+            shared_state = endpoints["low"]["package_state"][:, 0].reshape(
+                actions.shape[0], -1
+            ).double()
+            rows["latent_plus_state"].append(
+                torch.cat([latents[key], shared_state, actions], dim=1)[mask]
+            )
         targets.append(true_delta[mask])
         groups = column_groups(agents, 0, intervened)
         # NOT `block`: that name is the action-block width used above, and
@@ -371,22 +382,22 @@ def run(args):
             fitted[name] = build_rows(
                 branches[name], block, step, agents, scale, episode_ids[name], latents
             )
-        net, decay, stats = select_and_fit(
-            fitted["train"][0]["latent"], fitted["train"][1],
-            fitted["train"][3], args.device, args.seed,
-        )
-        summary = score(
-            net, stats,
-            {split: (fitted[split][0]["latent"], fitted[split][1],
-                     fitted[split][2], fitted[split][3])
-             for split in ("train", "test")},
-            args.device, args.seed, decay,
-        )
         key = f"{config['data']['regime']}__{config['model']['kind']}__{config['seed']}"
-        results["per_run"][key] = summary
-        print(f"  {key:<40} cross {summary['test_cross']['mean']:.4f} "
-              f"self {summary['test_self']['mean']:.4f} "
-              f"(train cross {summary['train_cross']['mean']:.4f})", flush=True)
+        for condition in ("latent", "latent_plus_state"):
+            net, decay, stats = select_and_fit(
+                fitted["train"][0][condition], fitted["train"][1],
+                fitted["train"][3], args.device, args.seed,
+            )
+            summary = score(
+                net, stats,
+                {split: (fitted[split][0][condition], fitted[split][1],
+                         fitted[split][2], fitted[split][3])
+                 for split in ("train", "test")},
+                args.device, args.seed, decay,
+            )
+            results["per_run"].setdefault(condition, {})[key] = summary
+            print(f"  {condition:<18} {key:<38} cross {summary['test_cross']['mean']:.4f} "
+                  f"cos {summary['test_cross']['cosine_mean']:+.3f}", flush=True)
 
     output = Path(args.out)
     output.mkdir(parents=True, exist_ok=True)
@@ -414,16 +425,17 @@ def print_report(results):
         line(name, summary)
 
     by_arm = {}
-    for key, summary in results["per_run"].items():
-        regime, kind, _ = key.split("__")
-        by_arm.setdefault(f"{regime}/{kind}", []).append(summary)
+    for condition, runs in results["per_run"].items():
+        for key, summary in runs.items():
+            regime, kind, _ = key.split("__")
+            by_arm.setdefault(f"{condition}[{regime}/{kind}]", []).append(summary)
     for name, runs in sorted(by_arm.items()):
         mean = {
             field: sum(r[field]["mean"] for r in runs) / len(runs)
             for field in ("test_cross", "test_self", "train_cross")
         }
         print(
-            f"  latent[{name:<22}] cross {mean['test_cross']:.4f}   "
+            f"  {name:<40} cross {mean['test_cross']:.4f}   "
             f"self {mean['test_self']:.4f}   "
             f"train-cross {mean['train_cross']:.4f}   ({len(runs)} seeds)"
         )
@@ -438,9 +450,17 @@ def print_report(results):
         print("  -> the true physical state does not beat the state-blind head.")
         print("     Registered rule: the diagnostic is UNINFORMATIVE at this horizon.")
         return
+    blind_cos = results["shared"]["actions_only"]["test_cross"]["cosine_mean"]
+    ceiling_cos = results["shared"]["physical"]["test_cross"]["cosine_mean"]
     for name, runs in sorted(by_arm.items()):
         latent = sum(r["test_cross"]["mean"] for r in runs) / len(runs)
-        print(f"  recovery fraction R[{name}] = {(blind - latent) / gap:+.3f}")
+        cos = sum(r["test_cross"]["cosine_mean"] for r in runs) / len(runs)
+        # Both, because they can disagree: a head can recover the DIRECTION of
+        # the response while still missing its scale, and E_CF alone hides that.
+        print(
+            f"  R[{name:<40}] = {(blind - latent) / gap:+.3f} on E_CF, "
+            f"{(cos - blind_cos) / max(ceiling_cos - blind_cos, 1e-12):+.3f} on cosine"
+        )
 
 
 def main():
