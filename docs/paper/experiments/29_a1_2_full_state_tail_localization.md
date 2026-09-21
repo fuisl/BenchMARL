@@ -5,6 +5,13 @@ existed (commits `1293046`, `8f6b9c6`); job 1470 ran from that code. Registered
 outcome: **branch C** -- the optimizer tail survives the Markov repair. Control
 deliberately withheld. Updated: 2026-09-20.
 
+> **Branch C is deferred, not withdrawn (2026-09-21).** The registered next
+> steps -- sampler-matched G6a on `full32`, and the G6c calibration run this
+> note argued should not wait -- are Task B work on the structured surrogate.
+> [`../direction_2026-09-21.md`](../direction_2026-09-21.md) puts Task A first,
+> so both are paused with their registration intact. The G6a implementation is
+> already repaired and unrun. Nothing measured in job 1470 changes.
+
 ## The question
 
 A1.1 falsified `legacy14`'s Markov assumption: holding all 14 coordinates and

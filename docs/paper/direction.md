@@ -1,5 +1,13 @@
 # Counterfactual Joint-Action Prediction for Multi-Agent Latent MPC
 
+> **Historical.** Superseded as the statement of intent by
+> [`direction_2026-09-21.md`](direction_2026-09-21.md), which separates Task A
+> (learn the world model) from Task B (plan with it) and grades Task A on
+> counterfactual intervention fidelity rather than on the end-to-end chain
+> below. The expected positive chain in this document is **not** the result; see
+> the [knowledge index](../RESEARCH_KNOWLEDGE_INDEX.md) claim ledger. Kept for
+> the original framing and scope decisions, which remain accurate as intent.
+
 The entire paper asks essentially one question:
 
 > **Can a simple latent world model plan cooperative multi-agent actions reliably when the planner considers joint actions that were not observed together in the training data?**
