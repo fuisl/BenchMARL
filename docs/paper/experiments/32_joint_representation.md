@@ -54,6 +54,56 @@ angular velocity, no ball) beside `latent ⊕ ball` and `latent ⊕ both`. If ag
 physical state alone recovers the gap, the deficit is not the ball and §2 of the
 direction needs revising.
 
+### G0 partial result (jobs 1506, 1507): the encoder is exonerated, the ball is the variable
+
+Shared conditions, identical head, interventions and scale throughout:
+
+| Input | cross `E_CF` | `R` on `E_CF` | reading |
+|---|---:|---:|---|
+| `actions_only` (state-blind floor) | 0.8951 | 0.00 | — |
+| **`observation_raw`** (raw 6-D, unencoded) | **0.8882** | **+0.02** | the observation itself carries **no** cross-agent information |
+| `latent` | 0.879-0.895 | +0.02 to +0.04 | the encoder preserved what was there, which was nothing |
+| **`latent ⊕ agent rot/ang-vel`** | **0.8793** | **+0.04** | other omitted physical state does **not** help |
+| **`latent ⊕ ball/linkage`** | **0.517-0.523** | **+0.86 to +0.88** | **the ball is the missing variable, specifically** |
+| `physical` (ceiling) | 0.4645 | 1.00 | — |
+
+Three dissociations, and together they close the attribution:
+
+1. **The JEPA abstraction is exonerated.** The raw unencoded observation scores
+   0.8882, statistically on top of the 0.8951 blind floor. The encoder cannot be
+   discarding cross-agent information, because the observation never had any.
+   Had `observation_raw` beaten `latent`, this would have been a genuine result
+   about lossy abstraction; it is not.
+2. **It is not "any omitted state".** Agent rotation and angular velocity are
+   also absent from the observation, and adding them moves nothing (0.8793
+   against 0.8788). The registered ablation asked exactly this and the answer is
+   clean.
+3. **It is the mediating body.** Only the ball and linkage state moves the
+   number, and it moves it most of the way to the ceiling.
+
+`observation_raw` also predicts the **self** block well (0.2589, better than the
+latent's 0.275 and far better than the blind floor's 0.399), so the head is
+extracting what the observation does contain. This is a working instrument
+reporting an absence, not an instrument failing.
+
+#### What this settles, and what it does not
+
+**Settled:** the counterfactual deficit is an observability property of the task,
+not a property of the encoder, the objective, the conditioner or the predictor.
+Every architectural arm we have trained was working from an input that cannot
+answer the question.
+
+**Not settled, and this is now the pivotal question:** all of the above is
+**instantaneous**. The ball's position is constrained by two rigid joints to at
+most two solutions given the agents' positions, and its velocity is constrained
+by theirs — so **motion history may disambiguate what a single frame cannot.**
+G0's registered history condition is therefore still the one that decides
+whether a learned `z_G` is feasible at all, and it has not been run.
+
+If history recovers the mediating state, `z_G` built from history is the
+indicated architecture. If it does not, no architecture over these observations
+can succeed and the honest conclusion is a task-design one.
+
 ## H3 - does an agent-neutral world token help?
 
 **Blocked on G0 passing.**
