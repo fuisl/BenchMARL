@@ -192,6 +192,137 @@ models evaluated on the held-out joint-action region, paired by seed.
 | H1 ≈ H0 | the latent model does not recover a cross-agent effect the simulator has; a **representation** failure, not a factorization one |
 | all arms `E_CF ≥ 1` | no arm resolves the effect; report and go to §"if Task A fails" |
 
+## T-A2b — counterfactual information localization (registered)
+
+**Status: registered 2026-09-21, before Test A exists.** T-A2 scored the
+composite `E → P → probe` and cannot say which stage lost the effect. T-A2b
+localizes it. **This replaces T-A3 as the next experiment**; see "Why T-A3 is
+not next" below.
+
+Three tests, one target, one scale, one set of interventions — the same ones
+T-A1 measured, regenerated from its seed and required to reproduce its recorded
+cell means.
+
+| Test | What it scores | Status |
+|---|---|---|
+| **A** current-latent sufficiency | `g(z_t, a^low, a^high) → ΔY`, fitted head, never rolls `P` forward | **new, the discriminator** |
+| **B** true future latent | `probe(E(o_{t+1}))` differenced across branches | **already measured**: it is T-A2's `probe_floor`, **0.173–0.234** on cross — good |
+| **C** predicted future latent | `probe(P(z_t, a))` differenced | **already measured**: T-A2 itself, **1.05–1.19** — bad |
+
+Because B is good and C is bad, only two of the four diagnostic rows are live,
+and **Test A alone decides between them**:
+
+| A | B | C | Diagnosis |
+|---|---|---|---|
+| ~~bad~~ | ~~bad~~ | ~~bad~~ | ruled out — B is good |
+| **bad** | good | bad | future observations encode the outcome, but `z_t` is **not counterfactually sufficient** |
+| **good** | good | bad | `z_t` is sufficient; the **predictor** fails to use it |
+| ~~good~~ | ~~good~~ | ~~good~~ | ruled out — C is bad |
+
+### Test A's two controls are the experiment
+
+A fitted head that scores well proves nothing on its own. Both controls share
+the head's architecture, budget and selection procedure; only the input differs.
+
+* `actions_only` — `g(a^low, a^high) → ΔY`. The **state-blind floor**. It can
+  learn the average response to an intervention but nothing state-specific.
+* `physical` — `g(s_t, a^low, a^high) → ΔY` on the recorded simulator state. The
+  **information ceiling**, and model-independent, so it is fitted once.
+
+Weight decay is selected on held-out **root episodes**, not rows: anchors from
+one episode are correlated, and a row-wise split would let the head memorise an
+episode and score on its siblings.
+
+### T-A2b registered decision rule
+
+Let `B` = `actions_only`, `P` = `physical`, `L` = `latent`, all cross-block
+`E_CF`. Define the **recovery fraction**
+
+```math
+R=\frac{B-L}{B-P},
+```
+
+the share of the blind-to-ceiling gap the latent closes.
+
+| Condition | Verdict | Next |
+|---|---|---|
+| `P` interval overlaps `B` | **diagnostic uninformative** | the effect is not predictable from the current state at this horizon; report and stop — do **not** read a null as an encoder result |
+| `R ≥ 0.75` | `z_t` **is** counterfactually sufficient | the failure is the **predictor**; the encoder and JEPA objective are exonerated |
+| `R ≤ 0.25` | `z_t` **is not** counterfactually sufficient | the failure is the **representation**; a direct result about the JEPA abstraction |
+| `0.25 < R < 0.75` | **partial** | report the fraction; claim neither row |
+
+Thresholds are set now, before Test A is computed. Test B and Test C are quoted
+from T-A2 and are not re-derived to fit.
+
+### Amendment, before any Test A result: the head must be shown adequate
+
+A pipeline smoke on three checkpoints produced `physical` 0.864 against
+`actions_only` 0.906 — a blind-to-ceiling gap of 0.04 with almost completely
+overlapping intervals, which would have fired the "uninformative" branch above.
+The likelier cause was the instrument: the first head was a single hidden layer
+trained full-batch for 300 steps on unnormalized VMAS coordinates, which
+underfits badly. Reporting that as "the effect is not predictable from the
+current state" would have repeated experiment 14's error of charging probe
+weakness to the thing being probed.
+
+The head was therefore strengthened **before** any result was recorded — two
+hidden layers, minibatched Adam for 400 epochs, inputs z-scored on train
+statistics only — and two preconditions are added to the rule. **The decision
+table above may not be read unless both pass:**
+
+1. **Self-block control.** The same head, same inputs, must predict the *self*
+   response well. T-A2 establishes that self-dynamics are well captured
+   (`E_CF` ≈ 0.46–0.51), so a head that cannot predict the self block either is
+   underfit and its cross number is uninformative about the input.
+2. **Train error reported beside test.** A train cross-`E_CF` near the test
+   value and near 1.0 means the head never fit, not that the input lacks the
+   information.
+
+If either precondition fails, the correct report is "the diagnostic did not
+work", not a claim about `z_t`. The smoke numbers above are a pipeline check on
+a superseded head and are **not** evidence.
+
+### Why T-A3 is not next
+
+T-A3 was registered as conditional on an arm passing T-A2; none did. Beyond the
+registration, ordering is the wrong question right now: asking whether responses
+with `E_CF ≥ 1` rank interventions correctly risks exactly the failure mode the
+audit catalogues — a downstream metric obscuring an unlocalized upstream defect.
+T-A3 stays registered and stays gated.
+
+## T-A4 — coverage × architecture interaction (registered, K22b)
+
+**Status: design registered 2026-09-21, not implemented.** Promotes the
+post-hoc K22b observation into a test with a controlled variable.
+
+T-A2 found relational's advantage over joint 2.5–2.8× larger under restricted
+coverage than under full coverage. That was **observed after looking at the
+results**, across two regimes that were not designed as a coverage ladder, so it
+is not a claim.
+
+**Design.** Make coverage strength a controlled variable `C ∈ {0, 0.25, 0.5,
+0.75, 1.0}`, where `C` is the fraction of the counterfactual joint-action region
+(`normalized a0_x·a1_x < 0`, recorded in the bank manifest) excluded from
+training. Train H1 and H2 at each level, seeds 4100–4107.
+
+**The hypothesis is not `H2 < H1`.** It is
+
+```math
+\frac{\partial D(C)}{\partial C}<0,
+\qquad D(C)=E_{\rm CF}^{H2}(C)-E_{\rm CF}^{H1}(C),
+```
+
+a **monotone trend**: as coverage is restricted, relational should increasingly
+outperform unstructured joint conditioning.
+
+**Required control.** Excluding a region shrinks the training set, and a smaller
+set would degrade both arms and could manufacture a trend. Every level must be
+resampled to equal transition count, and that count reported.
+
+**Registered rule.** Spearman of `D(C)` against `C` across the five levels,
+seeds clustered; a negative trend with an interval clear of zero supports K22b.
+A significant `D` at a single level without a trend does **not**.
+
 ## T-A3 — counterfactual ordering
 
 At a fixed held-out state, fix `a^A` and vary only `a^B` over `K` alternatives.
@@ -491,9 +622,26 @@ a fired rule.
 The result converges with K17 and K18 rather than contradicting them. The latent
 is not empty of cross-agent structure — cosine ~0.4 is real signal — but what it
 carries is not accurate enough, state by state, to serve as a counterfactual
-model. That is the **representation** half of the Task A question answering in
-the negative, measured directly, on cells proven above the instrument's floor,
-with the structural baseline behaving exactly as theory says it must.
+model.
+
+**Stated precisely:** the learned latent transition is **not counterfactually
+faithful at the tested interface**, despite carrying measurable cross-agent
+signal.
+
+An earlier draft of this note called that "the representation half of the Task A
+question answering in the negative." **That is withdrawn as premature.** T-A2
+scores the composite
+
+```math
+E \;\rightarrow\; P \;\rightarrow\; \text{probe}
+```
+
+and cannot attribute the failure to any one of them. Assigning it to the encoder
+is exactly the kind of unlocalized causal claim the audit exists to prevent —
+and the decomposition in this very note, showing the models *do* carry
+cross-agent structure, argues against it. The attribution question is what
+[T-A2b](#t-a2b--counterfactual-information-localization-registered) is registered
+to answer, and no representation claim should be made before it reports.
 
 #### Boundaries
 
