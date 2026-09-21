@@ -270,6 +270,7 @@ def rolled_latent(model, observation, plan, device, context=None, source_step=No
         history, past_actions = context
         history = history.to(device)
         past_actions = past_actions.to(device)
+    latent_history = model.encode(history)
     rolled = model.rollout_from_context(latent_history, past_actions, plan.to(device))
     return rolled[:, -1].cpu().double()
 

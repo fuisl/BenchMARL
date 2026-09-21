@@ -454,3 +454,51 @@ def test_reference_context_clamps_at_an_episode_start(tmp_path):
         source["observation"][0, 0].unsqueeze(0),
     )
     assert torch.equal(frames[0, 0], frames[0, 2])
+
+
+def _reference_model(agents=2, obs=3, action=4):
+    from examples.world_model.models import ReferenceMultiAgentWorldModel
+
+    torch.manual_seed(4)
+    return ReferenceMultiAgentWorldModel(
+        "relational", obs_dim=obs, action_dim=action, agents=agents, dim=16,
+        hidden_dim=24, history_size=3, depth=2, heads=2, dim_head=8, mlp_dim=32,
+        dropout=0.0, projector_hidden_dim=32,
+    ).eval()
+
+
+def test_rolled_latent_runs_on_a_real_reference_model_with_real_context():
+    """Exercises the actual call path, not just its helpers.
+
+    The F13 repair shipped with a NameError in this function that every
+    helper-level test passed straight over, because nothing invoked
+    `rolled_latent` against a real model.
+    """
+    from examples.world_model.counterfactual_fidelity import rolled_latent
+
+    model = _reference_model()
+    batch, agents, obs, action = 5, 2, 3, 4
+    observation = torch.randn(batch, agents, obs)
+    plan = torch.randn(batch, 1, agents, action)
+    context = (torch.randn(batch, 3, agents, obs), torch.randn(batch, 2, agents, action))
+
+    out = rolled_latent(model, observation, plan, "cpu", context, torch.full((batch,), 7))
+    assert out.shape == (batch, agents, 16)
+    assert torch.isfinite(out).all()
+
+
+def test_rolled_latent_refuses_synthetic_context_off_an_episode_boundary():
+    """The registered F13 contract, enforced in code rather than by convention."""
+    from examples.world_model.counterfactual_fidelity import rolled_latent
+
+    model = _reference_model()
+    observation = torch.randn(5, 2, 3)
+    plan = torch.randn(5, 1, 2, 4)
+    mid_episode = torch.tensor([0, 0, 3, 0, 0])
+
+    with pytest.raises(ValueError, match="forbidden off an episode boundary"):
+        rolled_latent(model, observation, plan, "cpu", None, mid_episode)
+
+    # A genuine episode start may still use it.
+    out = rolled_latent(model, observation, plan, "cpu", None, torch.zeros(5, dtype=torch.long))
+    assert out.shape == (5, 2, 16)
