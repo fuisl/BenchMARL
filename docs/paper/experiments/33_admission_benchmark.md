@@ -160,6 +160,51 @@ Two design differences could produce that, and they are not separated:
 `Y` also differs — full informative body state here, MOTION-only there — though
 on Buzz Wire the agent columns coincide (rotation is constant and dropped).
 
+### G0c result (job 1514): both causes are real, and they split the gap
+
+Identical G0 intervention design, anchors, seeds, scale and head family;
+`--fit-target` is the only thing that changes. The `full` arm reproduces G0b
+exactly (0.8951 / 0.8882 / 0.7634 / 0.4645), so the comparison is clean.
+
+| fitting mode | `R_O` | `R_H` |
+|---|---:|---:|
+| `full` — fit all of `ΔY`, score a subset (G0b's behaviour) | **0.016** | 0.306 |
+| `cross` — fit the cross block directly | **0.293** | 0.316 |
+| `cross` + the 3x3 grid (admission benchmark) | **0.674** | 0.462 |
+
+**Attribution.** Head fitting carries 0.016 → 0.293; the grid design carries
+0.293 → 0.674. Neither alone explains the discrepancy, and both are real.
+
+**K29 needs revising, and not in the direction it was written.** Its headline was
+that history buys *scale* — recovery rising 0.016 → 0.306 from a single frame to
+three. Under a head actually fitted to the cross block, the single raw
+observation already reaches 0.293 and history adds **+0.023**. The apparent
+history gain was largely the pooled head recovering from its own
+misallocation, not information arriving with motion.
+
+**K30 survives, for a narrower reason.** Under G0's design with the better-posed
+head, `R_O = 0.293` and `R_H = 0.316` are still well below the 0.5 gate, so Buzz
+Wire remains `partially_observable` and the observation remains the binding
+constraint. The scoped wording adopted earlier already covers this.
+
+**The 3x3 grid measures an easier conditional than a planner faces.** It pins
+the non-intervened agent at the action midpoint — passive — so the cross
+response is dominated by rigid-link geometry that observable positions largely
+determine. G0 samples that agent's action, mixing its own actuation with the
+coupling, and there the hidden ball state matters more. A planner evaluates
+joint actions in which **both** agents act, so the sampled-reference conditional
+is the decision-relevant one.
+
+**Registered change to the benchmark, before it runs:** the cross-effect ladder
+must be measured at a **sampled** reference action for the non-intervened agent,
+not at the midpoint. The midpoint surface is still needed for `J_own`, `J_cross`
+and `C`, which require a regular grid — but the *information* question must be
+asked at the conditional a planner would query. Until that change lands, the
+five-scenario verdicts are not trustworthy.
+
+**Superseded resolution plan.** The original text below proposed exactly this
+audit; it has now run.
+
 **Registered resolution, before the five-scenario run is interpreted:** rerun the
 G0 ladder with a cross-only fitted head on the G0 intervention design. That
 isolates (1) from (2). Until then:
