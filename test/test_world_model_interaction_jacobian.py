@@ -525,3 +525,78 @@ def test_rolled_latent_refuses_synthetic_context_off_an_episode_boundary():
     # A genuine episode start may still use it.
     out = rolled_latent(model, observation, plan, "cpu", None, torch.zeros(5, dtype=torch.long))
     assert out.shape == (5, 2, 16)
+
+
+# --- Admission benchmark: the cross target must decide admission -------------
+
+from examples.world_model.admission_benchmark import (  # noqa: E402
+    RESOLUTION_RATIO as ADM_RATIO,
+    body_columns,
+    classify as admission_classify,
+)
+
+
+def _ladder(reference_error, recovery):
+    """A ladder whose S error is `reference_error` and whose O recovery is `recovery`."""
+    base = 1.0
+    ceiling = reference_error
+    observed = base - recovery * (base - ceiling)
+    out = {}
+    for condition, value in (
+        ("A", base), ("O", observed), ("H_dense", observed),
+        ("H_model", observed), ("S", ceiling),
+    ):
+        out[condition] = {
+            "test_cross": {"mean": value, "cosine_mean": 0.9},
+            "train_cross": {"mean": value * 0.9},
+            "R_info": (base - value) / (base - ceiling),
+        }
+    return out
+
+
+def test_a_huge_predictable_self_effect_cannot_admit_a_hidden_cross_effect():
+    """The exact contamination the pooled Stage-1 target allowed.
+
+    Buzz Wire's shared response is 7.43 against a 2.24 cross term, so a pooled
+    ladder reported R_O = 0.380 for a quantity whose cross-specific value is
+    0.016. Admission must read the cross ladder and nothing else.
+    """
+    cross = {"active_fraction": 1.0, "mean": 2.0}
+    ladders = {
+        "cross": _ladder(0.2, recovery=0.05),   # hidden cross effect
+        "self": _ladder(0.2, recovery=0.99),    # trivially predictable
+        "shared": _ladder(0.2, recovery=0.99),  # trivially predictable
+        "mixed": _ladder(0.2, recovery=0.5),
+    }
+    verdict = admission_classify(cross, ladders)
+    assert verdict["verdict"] == "partially_observable"
+    assert verdict["best_legitimate_cross_recovery"] < 0.5
+    # The descriptive fields still record that self/shared were easy.
+    assert verdict["shared_recovery_descriptive"] > 0.9
+
+
+def test_admit_requires_the_mixed_term_to_clear_its_OWN_floor():
+    """C must not borrow the first-order cross-effect instrument's resolution."""
+    cross = {"active_fraction": 1.0, "mean": 2.0}
+    resolvable_mixed = {
+        "cross": _ladder(0.2, recovery=0.9),
+        "self": _ladder(0.2, recovery=0.9),
+        "shared": _ladder(0.2, recovery=0.9),
+        "mixed": _ladder(0.2, recovery=0.9),
+    }
+    assert admission_classify(cross, resolvable_mixed)["verdict"] == "ADMIT"
+
+    unresolvable_mixed = dict(resolvable_mixed)
+    unresolvable_mixed["mixed"] = _ladder(0.9, recovery=0.9)  # S cannot resolve C
+    verdict = admission_classify(cross, unresolvable_mixed)
+    assert verdict["verdict"] == "observable_additive"
+    assert verdict["mixed_above_own_floor"] is False
+
+
+def test_body_columns_separate_each_agent_from_the_shared_bodies():
+    scale = {"agent": (None, torch.ones(4, dtype=torch.bool)),
+             "shared": (None, torch.ones(6, dtype=torch.bool))}
+    groups = body_columns(scale, agents=2, shared_bodies=3)
+    assert groups["agent_0"].tolist() == [0, 1, 2, 3]
+    assert groups["agent_1"].tolist() == [4, 5, 6, 7]
+    assert groups["shared"].tolist() == list(range(8, 8 + 18))

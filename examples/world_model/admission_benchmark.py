@@ -82,6 +82,9 @@ from examples.world_model.plan_ranking import select_anchor_states
 RESOLUTION_RATIO = 3.0        # effect must clear the probe floor by this factor
 ACTIVE_FRACTION = 0.5         # ...on at least this fraction of anchors
 INFO_RECOVERY_GATE = 0.5      # a legitimate input must recover this much of the gap
+# The privileged reference must beat the actions-only baseline by this fraction
+# for a recovery ratio to mean anything at all.
+REFERENCE_SPAN_FLOOR = 0.10
 LEVELS = (-1.0, 0.0, 1.0)
 
 
@@ -220,71 +223,52 @@ def describe(effect, ids, seed):
     return summary
 
 
-def information_ladder(data_root, anchors, splits, surface, live, step, scale,
-                       block, args, episode_ids):
-    """A -> O -> H_dense -> H_model -> S, all predicting the true cross effect.
+def ladder_inputs(data_root, anchors, anchor_rows, branch, mask, args, block):
+    """The five inputs, built once and reused by every target."""
+    actions = torch.cat(
+        [
+            branch["low"]["action"][:, 0].reshape(branch["low"]["action"].shape[0], -1),
+            branch["high"]["action"][:, 0].reshape(branch["high"]["action"].shape[0], -1),
+        ],
+        dim=1,
+    ).double()
+    reference_frame = branch["low"]["observation"][:, 0]
+    observation = reference_frame.reshape(reference_frame.shape[0], -1).double()
+    privileged = torch.cat(
+        [
+            branch["low"]["agent_state"][:, 0].reshape(actions.shape[0], -1),
+            branch["low"]["package_state"][:, 0].reshape(actions.shape[0], -1),
+        ],
+        dim=1,
+    ).double()
+    dense = history_window(
+        anchors, anchor_rows, data_root, args.dense_frames, reference_frame
+    )
+    frames, past = reference_context(
+        anchors, anchor_rows, data_root, args.model_frames, block, reference_frame
+    )
+    model_history = torch.cat(
+        [frames.reshape(frames.shape[0], -1), past.reshape(past.shape[0], -1)], dim=1
+    ).double()
+    return {
+        "A": actions[mask],
+        "O": torch.cat([observation, actions], 1)[mask],
+        "H_dense": torch.cat([dense, actions], 1)[mask],
+        "H_model": torch.cat([model_history, actions], 1)[mask],
+        "S": torch.cat([privileged, actions], 1)[mask],
+    }
 
-    One head family, one budget, one selection procedure; only the input differs.
-    `S` is privileged state and is a diagnostic REFERENCE only -- it never enters
-    a model.
+
+def information_ladder(rows, targets, ids, label, args):
+    """A -> O -> H_dense -> H_model -> S for ONE target.
+
+    Run per target, never pooled. Pooling `d_{a_1}[Y_0, Y_1, Y_shared]` lets a
+    large, easily predicted self or shared response carry the recovery fraction
+    while the cross term the taxonomy turns on stays hidden -- on Buzz Wire the
+    shared response is 7.43 against a 2.24 cross term, so the pooled ladder
+    reported `R_O = 0.380` for a quantity whose cross-specific value is 0.016.
     """
-    rows, targets, ids = {}, {}, {}
-    for name in ("train", "test"):
-        design, target, episode = {}, [], []
-        mask = live[name][:, step]
-        anchor_rows = splits[name]
-        for reference in range(args.references):
-            low_branch = surface[name][(reference, 0.0, -1.0)]
-            high_branch = surface[name][(reference, 0.0, 1.0)]
-            effect = (
-                body_target(high_branch, step + 1, scale)
-                - body_target(low_branch, step + 1, scale)
-            )[mask]
-            count = int(mask.sum())
-            if count == 0:
-                continue
-            actions = torch.cat(
-                [
-                    low_branch["action"][:, 0].reshape(-1, low_branch["action"].shape[2] * low_branch["action"].shape[3]),
-                    high_branch["action"][:, 0].reshape(-1, high_branch["action"].shape[2] * high_branch["action"].shape[3]),
-                ],
-                dim=1,
-            ).double()[mask]
-            observation = low_branch["observation"][:, 0].reshape(
-                low_branch["observation"].shape[0], -1
-            ).double()[mask]
-            privileged = torch.cat(
-                [
-                    low_branch["agent_state"][:, 0].reshape(low_branch["agent_state"].shape[0], -1),
-                    low_branch["package_state"][:, 0].reshape(low_branch["package_state"].shape[0], -1),
-                ],
-                dim=1,
-            ).double()[mask]
-            dense = history_window(
-                anchors, anchor_rows, data_root, args.dense_frames,
-                low_branch["observation"][:, 0],
-            )[mask]
-            frames, past = reference_context(
-                anchors, anchor_rows, data_root, args.model_frames, block,
-                low_branch["observation"][:, 0],
-            )
-            model_history = torch.cat(
-                [frames.reshape(frames.shape[0], -1), past.reshape(past.shape[0], -1)],
-                dim=1,
-            ).double()[mask]
-
-            design.setdefault("A", []).append(actions)
-            design.setdefault("O", []).append(torch.cat([observation, actions], 1))
-            design.setdefault("H_dense", []).append(torch.cat([dense, actions], 1))
-            design.setdefault("H_model", []).append(torch.cat([model_history, actions], 1))
-            design.setdefault("S", []).append(torch.cat([privileged, actions], 1))
-            target.append(effect)
-            episode.append(episode_ids[name][mask])
-        rows[name] = {k: torch.cat(v) for k, v in design.items()}
-        targets[name] = torch.cat(target)
-        ids[name] = torch.cat(episode)
-
-    columns = torch.arange(targets["test"].shape[1]).unsqueeze(0)
+    span_columns = torch.arange(targets["test"].shape[1]).unsqueeze(0)
     ladder = {}
     for condition in ("A", "O", "H_dense", "H_model", "S"):
         net, decay, stats = select_and_fit(
@@ -295,24 +279,32 @@ def information_ladder(data_root, anchors, splits, surface, live, step, scale,
             {
                 split: (
                     rows[split][condition], targets[split],
-                    {"cross": columns.expand(targets[split].shape[0], -1),
-                     "self": columns.expand(targets[split].shape[0], -1)},
+                    {"cross": span_columns.expand(targets[split].shape[0], -1),
+                     "self": span_columns.expand(targets[split].shape[0], -1)},
                     ids[split],
                 )
                 for split in ("train", "test")
             },
             args.device, args.seed, decay,
         )
-        print(f"    {condition:<9} E={ladder[condition]['test_cross']['mean']:.4f} "
-              f"cos={ladder[condition]['test_cross']['cosine_mean']:+.3f}", flush=True)
-
     base = ladder["A"]["test_cross"]["mean"]
     ceiling = ladder["S"]["test_cross"]["mean"]
     span = base - ceiling
-    for condition, entry in ladder.items():
+    # A recovery fraction divides by (base - ceiling). When the privileged
+    # reference barely beats the actions-only baseline, that span is near zero
+    # and the ratio explodes: the axis-1 mixed target produced R = -13 and -20
+    # from a span of 0.026. Such a target is simply unpredictable from any
+    # input, and the honest report is NaN, not a large number.
+    informative = span > REFERENCE_SPAN_FLOOR * max(base, 1e-9)
+    for entry in ladder.values():
         entry["R_info"] = (
-            (base - entry["test_cross"]["mean"]) / span if abs(span) > 1e-9 else float("nan")
+            (base - entry["test_cross"]["mean"]) / span if informative else float("nan")
         )
+        entry["reference_informative"] = bool(informative)
+    print(f"    [{label}] " + "  ".join(
+        f"{c}={ladder[c]['test_cross']['mean']:.3f}" for c in ("A", "O", "H_dense", "H_model", "S")
+    ) + f"   R_O={ladder['O']['R_info']:+.3f} R_Hd={ladder['H_dense']['R_info']:+.3f} "
+        f"R_Hm={ladder['H_model']['R_info']:+.3f}", flush=True)
     return ladder
 
 
@@ -334,21 +326,36 @@ def diagnostic_overfit(ladder):
     return offenders
 
 
-def classify(cross, mixed, ladder):
-    """The registered taxonomy. Fixed before any scenario was measured."""
-    # `score` divides by ||true||, so an E value IS a relative error and the
-    # privileged reference's E is the inverse resolution. Comparing a raw effect
-    # MAGNITUDE against it, as the first draft did, compares different units.
-    reference_error = ladder["S"]["test_cross"]["mean"]
+def classify(cross, ladders):
+    """The registered taxonomy. Fixed before any scenario was measured.
+
+    Every gate is read off the CROSS target's own ladder, and the mixed term off
+    the MIXED target's own ladder. Borrowing one quantity's instrument
+    resolution to judge another is what the first draft did.
+    """
+    # `score` divides by ||true||, so an S-condition error IS a relative error
+    # and its inverse is the resolution of that specific target.
+    cross_reference = ladders["cross"]["S"]["test_cross"]["mean"]
+    mixed_reference = ladders["mixed"]["S"]["test_cross"]["mean"]
+
     resolvable = (
-        reference_error <= 1.0 / RESOLUTION_RATIO
+        cross_reference <= 1.0 / RESOLUTION_RATIO
         and cross["active_fraction"] >= ACTIVE_FRACTION
     )
-    best_legit = max(ladder[c]["R_info"] for c in ("O", "H_dense", "H_model"))
-    # The mixed term is scored against the same effect scale it lives on.
-    mixed_real = mixed["mean"] >= RESOLUTION_RATIO * reference_error * cross["mean"]
+    cross_informative = ladders["cross"]["S"].get("reference_informative", True)
+    recoveries = [ladders["cross"][c]["R_info"] for c in ("O", "H_dense", "H_model")]
+    recoveries = [r for r in recoveries if r == r]  # drop NaN
+    best_legit = max(recoveries) if recoveries else float("nan")
+    # The mixed second difference now carries its OWN measurement floor rather
+    # than borrowing the first-order cross-effect instrument.
+    mixed_real = mixed_reference <= 1.0 / RESOLUTION_RATIO
 
-    overfit = diagnostic_overfit(ladder)
+    overfit = {}
+    for name, ladder in ladders.items():
+        found = diagnostic_overfit(ladder)
+        if found:
+            overfit[name] = found
+
     if overfit:
         verdict, reason = "undetermined_diagnostic_overfit", (
             f"the diagnostic memorised on {sorted(overfit)}; classification "
@@ -356,32 +363,48 @@ def classify(cross, mixed, ladder):
         )
     elif not resolvable:
         verdict, reason = "weak_interaction_control", (
-            "the privileged reference cannot resolve the cross effect, or it is "
-            "active on too few anchors"
+            "the privileged reference cannot resolve the cross-agent effect, or "
+            "it is active on too few anchors"
         )
-    elif best_legit < INFO_RECOVERY_GATE:
+    elif not cross_informative:
+        verdict, reason = "undetermined_reference_uninformative", (
+            "the privileged reference barely beats the actions-only baseline on "
+            "the cross target, so no recovery fraction is defined"
+        )
+    elif not (best_legit >= INFO_RECOVERY_GATE):
         verdict, reason = "partially_observable", (
-            "cross effect is real but no legitimate input recovers it "
+            "cross-agent effect is real but no legitimate input recovers it "
             "(the Buzz Wire class)"
         )
     elif not mixed_real:
         verdict, reason = "observable_additive", (
-            "cross effect is observable but the mixed second difference is at "
-            "the floor, so the response is additively separable"
+            "cross-agent effect is observable but the mixed second difference is "
+            "below its own measurement floor, so the response is additively "
+            "separable as far as this instrument can tell"
         )
     else:
         verdict, reason = "ADMIT", (
-            "observable, state-dependent cross effect with genuine mixed "
-            "interaction -- H0/H1/H2 have something to distinguish"
+            "observable cross-agent effect with a resolvable mixed interaction "
+            "-- H0/H1/H2 have something to distinguish"
         )
     return {
         "verdict": verdict,
         "reason": reason,
         "cross_resolvable": bool(resolvable),
-        "best_legitimate_recovery": float(best_legit),
-        "mixed_above_floor": bool(mixed_real),
-        "reference_relative_error": float(reference_error),
-        "diagnostic_overfit": overfit,
+        "best_legitimate_cross_recovery": float(best_legit),
+        "mixed_above_own_floor": bool(mixed_real),
+        "cross_reference_relative_error": float(cross_reference),
+        "mixed_reference_relative_error": float(mixed_reference),
+        # Descriptive only. No state-dependence threshold is gated on, because
+        # choosing a coefficient-of-variation cut after seeing the first
+        # scenario would be arbitrary. `E_O < E_A` inside R_info is the
+        # meaningful empirical test of whether state information matters.
+        "shared_recovery_descriptive": float(
+            max(ladders["shared"][c]["R_info"] for c in ("O", "H_dense", "H_model"))
+        ),
+        "self_recovery_descriptive": float(
+            max(ladders["self"][c]["R_info"] for c in ("O", "H_dense", "H_model"))
+        ),
     }
 
 
@@ -460,19 +483,78 @@ def audit_scenario(name, data_root, args):
               f"{cross['state_dependence']:.2f})  C={mixed['mean']:.4f}  "
               f"shared={shared['mean']:.4f}", flush=True)
 
-        ladder = information_ladder(
-            data_root, anchors, splits, surface, live, step, scale, block,
-            args, episode_ids,
-        )
+        # Four targets, each with its own ladder and its own measurement
+        # floor. `cross` decides admission; `self` and `shared` are descriptive
+        # and may reveal, e.g., that Transport's observation identifies the
+        # package's response far better than the partner agent's.
+        groups = body_columns(scale, agents, shared_bodies)
+        mask = live["test"][:, step]
+        targets_by_name = {
+            "cross": ("agent_0", "J_cross"),
+            "self": ("agent_1", "J_cross"),
+            "shared": ("shared", "J_cross"),
+            "mixed": ("agent_0", "C"),
+        }
+        ladders = {}
+        for label, (responder, quantity) in targets_by_name.items():
+            rows, targets, ids = {}, {}, {}
+            for split in ("train", "test"):
+                split_mask = live[split][:, step]
+                built, target, episode = [], [], []
+                for reference in range(args.references):
+                    branch = {
+                        "low": surface[split][(reference, 0.0, -1.0)],
+                        "high": surface[split][(reference, 0.0, 1.0)],
+                    }
+                    if quantity == "C":
+                        branch = {
+                            "low": surface[split][(reference, -1.0, -1.0)],
+                            "high": surface[split][(reference, 1.0, 1.0)],
+                        }
+                    if int(split_mask.sum()) == 0:
+                        continue
+                    built.append(
+                        ladder_inputs(
+                            data_root, anchors, splits[split], branch, split_mask,
+                            args, block,
+                        )
+                    )
+                    columns = groups[responder]
+                    if quantity == "C":
+                        value = (
+                            body_target(surface[split][(reference, 1.0, 1.0)], step + 1, scale)
+                            - body_target(surface[split][(reference, 1.0, -1.0)], step + 1, scale)
+                            - body_target(surface[split][(reference, -1.0, 1.0)], step + 1, scale)
+                            + body_target(surface[split][(reference, -1.0, -1.0)], step + 1, scale)
+                        )
+                    else:
+                        value = (
+                            body_target(surface[split][(reference, 0.0, 1.0)], step + 1, scale)
+                            - body_target(surface[split][(reference, 0.0, -1.0)], step + 1, scale)
+                        )
+                    target.append(value[:, columns][split_mask])
+                    episode.append(episode_ids[split][split_mask])
+                rows[split] = {
+                    key: torch.cat([b[key] for b in built]) for key in built[0]
+                }
+                targets[split] = torch.cat(target)
+                ids[split] = torch.cat(episode)
+            ladders[label] = information_ladder(rows, targets, ids, label, args)
+
         report["axes"][str(axis)] = {
             "J_own": own, "J_cross": cross, "C_mixed": mixed,
             "shared_response": shared,
-            "information_ladder": {
-                c: {"E": v["test_cross"]["mean"], "cosine": v["test_cross"]["cosine_mean"],
-                    "R_info": v["R_info"], "train_E": v["train_cross"]["mean"]}
-                for c, v in ladder.items()
+            "information_ladders": {
+                label: {
+                    c: {"E": v["test_cross"]["mean"],
+                        "cosine": v["test_cross"]["cosine_mean"],
+                        "R_info": v["R_info"],
+                        "train_E": v["train_cross"]["mean"]}
+                    for c, v in ladder.items()
+                }
+                for label, ladder in ladders.items()
             },
-            "classification": classify(cross, mixed, ladder),
+            "classification": classify(cross, ladders),
         }
 
     # The scenario's verdict is its best axis, chosen by cross-effect size.
@@ -511,16 +593,20 @@ def main():
         (output / "admission_report.json").write_text(json.dumps(reports, indent=2))
 
     print("\n=== ADMISSION REPORT ===")
-    print(f"{'scenario':<14} {'J_cross':>9} {'C_mixed':>9} {'state-dep':>10} "
-          f"{'R_O':>7} {'R_Hd':>7} {'R_Hm':>7}  verdict")
+    print("R_* are recovery fractions on the CROSS-AGENT target only; "
+          "shared/self are descriptive")
+    print(f"{'scenario':<12} {'J_cross':>8} {'C_mix':>7} {'st-dep':>7} "
+          f"{'R_O':>6} {'R_Hd':>6} {'R_Hm':>6} {'R_shr':>6}  verdict")
     for name, report in reports.items():
         axis = report["axes"][report["selected_axis"]]
-        ladder = axis["information_ladder"]
+        cross = axis["information_ladders"]["cross"]
+        verdict = report["verdict"]
         print(
-            f"{name:<14} {axis['J_cross']['mean']:>9.4f} {axis['C_mixed']['mean']:>9.4f} "
-            f"{axis['J_cross']['state_dependence']:>10.2f} "
-            f"{ladder['O']['R_info']:>7.3f} {ladder['H_dense']['R_info']:>7.3f} "
-            f"{ladder['H_model']['R_info']:>7.3f}  {report['verdict']['verdict']}"
+            f"{name:<12} {axis['J_cross']['mean']:>8.3f} {axis['C_mixed']['mean']:>7.3f} "
+            f"{axis['J_cross']['state_dependence']:>7.2f} "
+            f"{cross['O']['R_info']:>6.3f} {cross['H_dense']['R_info']:>6.3f} "
+            f"{cross['H_model']['R_info']:>6.3f} "
+            f"{verdict['shared_recovery_descriptive']:>6.3f}  {verdict['verdict']}"
         )
     print(f"\nWrote {output / 'admission_report.json'}")
 

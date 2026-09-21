@@ -134,6 +134,46 @@ than competing with it.
 The headline across tasks is whether ordinary prediction error explains selected
 regret, or whether counterfactual fidelity does.
 
+## Open discrepancy that must be resolved before the numbers are trusted
+
+**The built-in positive control currently FAILS.** This note registered that
+Buzz Wire must classify as `partially_observable` — "if the protocol does not
+recover that, the protocol is wrong, not Buzz Wire." On the rebuilt
+cross-specific ladder it classifies as **`observable_additive`**, because the
+cross-agent effect now looks *recoverable*: `R_O = 0.674` on axis 0, against
+**0.016** for the same task in G0b.
+
+Two design differences could produce that, and they are not separated:
+
+1. **How the head is fitted.** T-A2b, G0 and G0b all fit one head to the **full**
+   `ΔY` and then *scored* it on a column subset. This benchmark fits a head to
+   the cross columns **only**. Predicting the whole next-state response and
+   reading off the cross part is a harder, worse-posed problem than predicting
+   the cross part directly — the shared-body response is 7.43 against a 2.24
+   cross term, so the pooled head spends its capacity elsewhere. **If this is
+   the dominant cause, G0b's recovery fractions understate what the observation
+   carries, and K29/K30 need revising.**
+2. **Where the non-intervened action sits.** G0b sampled agent 0's action from
+   the reference distribution; the 3x3 grid pins it at the midpoint. That
+   changes the conditional being measured.
+
+`Y` also differs — full informative body state here, MOTION-only there — though
+on Buzz Wire the agent columns coincide (rotation is constant and dropped).
+
+**Registered resolution, before the five-scenario run is interpreted:** rerun the
+G0 ladder with a cross-only fitted head on the G0 intervention design. That
+isolates (1) from (2). Until then:
+
+* **K29 and K30 are provisionally in doubt**, not withdrawn. Their *relative*
+  orderings were measured under one consistent instrument and are unaffected;
+  the *absolute* recovery fractions are what the discrepancy touches.
+* **No scenario's admission verdict should be acted on** — the Buzz Wire
+  classification is the control that says whether the instrument is calibrated,
+  and it is currently disagreeing with a prior measurement of the same task.
+
+This is recorded before the run rather than after, so the outcome cannot be
+re-narrated.
+
 ## Results
 
 *(none yet — registered ahead of its runs)*
