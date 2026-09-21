@@ -160,6 +160,67 @@ Two design differences could produce that, and they are not separated:
 `Y` also differs — full informative body state here, MOTION-only there — though
 on Buzz Wire the agent columns coincide (rotation is constant and dropped).
 
+### Sampled-reference ladder: the change landed, the control still fails
+
+The information ladder now uses G0's sampled-reference design; the 3x3 midpoint
+grid supplies `J_own`, `J_cross` and `C` only, and the artifact records which
+design each number came from. **The registered smoke does not restore the
+positive control**, so the long run stays unlaunched.
+
+Buzz Wire, axis 0, cross ladder on the sampled design:
+
+| input | `E` | `R_info` |
+|---|---:|---:|
+| `A` | 0.878 | — |
+| `O` | 0.532 | **+0.683** |
+| `H_dense` | 0.513 | +0.721 |
+| `H_model` | 0.517 | +0.713 |
+| `S` | 0.372 | 1.000 |
+
+`R_O = 0.683` on the **sampled** design is essentially the midpoint grid's
+`0.674`. Switching conditional moved almost nothing.
+
+#### My earlier attribution was wrong, and a third factor explains it
+
+I recorded "grid design carries 0.293 → 0.674". That is **withdrawn**. The two
+runs differ in a factor I did not control:
+
+| | G0 / job 1514 | admission benchmark |
+|---|---|---|
+| head fitting | cross-only | cross-only |
+| intervention | sampled | sampled (now) |
+| **cells per fit** | **all 4** (2 agents x 2 axes, one head) | **1** (per axis) |
+
+G0's `build_rows` concatenates every `(reference, intervened, axis)` cell into a
+single design matrix, so one head must serve four heterogeneous intervention
+cells at once. The admission benchmark fits one head per axis. Axis 0 reads
+0.683 and axis 1 reads 0.339; a single head compromising across both, plus the
+two mirrored agent directions, is a plausible route to G0's pooled 0.293.
+
+So the discrepancy decomposes as **head fitting target** (established, 1514:
+0.016 → 0.293 at fixed pooling) and **cell pooling** (candidate, not yet
+isolated), with **grid design contributing little**.
+
+#### The mixed target is not measurable on Buzz Wire
+
+`C`'s privileged reference barely beats the actions-only baseline — axis 0
+`A = 2.394` against `S = 1.958`, axis 1 `A = 1.219` against `S = 1.452` — so the
+span guard returns NaN on axis 1 and the overfit guard fires on axis 0. Both
+guards behaved correctly; the honest reading is that **the second difference is
+below what this instrument can resolve on this task at `h = 1`**, so the
+`ADMIT` / `observable_additive` distinction cannot be drawn for Buzz Wire.
+
+#### Consequence
+
+The scenario returns `undetermined_diagnostic_overfit`, not the registered
+`partially_observable`. **The instrument is still not calibrated against a task
+whose answer we know**, and no scenario verdict should be trusted until it is.
+
+The minimal remaining discriminator is to run the admission ladder with all
+cells pooled into one fit, matching G0. If that reproduces ~0.293, cell pooling
+is the whole remaining story and the benchmark must declare which convention it
+uses and why. If it stays near 0.68, something else is still uncontrolled.
+
 ### G0c result (job 1514): both causes are real, and they split the gap
 
 Identical G0 intervention design, anchors, seeds, scale and head family;

@@ -178,6 +178,56 @@ def body_columns(scale, agents, shared_bodies):
     return groups
 
 
+def sampled_branches(task, sub, count, low, high, axis, args, steps):
+    """G0's design: endpoint interventions around a SAMPLED reference action.
+
+    Job 1514 showed this is not interchangeable with the 3x3 midpoint grid. The
+    grid pins the non-intervened agent at the action midpoint, where it is
+    passive and the cross response is dominated by rigid-link geometry that
+    observable positions largely determine: Buzz Wire reads `R_O = 0.674` there
+    against **0.293** here, on the same task and the same head.
+
+    A planner evaluates joint actions in which **both** agents act, so this is
+    the decision-relevant conditional and it is what the information ladder
+    must be measured on. The midpoint grid is retained for `J_own`, `J_cross`
+    and `C`, which need a regular surface.
+
+    Per reference: two branches moving agent 1 alone (the cross/self/shared
+    targets), and the four corners in which BOTH agents move (the mixed second
+    difference). Every other action coordinate stays at the sampled reference.
+    """
+    agents, action_dim = low.shape
+    branches, live = {}, None
+    for reference in range(args.references):
+        base = sample_actions(
+            (count, 1, agents, action_dim), low, high, "independent",
+            args.seed + 500 + reference,
+        )[:, 0]
+
+        def roll(partner_level, own_level=None):
+            action = base.clone()
+            if agents > 1:
+                action[:, 1, axis] = low[1, axis] if partner_level < 0 else high[1, axis]
+            if own_level is not None:
+                action[:, 0, axis] = low[0, axis] if own_level < 0 else high[0, axis]
+            return branch_rollouts(
+                task, sub, constant_plan(action, steps), args.batch_size, args.device
+            )
+
+        for partner in (-1.0, 1.0):
+            data = roll(partner)
+            branches[(reference, "partner", partner)] = data
+            mask = cumulative_valid(data["valid"])
+            live = mask if live is None else (live & mask)
+        for own in (-1.0, 1.0):
+            for partner in (-1.0, 1.0):
+                data = roll(partner, own)
+                branches[(reference, "corner", own, partner)] = data
+                mask = cumulative_valid(data["valid"])
+                live = live & mask
+    return branches, live
+
+
 def interaction_quantities(surface, live, step, scale, references, agents,
                            shared_bodies, episode_ids):
     """J_own, J_cross and the mixed second difference C, decomposed by responder.
@@ -484,55 +534,66 @@ def audit_scenario(name, data_root, args):
               f"shared={shared['mean']:.4f}", flush=True)
 
         # Four targets, each with its own ladder and its own measurement
-        # floor. `cross` decides admission; `self` and `shared` are descriptive
-        # and may reveal, e.g., that Transport's observation identifies the
-        # package's response far better than the partner agent's.
+        # floor. `cross` decides admission; `self` and `shared` are descriptive.
+        #
+        # The ladder is measured on the SAMPLED-reference design, not the
+        # midpoint grid. Job 1514: the grid's passive partner reads
+        # R_O = 0.674 where the sampled conditional reads 0.293, and a planner
+        # queries joint actions in which both agents act.
+        sampled, sampled_live = {}, {}
+        for split in ("train", "test"):
+            sampled[split], sampled_live[split] = sampled_branches(
+                task, subs[split], len(splits[split]), low, high, axis, args, steps
+            )
         groups = body_columns(scale, agents, shared_bodies)
-        mask = live["test"][:, step]
         targets_by_name = {
-            "cross": ("agent_0", "J_cross"),
-            "self": ("agent_1", "J_cross"),
-            "shared": ("shared", "J_cross"),
-            "mixed": ("agent_0", "C"),
+            "cross": "agent_0",
+            "self": "agent_1",
+            "shared": "shared",
+            "mixed": "agent_0",
         }
         ladders = {}
-        for label, (responder, quantity) in targets_by_name.items():
+        for label, responder in targets_by_name.items():
             rows, targets, ids = {}, {}, {}
             for split in ("train", "test"):
-                split_mask = live[split][:, step]
+                split_mask = sampled_live[split][:, step]
+                if int(split_mask.sum()) == 0:
+                    raise ValueError(f"{name} axis {axis}: no live {split} anchors")
                 built, target, episode = [], [], []
+                columns = groups[responder]
                 for reference in range(args.references):
-                    branch = {
-                        "low": surface[split][(reference, 0.0, -1.0)],
-                        "high": surface[split][(reference, 0.0, 1.0)],
-                    }
-                    if quantity == "C":
+                    def Y(key):
+                        return body_target(
+                            sampled[split][key], step + 1, scale
+                        )[:, columns]
+
+                    if label == "mixed":
                         branch = {
-                            "low": surface[split][(reference, -1.0, -1.0)],
-                            "high": surface[split][(reference, 1.0, 1.0)],
+                            "low": sampled[split][(reference, "corner", -1.0, -1.0)],
+                            "high": sampled[split][(reference, "corner", 1.0, 1.0)],
                         }
-                    if int(split_mask.sum()) == 0:
-                        continue
+                        value = (
+                            Y((reference, "corner", 1.0, 1.0))
+                            - Y((reference, "corner", 1.0, -1.0))
+                            - Y((reference, "corner", -1.0, 1.0))
+                            + Y((reference, "corner", -1.0, -1.0))
+                        )
+                    else:
+                        branch = {
+                            "low": sampled[split][(reference, "partner", -1.0)],
+                            "high": sampled[split][(reference, "partner", 1.0)],
+                        }
+                        value = (
+                            Y((reference, "partner", 1.0))
+                            - Y((reference, "partner", -1.0))
+                        )
                     built.append(
                         ladder_inputs(
                             data_root, anchors, splits[split], branch, split_mask,
                             args, block,
                         )
                     )
-                    columns = groups[responder]
-                    if quantity == "C":
-                        value = (
-                            body_target(surface[split][(reference, 1.0, 1.0)], step + 1, scale)
-                            - body_target(surface[split][(reference, 1.0, -1.0)], step + 1, scale)
-                            - body_target(surface[split][(reference, -1.0, 1.0)], step + 1, scale)
-                            + body_target(surface[split][(reference, -1.0, -1.0)], step + 1, scale)
-                        )
-                    else:
-                        value = (
-                            body_target(surface[split][(reference, 0.0, 1.0)], step + 1, scale)
-                            - body_target(surface[split][(reference, 0.0, -1.0)], step + 1, scale)
-                        )
-                    target.append(value[:, columns][split_mask])
+                    target.append(value[split_mask])
                     episode.append(episode_ids[split][split_mask])
                 rows[split] = {
                     key: torch.cat([b[key] for b in built]) for key in built[0]
@@ -544,6 +605,8 @@ def audit_scenario(name, data_root, args):
         report["axes"][str(axis)] = {
             "J_own": own, "J_cross": cross, "C_mixed": mixed,
             "shared_response": shared,
+            "ladder_design": "sampled_reference (G0); the 3x3 midpoint grid "
+                             "supplies J_own/J_cross/C only",
             "information_ladders": {
                 label: {
                     c: {"E": v["test_cross"]["mean"],
