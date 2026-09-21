@@ -258,6 +258,13 @@ def score_checkpoint(directory, args, samples, train_rows, branches, agents,
             true_block = true_delta[:, columns]
             denominator = true_block.norm(dim=1) + 1e-12
             cells[(reference, intervened, axis, name)] = {
+                # ||dY_predicted|| / ||dY_true||. With E_CF and cosine this
+                # separates a response of the wrong SIZE from one pointing the
+                # wrong WAY -- two failures a single ratio cannot tell apart,
+                # and only one of which a rescaling could fix.
+                "magnitude_ratio": (
+                    predicted_delta[:, columns].norm(dim=1) / denominator
+                )[mask],
                 "e_cf": (
                     (predicted_delta[:, columns] - true_block).norm(dim=1) / denominator
                 )[mask],
@@ -291,12 +298,14 @@ def summarize(scored, episode_ids, args):
     }
 
     def pooled(run_results, block_type):
-        parts = {"e_cf": [], "probe_floor": [], "true_size": [], "cosine": [], "ids": []}
+        keys = ("e_cf", "probe_floor", "true_size", "cosine", "magnitude_ratio")
+        parts = {key: [] for key in keys}
+        parts["ids"] = []
         for run_result in run_results:
             for (_, _, _, name), cell in run_result["cells"].items():
                 if name != block_type:
                     continue
-                for key in ("e_cf", "probe_floor", "true_size", "cosine"):
+                for key in keys:
                     parts[key].append(cell[key])
                 parts["ids"].append(episode_ids[cell["mask"]])
         if not parts["e_cf"]:
@@ -323,6 +332,15 @@ def summarize(scored, episode_ids, args):
                         "true_effect_size_mean": float(pool["true_size"].mean()),
                         "resolution_ratio": 1.0 / max(floor_mean, 1e-12),
                         "cosine_mean": float(pool["cosine"].mean()),
+                        "magnitude_ratio_mean": float(pool["magnitude_ratio"].mean()),
+                        # Best E_CF a single rescaling of this arm's response
+                        # could reach: min over r of ||r*u - v||/||v|| is
+                        # sqrt(1 - cos^2) at r = cos. Below 1 means the
+                        # DIRECTION already carries enough to beat predicting
+                        # nothing, and the shortfall is calibration.
+                        "best_rescaled_e_cf": float(
+                            (1.0 - pool["cosine"].clamp(-1, 1) ** 2).clamp_min(0).sqrt().mean()
+                        ),
                         "fraction_below_one": float((pool["e_cf"] < 1.0).double().mean()),
                         "usable_by_registered_rule": is_usable(floor_mean),
                     }
@@ -434,7 +452,8 @@ def print_report(results):
         print(
             f"  {name:<40} E_CF {arm['mean']:.4f} [{arm['low']:.4f}, {arm['high']:.4f}]  "
             f"floor {arm['probe_floor_mean']:.4f}  "
-            f"cos {arm['cosine_mean']:+.3f}  "
+            f"cos {arm['cosine_mean']:+.3f}  mag {arm['magnitude_ratio_mean']:.3f}  "
+            f"rescaled {arm['best_rescaled_e_cf']:.3f}  "
             f"<1 in {arm['fraction_below_one']:.3f}  n={arm['anchors']}"
         )
     print("\nPaired seed comparisons (negative delta favours the first arm)\n")

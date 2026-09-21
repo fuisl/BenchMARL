@@ -200,3 +200,39 @@ def test_bootstrap_reports_an_empty_cell_instead_of_crashing_the_report():
     assert empty["episodes"] == 0
     assert empty["anchors"] == 0
     assert empty["mean"] != empty["mean"]  # NaN, not a silent zero
+
+
+def test_rescaling_bound_matches_the_closed_form():
+    """min over r of ||r*u - v|| / ||v|| is sqrt(1 - cos^2), attained at r = cos.
+
+    This is what separates "the model has no cross-agent information" from
+    "it has the information and the wrong gain".
+    """
+    torch.manual_seed(0)
+    true = torch.randn(64, 4).double()
+    predicted = torch.randn(64, 4).double()
+    cosine = torch.nn.functional.cosine_similarity(predicted, true, dim=1)
+    closed_form = (1.0 - cosine**2).clamp_min(0).sqrt()
+
+    grid = torch.linspace(-3.0, 3.0, 2001).double()
+    for row in range(8):
+        errors = (
+            grid[:, None] * predicted[row] - true[row]
+        ).norm(dim=1) / true[row].norm()
+        assert float(errors.min()) == pytest.approx(float(closed_form[row]), abs=2e-3)
+
+
+def test_zero_response_scores_exactly_one_and_cannot_be_rescaled_below_it():
+    """`independent` is the structural floor, not a competitor.
+
+    Its predicted cross response is exactly zero, so E_CF is exactly 1 and no
+    rescaling helps -- which is why a conditioned arm scoring above 1 is a real
+    finding rather than a tie.
+    """
+    true = torch.randn(32, 4).double()
+    zero = torch.zeros_like(true)
+    e_cf = (zero - true).norm(dim=1) / true.norm(dim=1)
+    cosine = torch.nn.functional.cosine_similarity(zero, true, dim=1, eps=1e-12)
+    assert torch.allclose(e_cf, torch.ones_like(e_cf))
+    assert torch.allclose(cosine, torch.zeros_like(cosine))
+    assert torch.allclose((1.0 - cosine**2).sqrt(), torch.ones_like(cosine))
