@@ -396,12 +396,29 @@ zero is confirmed empirically rather than assumed.
 
 #### Registered verdict: the headline claim fails
 
-**H1 does not beat H0. It loses on 0/8 seeds in every cell, under both probes.**
-Both conditioned arms sit *above* 1, meaning their cross-agent prediction is
-worse, in squared error, than predicting no cross-agent response at all. Two
-registered rows fire — "H1 ≈ H0" and "all arms `E_CF` ≥ 1" — so under the
-criterion fixed before the run, **no arm resolves the cross-agent effect that
-T-A1 proved the simulator has.**
+**H1 does not beat H0. It loses on 0/8 seeds in every cell, under both probes**
+— 32 of 32 seed-cells positive, with no exception. Every point estimate for a
+conditioned arm is *above* 1, i.e. worse in squared error than predicting no
+cross-agent response at all. Two registered rows fire — "H1 ≈ H0" and "all arms
+`E_CF` ≥ 1" — so under the criterion fixed before the run, **no arm resolves the
+cross-agent effect that T-A1 proved the simulator has.**
+
+**Precision on what is and is not significant.** The absolute claim and the
+comparative claim do not have the same strength, and they must not be quoted
+interchangeably:
+
+| Claim | Evidence | Strength |
+|---|---|---|
+| H1 never beats H0 | paired by seed, 0/8 in all four cells, both probes | **unambiguous** |
+| a conditioned arm is *significantly* worse than predicting nothing | only `correlated / joint` has a 95% interval excluding 1.0 (linear [1.0198, 1.2498]; MLP [1.0562, 1.3139]) | **one cell of four** |
+
+The other three cells straddle 1.0. With 16 root episodes the episode-clustered
+absolute intervals are wide, while pairing by seed removes the between-seed and
+between-episode variance that widens them — which is why the comparative result
+is sharp and the absolute one is not. The registered falsification of K21 rests
+on the paired test, which is the comparison the rule was written against, so the
+verdict is unaffected. **"Conditioning is worse than predicting nothing" should
+be stated as a point estimate, not as a significant effect.**
 
 #### But the failure is gain, not absence of information
 
@@ -440,6 +457,34 @@ capacity. It is bounded: both arms remain above 1, so the honest statement is
 **relational is consistently less wrong, not that relational works.** It does
 not license a relational architecture claim, which still needs
 `N_train != N_test`.
+
+#### The coverage contrast appears, where M4 said it did not
+
+Relational's advantage over joint is **2.5–2.8x larger under restricted
+joint-action coverage** than under full coverage:
+
+| Probe | `correlated` (restricted) | `independent` (full) | ratio |
+|---|---:|---:|---:|
+| linear | −0.0862 (8/8 seeds) | −0.0312 (6/8) | 2.76x |
+| MLP | −0.1078 (8/8) | −0.0436 (7/8) | 2.47x |
+
+This is M1 Row 2's predicted contrast: relational structure should matter most
+exactly where the data does not cover the joint actions being asked about. The
+M4 note recorded that this contrast **failed to appear** — "the relational gain
+is the same size in both regimes, so the coverage contrast the impact notes
+predict does not appear" — and carried that as a caution against reading M4's
+rollout advantage as interaction modelling.
+
+On the repaired reference profile, measured on counterfactual response in common
+physical coordinates rather than on rollout error, it appears. That is a
+non-trivial change and it is the strongest available evidence that the
+relational conditioner is doing interaction work rather than being better
+conditioned.
+
+Bounded: this is a difference of paired means across two regimes, not a
+registered comparison — the T-A2 decision rule compared arms *within* a regime.
+It is reported as an observation that a future registration should test, not as
+a fired rule.
 
 #### What this means for Task A
 
