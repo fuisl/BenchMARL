@@ -489,6 +489,74 @@ with `E_CF ≥ 1` rank interventions correctly risks exactly the failure mode th
 audit catalogues — a downstream metric obscuring an unlocalized upstream defect.
 T-A3 stays registered and stays gated.
 
+> **RETRACTED IN PART (2026-09-21, job 1516).** Two of this section's
+> conclusions do not survive re-measurement under a per-cell, cross-fitted head:
+> the exoneration of the encoder, and the claim that only the ball helps. Read
+> [`33_admission_benchmark.md`](33_admission_benchmark.md) and the block below
+> before citing anything here. The recovery-fraction *ordering* survives; the
+> attributions built on it do not.
+
+### T-A2b re-measured (job 1516): the encoder is NOT exonerated
+
+Same 48 checkpoints, same bank, anchors, seeds, scale and interventions.
+Nothing retrained. Only the measurement convention changed, from a head fitted
+to the whole `ΔY` across four pooled intervention cells to a head fitted to the
+cross block on one cell.
+
+| input | old `R` | **new `R`** | new cosine |
+|---|---:|---:|---:|
+| `actions_only` (blind floor) | 0.000 | 0.000 | +0.841 |
+| **`observation_raw`** | 0.016 | **0.605** | +0.867 |
+| `history` (3 frames) | 0.306 | 0.627 | +0.879 |
+| **latent** — ind / joint / rel | 0.033 / −0.001 / 0.013 | **0.214 / 0.212 / 0.211** | +0.866 |
+| **latent ⊕ agent pos/vel** | 0.043 / 0.031 / 0.034 | **0.557 / 0.538 / 0.531** | +0.878 |
+| latent ⊕ ball/linkage | 0.861 / 0.862 / 0.870 | 0.903 / 0.907 / 0.888 | +0.942 |
+| `physical` (ceiling) | 1.000 | 1.000 | +0.936 |
+
+#### Two conclusions invert
+
+**1. "The encoder is exonerated" is withdrawn.** That rested on
+`observation_raw ≈ latent` — if the observation carried nothing, the encoder
+could not be discarding anything. It now reads **0.605 for the raw observation
+against 0.214 for the latent**: the observation carries a clear majority of the
+recoverable effect and **the encoder loses roughly two thirds of it.** That is a
+JEPA-abstraction result, and it is the opposite of what this note recorded.
+
+**2. The clean triple dissociation is withdrawn.** It read latent 0.03 →
+`+agent-physical` 0.04 (no help) → `+ball` 0.86, and was cited as showing the
+deficit is the mediating body *specifically*. It now reads **0.214 → 0.545 →
+0.899**: returning the agent's own position and velocity recovers **half** the
+gap.
+
+That second point is the sharper one. Buzz Wire's agents have rotation and
+angular velocity identically zero, so `agent_physical` is effectively **just
+position and velocity — which the observation already contains and the encoder
+already consumed.** Handing the encoder's own input back to the probe in raw
+form nearly triples recovery. The latent is discarding information it was given.
+
+#### What survives
+
+* The **ordering** latent ≪ latent+agent ≪ latent+ball, on all three
+  architectures and both regimes.
+* **Ball state is still the largest single contributor**, 0.899 against 0.545.
+* **Architecture is still irrelevant** to what the encoder preserves: the three
+  kinds sit within 0.003 of each other on the latent arm, as K27 recorded.
+* The privileged reference resolves the effect well (`E = 0.327`, cosine
+  +0.936), so the instrument is sound.
+
+#### Consequence for the direction
+
+[`direction_joint_representation_2026-09-21.md`](../direction_joint_representation_2026-09-21.md)
+argued that the deficit is missing *input* rather than unextracted input, and on
+that basis predicted `L_CF` alone could not close the gap and deprioritised the
+world token. **That argument is undermined.** A substantial part of the loss is
+representational, so an objective that backpropagates into `E` — which `L_CF`
+does — is back in scope, and so is a learned `z_G` that changes what the encoder
+preserves rather than what it is shown.
+
+The registered falsification condition in that document has effectively fired
+from the measurement side rather than from an `L_CF` run.
+
 ### T-A2b result (job 1503): the predictor is exonerated; the latent is not sufficient for *scale*
 
 48 checkpoints, 683 train / 117 test anchors, 4 references. Artifacts:
