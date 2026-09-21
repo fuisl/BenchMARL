@@ -297,3 +297,74 @@ def test_build_rows_self_and_cross_columns_are_disjoint_per_row():
     _, _, columns, _ = build_rows(branches, 5, 4, 2, scale, torch.arange(6), None)
     overlap = (columns["cross"].unsqueeze(2) == columns["self"].unsqueeze(1)).any()
     assert not bool(overlap)
+
+
+# --- G0: history window alignment -------------------------------------------
+
+from examples.world_model.counterfactual_localization import (  # noqa: E402
+    SOURCE_REGIMES,
+    history_window,
+)
+
+
+def _fake_bank(tmp_path, episodes=4, steps=10, agents=2, obs=6, act=2):
+    """Two regime trajectory files whose contents are distinguishable."""
+    for index, name in enumerate(SOURCE_REGIMES):
+        torch.save(
+            {
+                "observation": torch.arange(
+                    episodes * steps * agents * obs, dtype=torch.float32
+                ).reshape(episodes, steps, agents, obs)
+                + index * 1000.0,
+                "action": torch.arange(
+                    episodes * steps * agents * act, dtype=torch.float32
+                ).reshape(episodes, steps, agents, act)
+                + index * 1000.0,
+            },
+            tmp_path / f"trajectories_{name}.pt",
+        )
+
+
+def test_history_window_rejects_a_misaligned_lookup(tmp_path):
+    """A window aligned to the wrong episode makes every later number meaningless.
+
+    The regime index order was validated bit-exactly against real data; this
+    pins that a disagreement is raised rather than absorbed.
+    """
+    _fake_bank(tmp_path)
+    anchors = {
+        "episode_id": torch.tensor([0, 1]),
+        "source_step": torch.tensor([5, 6]),
+        "source_regime": torch.tensor([0, 1]),
+    }
+    rows = torch.tensor([0, 1])
+    wrong = torch.zeros(2, 2, 6)
+    with pytest.raises(ValueError, match="misaligned"):
+        history_window(anchors, rows, tmp_path, 3, wrong)
+
+
+def test_history_window_shape_and_episode_start_clamping(tmp_path):
+    """Frames clamp at 0 at an episode start, repeating the earliest frame.
+
+    That is the convention `model_input.PlanningContext` already registers for a
+    decision with no past, so the diagnostic and the planner agree.
+    """
+    _fake_bank(tmp_path)
+    source = torch.load(
+        tmp_path / f"trajectories_{SOURCE_REGIMES[0]}.pt", weights_only=True
+    )
+    anchors = {
+        "episode_id": torch.tensor([0]),
+        "source_step": torch.tensor([0]),  # episode start: nothing precedes it
+        "source_regime": torch.tensor([0]),
+    }
+    rows = torch.tensor([0])
+    observed = source["observation"][0, 0].unsqueeze(0)
+    window = history_window(anchors, rows, tmp_path, 3, observed)
+
+    agents, obs, act = 2, 6, 2
+    assert window.shape == (1, 3 * agents * obs + 2 * agents * act)
+    frames = window[0, : 3 * agents * obs].reshape(3, agents, obs)
+    # All three frames are the same clamped frame, and it is the observed one.
+    assert torch.equal(frames[0], frames[2])
+    assert torch.allclose(frames[2], observed[0].double())

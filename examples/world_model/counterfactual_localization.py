@@ -84,6 +84,60 @@ from examples.world_model.physical_response import encoded, state_input_frames
 from examples.world_model.plan_ranking import select_anchor_states
 from examples.world_model.train import load_model
 
+# Anchor `source_regime` indexes these in THIS order. Verified bit-exactly
+# against each branch's own step-0 observation before any history is built; the
+# reversed order disagrees by ~0.96, so a silent swap is not survivable.
+SOURCE_REGIMES = ("independent", "correlated")
+
+
+def history_window(anchors, rows, data_root, frames, observed):
+    """(B, frames*N*obs + (frames-1)*N*act): what the agents actually saw.
+
+    G0's question is whether the mediating state -- Buzz Wire's ball, which no
+    agent observes -- is recoverable from legitimate observations once MOTION is
+    available. Two rigid joints constrain the ball to at most two solutions given
+    the agents' positions, so a single frame cannot disambiguate it but a short
+    history might.
+
+    Indices clamp at 0, repeating the earliest available frame, which is the
+    episode-start convention `model_input.PlanningContext` already registers.
+
+    `observed` is each anchor's own step-0 observation from the branch rollout.
+    The looked-up frame at `source_step` must equal it exactly, or the window is
+    aligned to the wrong episode and every number built on it is meaningless.
+    """
+    episode = anchors["episode_id"][rows]
+    step = anchors["source_step"][rows]
+    regime = anchors["source_regime"][rows]
+    trajectories = {
+        index: torch.load(
+            data_root / f"trajectories_{name}.pt", map_location="cpu", weights_only=True
+        )
+        for index, name in enumerate(SOURCE_REGIMES)
+    }
+
+    observations, actions = [], []
+    for e, s, r in zip(episode.tolist(), step.tolist(), regime.tolist()):
+        source = trajectories[r]
+        frame_index = [max(0, s - offset) for offset in reversed(range(frames))]
+        action_index = [max(0, s - offset) for offset in reversed(range(1, frames))]
+        observations.append(source["observation"][e, frame_index])
+        actions.append(source["action"][e, action_index])
+    observations = torch.stack(observations)  # (B, frames, N, obs)
+    actions = torch.stack(actions)  # (B, frames-1, N, act)
+
+    aligned = observations[:, -1]
+    if not torch.equal(aligned, observed):
+        raise ValueError(
+            "History lookup is misaligned with the anchor it describes: the "
+            f"frame at source_step differs by {float((aligned - observed).abs().max()):.3e}"
+        )
+    batch = observations.shape[0]
+    return torch.cat(
+        [observations.reshape(batch, -1), actions.reshape(batch, -1)], dim=1
+    ).double()
+
+
 # One architecture for every input condition. The inputs differ in width because
 # that is the question being asked, so the head itself must not also vary.
 HIDDEN = 512
@@ -186,7 +240,7 @@ def latent_features(model, branches, shaped, device):
     return features
 
 
-def build_rows(branches, block, step, agents, scale, episode_ids, latents):
+def build_rows(branches, block, step, agents, scale, episode_ids, latents, history=None):
     """Stack every (anchor, reference, cell) into one design matrix per input."""
     rows = {
         "actions_only": [],
@@ -195,6 +249,7 @@ def build_rows(branches, block, step, agents, scale, episode_ids, latents):
         "latent": [],
         "latent_plus_agentphys": [],
         "latent_plus_state": [],
+        "history": [],
     }
     targets, episodes = [], []
     columns = {"cross": [], "self": []}
@@ -235,6 +290,8 @@ def build_rows(branches, block, step, agents, scale, episode_ids, latents):
             torch.cat([observation, actions], dim=1)[mask]
         )
         rows["physical"].append(torch.cat([physical, actions], dim=1)[mask])
+        if history is not None:
+            rows["history"].append(torch.cat([history, actions], dim=1)[mask])
         if latents is not None:
             rows["latent"].append(torch.cat([latents[key], actions], dim=1)[mask])
             # T-A2b-2: the latent PLUS the mediating state the observation omits.
@@ -363,12 +420,24 @@ def run(args):
     # The state-blind floor and the physical ceiling do not depend on any model,
     # so they are fitted once. Refitting them per checkpoint would invite
     # reading their seed noise as a model difference.
-    shared = {}
+    shared, history = {}, {}
     for name in ("train", "test"):
+        if args.history_frames > 1:
+            any_branch = next(iter(branches[name].values()))["low"]
+            history[name] = history_window(
+                anchors, splits[name], data_root, args.history_frames,
+                any_branch["observation"][:, 0],
+            )
+            print(f"  {name} history window: {tuple(history[name].shape)} "
+                  f"({args.history_frames} frames, alignment verified)", flush=True)
         shared[name] = build_rows(
-            branches[name], block, step, agents, scale, episode_ids[name], None
+            branches[name], block, step, agents, scale, episode_ids[name], None,
+            history.get(name),
         )
-    for condition in ("actions_only", "observation_raw", "physical"):
+    conditions = ["actions_only", "observation_raw", "physical"]
+    if args.history_frames > 1:
+        conditions.insert(2, "history")
+    for condition in conditions:
         net, decay, stats = select_and_fit(
             shared["train"][0][condition], shared["train"][1],
             shared["train"][3], args.device, args.seed,
@@ -406,7 +475,8 @@ def run(args):
         for name in ("train", "test"):
             latents = latent_features(model, branches[name], shaped, args.device)
             fitted[name] = build_rows(
-                branches[name], block, step, agents, scale, episode_ids[name], latents
+                branches[name], block, step, agents, scale, episode_ids[name], latents,
+                history.get(name),
             )
         key = f"{config['data']['regime']}__{config['model']['kind']}__{config['seed']}"
         for condition in ("latent", "latent_plus_agentphys", "latent_plus_state"):
@@ -503,6 +573,8 @@ def main():
     parser.add_argument("--seed", type=int, default=7301)
     parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--max-anchors", type=int, default=None)
+    # 3 matches the reference profile's history_size. 1 disables the condition.
+    parser.add_argument("--history-frames", type=int, default=3)
     parser.add_argument("--device", default="cpu")
     run(parser.parse_args())
 

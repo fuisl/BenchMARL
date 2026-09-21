@@ -104,6 +104,33 @@ If history recovers the mediating state, `z_G` built from history is the
 indicated architecture. If it does not, no architecture over these observations
 can succeed and the honest conclusion is a task-design one.
 
+### A constraint on `z_G` that follows from T-A2b, not from taste
+
+**A world token computed from the same-timestep agent latents cannot help.**
+
+```math
+z^G_t=\operatorname{Pool}(z^1_t,\ldots,z^N_t)
+```
+
+is a deterministic function of `{z^i_t}`, so it carries no information those
+latents do not already carry. T-A2b's head was given **all agents' latents
+concatenated** — strictly more informative than any pooling of them — and
+recovered `R ≈ 0` on cross `E_CF`. Adding a pooled token to that input is a
+re-parameterization, and a re-parameterization cannot move an information-limited
+measurement.
+
+Therefore:
+
+```math
+\boxed{z^G \text{ must integrate HISTORY, or H3 is vacuous.}}
+```
+
+`z^G = G(\{z^i_t\}, H_t)` with `H_t` a window of past observations and executed
+actions is the only form of the hypothesis that can be non-trivially true here.
+This is why G0's history condition is not merely a gate on H3 but a precondition
+for H3 being a meaningful experiment at all, and why a single-frame `z_G` arm is
+**not** in the registered design.
+
 ## H3 - does an agent-neutral world token help?
 
 **Blocked on G0 passing.**
