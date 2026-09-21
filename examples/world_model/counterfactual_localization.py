@@ -219,8 +219,10 @@ def build_rows(branches, block, step, agents, scale, episode_ids, latents):
             rows["latent"].append(torch.cat([latents[key], actions], dim=1)[mask])
         targets.append(true_delta[mask])
         groups = column_groups(agents, 0, intervened)
-        for block in ("cross", "self"):
-            columns[block].append(groups[block].unsqueeze(0).expand(count, -1))
+        # NOT `block`: that name is the action-block width used above, and
+        # rebinding it here silently passed a string into `blocked()`.
+        for name in ("cross", "self"):
+            columns[name].append(groups[name].unsqueeze(0).expand(count, -1))
         episodes.append(episode_ids[mask])
     stacked = {name: torch.cat(v) for name, v in rows.items() if v}
     return (

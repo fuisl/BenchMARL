@@ -238,3 +238,58 @@ def test_zero_response_scores_exactly_one_and_cannot_be_rescaled_below_it():
     assert torch.allclose(e_cf, torch.ones_like(e_cf))
     assert torch.allclose(cosine, torch.zeros_like(cosine))
     assert torch.allclose((1.0 - cosine**2).sqrt(), torch.ones_like(cosine))
+
+
+# --- T-A2b: counterfactual information localization -------------------------
+
+from examples.world_model.counterfactual_localization import (  # noqa: E402
+    build_rows,
+)
+
+
+def _localization_branch(anchors=6, steps=5, agents=2, bodies=1):
+    return {
+        "next_agent_state": torch.randn(anchors, steps, agents, 6),
+        "next_package_state": torch.randn(anchors, steps, bodies, 6),
+        "agent_state": torch.randn(anchors, steps, agents, 6),
+        "package_state": torch.randn(anchors, steps, bodies, 6),
+        "valid": torch.ones(anchors, steps, dtype=torch.bool),
+        "action": torch.randn(anchors, steps, agents, 2),
+    }
+
+
+def test_build_rows_keeps_the_action_block_width_across_cells():
+    """The per-cell column loop must not rebind the action-block width.
+
+    It did, which passed the string "self" into `blocked()` on the second cell.
+    Four cells is the smallest case that exposes it; one cell would pass.
+    """
+    branches = {
+        (0, intervened, axis): {
+            "low": _localization_branch(), "high": _localization_branch()
+        }
+        for intervened in range(2)
+        for axis in range(2)
+    }
+    scale = torch.ones(2 * 4 + 1 * 4).double()
+    rows, target, columns, episodes = build_rows(
+        branches, 5, 4, 2, scale, torch.arange(6), None
+    )
+    assert rows["actions_only"].shape == (24, 40)
+    assert target.shape == (24, 12)
+    assert columns["cross"].shape == columns["self"].shape == (24, 4)
+    assert episodes.shape[0] == 24
+
+
+def test_build_rows_self_and_cross_columns_are_disjoint_per_row():
+    """A row's self and cross blocks must never name the same column."""
+    branches = {
+        (0, intervened, 0): {
+            "low": _localization_branch(), "high": _localization_branch()
+        }
+        for intervened in range(2)
+    }
+    scale = torch.ones(2 * 4 + 1 * 4).double()
+    _, _, columns, _ = build_rows(branches, 5, 4, 2, scale, torch.arange(6), None)
+    overlap = (columns["cross"].unsqueeze(2) == columns["self"].unsqueeze(1)).any()
+    assert not bool(overlap)
