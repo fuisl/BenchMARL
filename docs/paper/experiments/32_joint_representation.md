@@ -197,6 +197,30 @@ be worth knowing whether a world token extracts that ~40% better than a flat
 history window does, but it cannot produce a counterfactually sufficient model on
 this observation set, and it must not be presented as if it could.
 
+### G0 final (job 1508): the localization is uniform across all 48 checkpoints
+
+All three per-checkpoint conditions, 16 checkpoints per architecture:
+
+| Input | cross `E_CF` | `R` on `E_CF` | cross cosine | `R` on cosine | self |
+|---|---:|---:|---:|---:|---:|
+| `actions_only` (blind floor) | 0.8951 | 0.000 | +0.459 | 0.000 | 0.399 |
+| `observation_raw` | 0.8882 | 0.016 | +0.741 | 0.681 | 0.259 |
+| `history` (3 frames, stride 1) | 0.7634 | 0.306 | +0.750 | 0.702 | 0.231 |
+| latent — independent / joint / relational | 0.881 / 0.896 / 0.890 | 0.033 / −0.001 / 0.013 | +0.712 / +0.715 / +0.713 | 0.61 | 0.275 |
+| **+ agent rot/ang-vel** | 0.877 / 0.882 / 0.880 | 0.043 / 0.031 / 0.034 | +0.725 / +0.727 / +0.726 | 0.64 | 0.272 |
+| **+ ball/linkage** | **0.5245 / 0.5240 / 0.5204** | **0.861 / 0.862 / 0.870** | +0.858 / +0.856 / +0.858 | **0.96** | 0.140 |
+| `physical` (ceiling) | 0.4645 | 1.000 | +0.873 | 1.000 | 0.119 |
+
+**The heterogeneity check passes with no heterogeneity.** Across 48 checkpoints,
+three architectures and two coverage regimes, the three conditions separate
+identically: every latent arm within 0.015 of the blind floor, every
+`+ agent-physical` arm within 0.02, every `+ ball` arm within 0.004 of the
+others at `R ≈ 0.86`. No architecture, seed or regime deviates.
+
+That is the strongest available statement of the localization: the deficit is a
+property of **the observation**, invariant to everything we varied inside the
+model.
+
 ### A constraint on `z_G` that follows from T-A2b, not from taste
 
 **A world token computed from the same-timestep agent latents cannot help.**

@@ -304,6 +304,53 @@ synthetic-start context. Only a genuine episode start may use a repeated first
 observation with null past actions. This applies to candidate ranking and MPC
 evaluation too, not only to T-A2.
 
+### F13 corrected result (job 1513): the defect was real, its effect is negligible
+
+48 checkpoints, `h = 1,2,3`, both probe families, **nothing retrained** — only
+the evaluation context changed, so every difference is attributable to F13
+alone. Artifacts: `outputs/ta2_f13_corrected_1513/`, which now self-describe
+(`context_mode: authentic_block_strided`, stride 5, 85 mid-episode / 32
+episode-start anchors).
+
+**Numerical effect, cross block:**
+
+| `h` | arm | contaminated | corrected | Δ |
+|---:|---|---:|---:|---:|
+| 1 | joint | 1.1367 | 1.1378 | **+0.0010** |
+| 1 | relational | 1.0506 | 1.0515 | **+0.0009** |
+| 2 | joint | 1.3886 | 1.3918 | +0.0033 |
+| 2 | relational | 1.2133 | 1.2161 | +0.0028 |
+| 3 | joint | 1.2800 | 1.2792 | −0.0008 |
+| 3 | relational | 1.2672 | 1.2677 | +0.0005 |
+
+Largest shift anywhere is **0.004**, about 0.3% relative, and the sign is mostly
+*against* the corrected context. Cosine moves by at most 0.003.
+
+**Preregistered verdict: the first branch fires.** Signs and seed counts of
+`Δ10` and `Δ21` survive in **all 24 cells**, with a single one-seed change (h=3
+linear, independent regime, relational-vs-joint 3/8 → 4/8, on a comparison whose
+delta is +0.025 and was already null). So:
+
+* **K21 is strengthened.** H1 loses to H0 on **0/8 seeds in all 12 cells** under
+  the authentic context, exactly as under the contaminated one.
+* **K22 is strengthened.** Relational beats joint 8/8 at `h=1` and `h=2` in the
+  restricted-coverage regime, null at `h=3`, unchanged.
+* **K24 is strengthened.** Cosine decay +0.400 → +0.231 → +0.018 (joint) and
+  +0.408 → +0.238 → **−0.136** (relational) replicates.
+
+**What this settles.** The ~0.16-0.30 gap between T-A2b's ~0.89 diagnostic
+reference and T-A2's 1.05-1.19 is **not** the evaluation context. F13 accounts
+for under 2% of it. The remainder sits in the predictor and the probe.
+
+**These are now the canonical original-observation baseline.** Jobs 1502 and 1505
+are superseded for absolute levels; their directional conclusions stood.
+
+**A caveat on interpreting "F13 barely mattered".** It does not follow that
+context fidelity is unimportant in general. A model rolled for one to three
+blocks from a restored anchor may simply not be sensitive to its initial
+context, while a longer closed-loop rollout could be. The finding is bounded to
+this horizon range, and the contract remains enforced in code regardless.
+
 ## T-A2b — counterfactual information localization (registered)
 
 **Status: registered 2026-09-21, before Test A exists.** T-A2 scored the
