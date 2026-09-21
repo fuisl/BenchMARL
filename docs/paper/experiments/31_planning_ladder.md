@@ -63,6 +63,70 @@ Running as **job 1505** on the 48 existing checkpoints, both probe families.
 compounding; flat-but-high implicates the one-step response itself. The two
 imply different repairs, so the shape is the result, not the `h=1` value alone.
 
+### Gate 1 horizon result (job 1505)
+
+48 checkpoints, both probe families, `correlated` regime shown; the linear and
+MLP probes agree on every ordering.
+
+| `h` | arm | `E_CF` | cosine | magnitude | live anchors |
+|---:|---|---:|---:|---:|---:|
+| 1 | independent | 1.0000 | +0.000 | 0.000 | 13,424 |
+| 1 | joint | 1.137 | **+0.400** | 0.898 | |
+| 1 | relational | 1.051 | **+0.408** | 0.740 | |
+| 2 | independent | 1.0000 | +0.000 | 0.000 | 4,736 |
+| 2 | joint | 1.389 | **+0.230** | 1.072 | |
+| 2 | relational | 1.213 | **+0.238** | 0.832 | |
+| 3 | independent | 1.0000 | +0.000 | 0.000 | 968 |
+| 3 | joint | 1.280 | **+0.015** | 0.724 | |
+| 3 | relational | 1.267 | **−0.138** | 0.611 | |
+
+**The headline is the cosine, not `E_CF`.** The directional cross-agent content
+that exists at one block decays monotonically and is **gone by three**: joint
+reaches +0.015, statistically indistinguishable from the uninformed 0.000, and
+relational goes **negative** at −0.138, i.e. anti-correlated with the true
+response. Full-coverage (`independent`-regime) models decay more slowly
+(+0.453 → +0.352 → +0.240 for joint) but in the same direction.
+
+`E_CF` itself rises 1.14 → 1.39 from `h=1` to `h=2`, so recursive compounding is
+implicated by the registered reading. Its apparent partial recovery at `h=3` must
+**not** be read as improvement — see the survivorship caveat below.
+
+**The relational advantage is horizon-limited.** Paired by seed on cross:
+
+| `h` | correlated, relational vs joint | independent regime |
+|---:|---|---|
+| 1 | −0.086 / −0.108, **8/8** seeds | −0.031 / −0.044, 6-7/8 |
+| 2 | −0.175 / −0.196, **8/8** | −0.029 / −0.088, 6-7/8 |
+| 3 | −0.013 / −0.017, **3-4/8** | +0.026 / +0.025, 3-4/8 |
+
+It peaks at `h=2` and **vanishes at `h=3`**. So K22b, and the relational result
+generally, is a claim about short-horizon counterfactual response, not about
+rollouts of the depth a planner uses.
+
+**H1 never beats H0 at any horizon:** 0/8 seeds in all twelve cells. That
+falsification is now horizon-robust, not an `h=1` artifact.
+
+#### Survivorship caveat on `h=3`
+
+Live anchors fall 13,424 → 4,736 → 968. The `h=3` rows describe only episodes
+that survived fifteen primitive steps of a **maximal constant-action**
+intervention, which is a selected and atypical subpopulation. The probe floor
+stays healthy there (resolution 4.4-6.6, clearing the registered 3x rule), so
+the numbers are measurements rather than noise — but they are measurements on a
+different, smaller population than `h=1`, and the apparent `E_CF` recovery at
+`h=3` is most likely that selection rather than better prediction. Cross-horizon
+comparisons of `E_CF` **levels** are therefore not licensed; the cosine trend,
+which moves monotonically and in the same direction in every arm and both
+probes, is the defensible reading.
+
+#### Consequence for Gates 2-4
+
+A planner rolling `H = 5` blocks would consume predictions whose cross-agent
+directional content is zero or anti-correlated beyond roughly two blocks. This
+independently reinforces the control precondition above: the issue is not only
+that `E_CF > 1` at one block, but that whatever interaction signal exists does
+not survive to the depth a planner needs.
+
 ## Gate 2 - fixed candidate ranking
 
 **The most important experiment before control**, and the first that touches
