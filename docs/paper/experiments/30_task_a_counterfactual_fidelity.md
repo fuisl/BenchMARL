@@ -236,8 +236,20 @@ search of a positive.
 |---|---|---|
 | T-A1 | `examples/world_model/interaction_jacobian.py` | `scripts/slurm/ta1_interaction_jacobian.sbatch` |
 | T-A2 stage 1 | `examples/world_model/train.py --config-name world_model_reference` | `scripts/slurm/ta2_reference_baselines.sbatch` |
-| T-A2 stage 2 | `examples/world_model/physical_response.py` (extended for the full Jacobian) | registered when stage 1 reports |
+| T-A2 stage 2 | `examples/world_model/counterfactual_fidelity.py` | `scripts/slurm/ta2_counterfactual_fidelity.sbatch` |
 | T-A3 | to be implemented | registered when T-A2 reports |
+
+**T-A2 stage 2 implementation notes.** Interventions are regenerated from T-A1's
+seed through T-A1's own helpers and must then reproduce its recorded per-cell
+means, so the evaluation cannot drift away from the floor that licensed it.
+`E_CF` is computed **separately per block** — self, cross, shared — because
+self-dynamics dominate the response and every arm including H0 can represent
+them, so a pooled number would be a self-dynamics claim wearing the name of an
+interaction claim. `rolled_latent` dispatches on model profile: `lewm_reference`
+refuses a one-frame rollout by design, so a restored anchor uses the
+episode-start convention `model_input.PlanningContext` registers — the frame
+repeated `history_size` times with zero past actions — rather than
+reconstructing a history that does not exist.
 
 Contracts: `test/test_world_model_interaction_jacobian.py`,
 `test/test_world_model_reference_profile.py`,
