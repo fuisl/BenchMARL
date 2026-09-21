@@ -459,8 +459,10 @@ def run(args):
             flush=True,
         )
 
+    # The shared conditions are model-independent, so a history-length sweep
+    # does not need the per-checkpoint loop that dominates runtime.
     for directory in sorted(Path(args.runs).iterdir()):
-        if not (directory / "model.pt").exists():
+        if args.shared_only or not (directory / "model.pt").exists():
             continue
         config = yaml.safe_load((directory / "resolved_config.yaml").read_text())
         state_input = config["data"].get("state_input", "observation")
@@ -521,6 +523,8 @@ def print_report(results):
         line(name, summary)
 
     by_arm = {}
+    if not results["per_run"]:
+        print("  (shared conditions only; no per-checkpoint arms requested)")
     for condition, runs in results["per_run"].items():
         for key, summary in runs.items():
             regime, kind, _ = key.split("__")
@@ -575,6 +579,13 @@ def main():
     parser.add_argument("--max-anchors", type=int, default=None)
     # 3 matches the reference profile's history_size. 1 disables the condition.
     parser.add_argument("--history-frames", type=int, default=3)
+    parser.add_argument(
+        "--shared-only",
+        action="store_true",
+        help="skip the per-checkpoint latent conditions. The state-blind floor, "
+        "raw observation, history window and physical ceiling do not depend on "
+        "any model, so a history-length sweep needs only these.",
+    )
     parser.add_argument("--device", default="cpu")
     run(parser.parse_args())
 
