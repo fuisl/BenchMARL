@@ -112,3 +112,79 @@ def test_resolve_task_accepts_the_recorded_buzz_wire_configuration():
     task, recorded = resolve_task(manifest)
     assert recorded["collision_reward"] == -10.0
     assert task.config["collision_reward"] == -10.0
+
+
+# --- T-A2 stage 2: effect-normalized fidelity -------------------------------
+
+from examples.world_model.counterfactual_fidelity import (  # noqa: E402
+    RESOLUTION_RATIO,
+    column_groups,
+    is_usable,
+    verify_against_jacobian,
+)
+
+
+def test_column_groups_separate_the_diagonal_from_the_off_diagonal():
+    """Pooling self with cross would hide the only block that distinguishes arms.
+
+    Self-dynamics dominate the response and every arm, including `independent`,
+    can represent them. An off-diagonal claim computed on a pooled vector would
+    be a self-dynamics claim wearing its name.
+    """
+    groups = column_groups(agents=2, shared_bodies=3, intervened=0)
+    assert groups["self"].tolist() == [0, 1, 2, 3]
+    assert groups["cross"].tolist() == [4, 5, 6, 7]
+    assert groups["shared"].tolist() == list(range(8, 20))
+
+    mirrored = column_groups(agents=2, shared_bodies=3, intervened=1)
+    assert mirrored["self"].tolist() == [4, 5, 6, 7]
+    assert mirrored["cross"].tolist() == [0, 1, 2, 3]
+
+
+def test_column_groups_cover_every_y_column_exactly_once():
+    groups = column_groups(agents=3, shared_bodies=2, intervened=2)
+    covered = sorted(c for group in groups.values() for c in group.tolist())
+    assert covered == list(range(3 * 4 + 2 * 4))
+
+
+def test_registered_resolution_rule_is_the_inverse_probe_floor():
+    """E_CF and the floor are both divided by ||dY_true||, so the reported
+    floor is the inverse resolution and the 3x rule is `floor <= 1/3`.
+
+    This is the rule that retired K8: Balance's true response sat far below
+    probe error and the ordering reported on it was noise.
+    """
+    assert RESOLUTION_RATIO == 3.0
+    assert is_usable(0.0)           # a perfect probe
+    assert is_usable(1.0 / 3.0)     # exactly at the registered boundary
+    assert not is_usable(0.34)      # just inside the floor
+    assert not is_usable(1.0)       # predicting nothing beats the instrument
+    assert not is_usable(70.0)      # the Balance case that had to be retired
+
+
+def _branch(value, steps=5, anchors=2, agents=2, bodies=1):
+    low = {
+        "next_agent_state": torch.zeros(anchors, steps, agents, 6),
+        "next_package_state": torch.zeros(anchors, steps, bodies, 6),
+        "valid": torch.ones(anchors, steps, dtype=torch.bool),
+        "action": torch.zeros(anchors, steps, agents, 2),
+    }
+    high = {k: v.clone() for k, v in low.items()}
+    high["next_agent_state"][..., 0] = value
+    return {"low": low, "high": high}
+
+
+def test_verify_against_jacobian_rejects_a_drifted_intervention():
+    """Scoring models against a counterfactual other than the registered one
+    would silently detach T-A2 from the floor T-A1 established."""
+    branches = {(0, 0, 0): _branch(1.0)}
+    scale = torch.ones(4)
+    recorded = {
+        "a0_axis0__agent_0__h1": {"mean": 1.0},
+        "a0_axis0__agent_1__h1": {"mean": 1.0},
+    }
+    assert verify_against_jacobian(branches, 2, 5, scale, recorded, 1) == 2
+
+    drifted = {"a0_axis0__agent_0__h1": {"mean": 0.25}}
+    with pytest.raises(ValueError, match="do not reproduce T-A1"):
+        verify_against_jacobian(branches, 2, 5, scale, drifted, 1)
