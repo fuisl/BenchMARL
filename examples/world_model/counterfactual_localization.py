@@ -415,6 +415,20 @@ def run(args):
         branches[name], _ = collect_branches(
             task, sub, len(rows), low, high, args, steps
         )
+        if args.cells:
+            # One head serving four heterogeneous (agent, axis) intervention
+            # cells is a different, harder problem than one head per cell.
+            # Restricting the fit isolates that factor while holding the
+            # intervention design, anchors, seeds, scale and head family fixed.
+            keep = {tuple(int(v) for v in cell.split(":")) for cell in args.cells}
+            branches[name] = {
+                key: value for key, value in branches[name].items()
+                if (key[1], key[2]) in keep
+            }
+            if not branches[name]:
+                raise ValueError(f"No branches match --cells {args.cells}")
+            print(f"  restricted to cells {sorted(keep)}: "
+                  f"{len(branches[name])} branch sets", flush=True)
 
     recorded = json.loads(Path(args.jacobian).read_text())["cells"]
     checked = verify_against_jacobian(
@@ -603,6 +617,11 @@ def main():
     parser.add_argument("--max-anchors", type=int, default=None)
     # 3 matches the reference profile's history_size. 1 disables the condition.
     parser.add_argument("--history-frames", type=int, default=3)
+    parser.add_argument(
+        "--cells", nargs="*", default=None, metavar="AGENT:AXIS",
+        help="restrict the fit to these intervention cells, e.g. 1:0. Default "
+        "pools every cell into one head, which is what G0/G0b did.",
+    )
     parser.add_argument(
         "--fit-target", choices=("full", "cross", "self"), default="full",
         help="what the diagnostic head is fitted to predict. `full` is the "
