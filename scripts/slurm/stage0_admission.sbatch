@@ -1,38 +1,36 @@
 #!/usr/bin/env bash
-# Stage 0/1: cross-scenario admission benchmark. NO world model is trained.
+# Stage 0/1: cross-scenario admission benchmark, 3 seeds, concurrent, full A100.
+# NO world model is trained. This is task characterization, not architecture work.
 #
-# Buzz Wire's cross-agent effect is large, real, active on 100% of anchors, and
-# unlearnable because the observation omits the mediating body. Establishing
-# that cost 48 checkpoints, a horizon sweep and a localization study. This
-# benchmark exists so it is never spent again without checking first.
+# The question is only which existing VMAS task provides the clean OBSERVABLE
+# interaction setting Buzz Wire does not: a real cross-agent effect, recoverable
+# from legitimate observation, with measurable interaction structure. Only tasks
+# that pass go on to H0/H1/H2.
 #
-# One protocol on every scenario, producing one comparable ADMISSION REPORT:
-# a 3x3 joint-action grid giving J_own, J_cross and the MIXED second difference
-# C, then the A -> O -> H_dense -> H_model -> S information ladder. Only ADMIT
-# scenarios proceed to H0/H1/H2.
+# Buzz Wire is carried as the reference case, now characterized by job 1516 as
+#   R_observation = 0.605   R_latent = 0.212   R_latent+ball = 0.899
+# i.e. the observation carries a majority of the effect and the learned latent
+# preserves much less of it. Dropout is carried as the weak-interaction control.
 #
-# Banks are reused, not recollected: all five share action_block=5,
-# sequence_steps=25 and the seed family 3100-3103, and the audit regenerates its
-# own interventions from restored snapshots. balance_repair_1236 is used, never
-# balance_1233, whose heuristic branch was Transport's policy.
+# The measurement convention is FROZEN (see note 33): cross-block fitting target,
+# one (agent, axis) cell per head, sampled-reference ladder intervention, full
+# per-column-scaled body state as Y, 3x3 midpoint grid for J_own/J_cross/C only.
 #
-# Buzz Wire is carried as the KNOWN partial-observability reference. If the
-# protocol does not classify it as partially_observable, the protocol is wrong,
-# not Buzz Wire -- that is the built-in positive control.
-# Dropout is carried as the known weak-interaction control.
+# Three seeds run CONCURRENTLY on one full A100. Each seed is an independent
+# draw of the reference joint actions, so agreement across seeds is replication
+# of the admission verdict rather than of the arithmetic. Each writes its own
+# report directory; a seed that fails loses only itself.
 #
-# SIZING. Per scenario per axis: (train + test anchors) x references x 9 grid
-# cells of 5 primitive steps, then five head fits with decay selection. Measured
-# on Buzz Wire at full anchor count, one scenario is well under an hour; five
-# scenarios x up to 2 axes fits an overnight window with wide margin.
+# Transport is ordered first so the most valuable candidate completes even if
+# the window is short, and each scenario's report is written as it finishes.
 #SBATCH --job-name=stage0-admission
 #SBATCH --partition=gpu
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=32G
-#SBATCH --gres=gpu:a100_3g.20gb:1
-#SBATCH --time=14:00:00
+#SBATCH --cpus-per-task=24
+#SBATCH --mem=72G
+#SBATCH --gres=gpu:a100:1
+#SBATCH --time=24:00:00
 #SBATCH --output=slurm-%j.out
 
 set -euo pipefail
@@ -44,13 +42,13 @@ export PYTHONPATH="${SLURM_SUBMIT_DIR}${PYTHONPATH:+:$PYTHONPATH}"
 
 references="${ADM_REFERENCES:-2}"
 horizon="${ADM_HORIZON:-1}"
-seed="${ADM_SEED:-7301}"
+seeds="${ADM_SEEDS:-7301 7302 7303}"
 output="${SLURM_SUBMIT_DIR}/outputs/stage0_admission_${SLURM_JOB_ID}"
 mkdir -p "$output/source"
 exec > >(tee -a "$output/batch.log") 2>&1
 
-printf 'Stage 0/1 admission: job=%s references=%s horizon=%s\n' \
-    "$SLURM_JOB_ID" "$references" "$horizon"
+printf 'Stage 0/1 admission: job=%s seeds=[%s] references=%s horizon=%s\n' \
+    "$SLURM_JOB_ID" "$seeds" "$references" "$horizon"
 printf 'CUDA_VISIBLE_DEVICES=%s\n' "${CUDA_VISIBLE_DEVICES:?}"
 
 git rev-parse HEAD > "$output/commit.txt"
@@ -67,16 +65,27 @@ trap 'kill "$gpu_monitor_pid" 2>/dev/null || true' EXIT
 .venv/bin/python -m pytest -q test/test_world_model_interaction_jacobian.py \
     | tee "$output/preflight_tests.txt"
 
-# Each scenario is written to the report as it completes, so a late failure
-# cannot lose earlier work.
-srun --ntasks=1 .venv/bin/python -u -m examples.world_model.admission_benchmark \
-    --scenario transport=outputs/transport_data_1190 \
-    --scenario wheel=outputs/wheel_1205/data \
-    --scenario balance=outputs/balance_repair_1236/data \
-    --scenario buzz_wire=outputs/buzz_wire_1196/data \
-    --scenario dropout=outputs/dropout_control_1193/data \
-    --out "$output/result" --references "$references" --horizon "$horizon" \
-    --seed "$seed" --device cuda 2>&1 | tee "$output/run.log"
+pids=()
+for seed in $seeds; do
+    .venv/bin/python -u -m examples.world_model.admission_benchmark \
+        --scenario transport=outputs/transport_data_1190 \
+        --scenario wheel=outputs/wheel_1205/data \
+        --scenario balance=outputs/balance_repair_1236/data \
+        --scenario buzz_wire=outputs/buzz_wire_1196/data \
+        --scenario dropout=outputs/dropout_control_1193/data \
+        --out "$output/result_seed${seed}" --references "$references" \
+        --horizon "$horizon" --seed "$seed" --device cuda \
+        > "$output/run_seed${seed}.log" 2>&1 &
+    pids+=("$!")
+    printf 'launched seed %s (pid %s)\n' "$seed" "$!"
+done
 
-test -s "$output/result/admission_report.json"
-printf '\nCompleted Stage 0/1 admission: %s\n' "$output"
+status=0
+for pid in "${pids[@]}"; do
+    wait "$pid" || status=1
+done
+
+printf '\nReports written:\n'
+find "$output" -name admission_report.json -printf '  %p\n'
+printf '\nCompleted Stage 0/1 admission (exit status %s): %s\n' "$status" "$output"
+exit "$status"
