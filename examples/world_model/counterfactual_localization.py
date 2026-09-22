@@ -484,6 +484,16 @@ def run(args):
     conditions = ["actions_only", "observation_raw", "physical"]
     if args.history_frames > 1:
         conditions.insert(2, "history")
+    if args.conditions:
+        # The A-vs-S admission gate needs only the blind floor and the
+        # privileged reference. Fitting `observation_raw` and `history` as well
+        # is the expensive part of the expensive ladder, and it answers a
+        # question that is meaningless until the gate says the effect is
+        # resolvable at all.
+        unknown = set(args.conditions) - set(conditions)
+        if unknown:
+            raise ValueError(f"unknown conditions {sorted(unknown)}; have {conditions}")
+        conditions = [c for c in conditions if c in set(args.conditions)]
     def fitted_view(entry, condition):
         design, target, columns, episodes = entry
         if args.fit_target != "full":
@@ -667,6 +677,12 @@ def main():
         "historical behaviour -- fit the whole next-state response, score a "
         "subset. `cross` fits the cross block directly, which is the better-"
         "posed question when asking whether the cross effect is recoverable.",
+    )
+    parser.add_argument(
+        "--conditions", nargs="*", default=None,
+        help="restrict the shared conditions that are fitted, e.g. "
+        "`--conditions actions_only physical` for the A-vs-S admission gate. "
+        "Default fits all of them.",
     )
     parser.add_argument(
         "--shared-only",
