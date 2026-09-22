@@ -31,11 +31,13 @@ Two entry points:
 
 import argparse
 import json
+import math
 from pathlib import Path
 
 # A gate whose gap is positive but within bootstrap noise is not a pass. The
 # interval on the blind floor and on the reference must not overlap.
 ADMIT = "ADMIT"
+REJECT_NO_TRUE_EFFECT = "no true effect to resolve"
 REJECT_NO_EFFECT = "no resolvable effect"
 REJECT_NOT_SEPARATED = "reference does not beat blind"
 
@@ -84,6 +86,13 @@ def gate(localization_path):
 
 
 def verdict(cross, gated):
+    # Dropout's cross response is identically zero, so the pooled ratio is 0/0.
+    # That is the negative control behaving correctly, and it must not be
+    # reported as "the reference failed to beat blind" -- there is nothing for
+    # either head to predict. `nan` fails every comparison, so without this
+    # branch it would fall through to the separation test and be mislabelled.
+    if math.isnan(gated["gap"]) or cross["j_cross"] <= 0.0:
+        return REJECT_NO_TRUE_EFFECT
     if gated["gap"] <= 0:
         return REJECT_NO_EFFECT
     if not gated["separated"]:

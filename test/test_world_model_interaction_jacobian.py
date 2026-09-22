@@ -8,17 +8,24 @@ exactly zero response.
 """
 
 import json
-
 import math
 
 import pytest
 import torch
 
+from examples.world_model.admission_gate import (
+    ADMIT,
+    REJECT_NOT_SEPARATED,
+    REJECT_NO_TRUE_EFFECT,
+    cross_summary,
+    strongest_cross_cell,
+    verdict,
+)
 from examples.world_model.interaction_jacobian import (
     bootstrap_by_episode,
-    pooled_ratio_by_episode,
     constant_plan,
     cumulative_valid,
+    pooled_ratio_by_episode,
     resolve_task,
     witness_response,
 )
@@ -818,3 +825,58 @@ def test_pooled_ratio_reports_empty_rather_than_crashing():
     )
     assert empty["episodes"] == 0 and empty["anchors"] == 0
     assert math.isnan(empty["mean"])
+
+
+def _cells(entries):
+    return {"cells": {k: v for k, v in entries.items()}}
+
+
+def _cross(agent, axis, mean, active, responder="agent_1"):
+    return {"mean": mean, "active_fraction_above_1e-6": active, "block": "cross",
+            "intervened_agent": agent, "intervened_axis": axis,
+            "responder": responder}
+
+
+def test_gate_picks_the_strongest_cross_cell_not_a_self_cell(tmp_path):
+    """The error behind jobs 1527/1540: the audited cell was not the best one.
+
+    Self cells dominate every task -- Buzz Wire's self response is 6.86 against
+    a 2.23 cross -- so a picker that ranked all cells would always return a self
+    cell and the gate would measure nothing about interaction.
+    """
+    path = tmp_path / "ta1.json"
+    path.write_text(json.dumps(_cells({
+        "self_big": {"mean": 99.0, "active_fraction_above_1e-6": 1.0,
+                     "block": "self", "intervened_agent": 3,
+                     "intervened_axis": 1, "responder": "agent_3"},
+        "weak": _cross(1, 1, 0.52, 0.56),
+        "strong": _cross(1, 0, 1.554, 0.75),
+    })))
+    assert strongest_cross_cell(path) == "1:0"
+    assert cross_summary(path)["j_cross"] == pytest.approx(1.554)
+
+
+def test_gate_rejects_a_positive_gap_that_bootstrap_intervals_do_not_separate():
+    """Sign alone is not admission -- a +0.01 gap inside noise is not resolvable."""
+    overlapping = {"e_a": 0.90, "e_a_low": 0.85, "e_s": 0.89, "e_s_high": 0.94,
+                   "gap": 0.01, "separated": False}
+    separated = {"e_a": 0.5445, "e_a_low": 0.4591, "e_s": 0.2921,
+                 "e_s_high": 0.3784, "gap": 0.2524, "separated": True}
+    real = {"j_cross": 1.5, "active": 0.75, "cell": "1:0"}
+    assert verdict(real, overlapping) == REJECT_NOT_SEPARATED
+    assert verdict(real, separated) == ADMIT
+
+
+def test_gate_calls_the_negative_control_by_the_right_name():
+    """Dropout's cross response is identically zero, so the pooled ratio is 0/0.
+
+    `nan` fails every comparison, so without an explicit branch this falls
+    through to the separation test and is reported as the reference failing to
+    beat blind -- which would read as a finding rather than as the control
+    working.
+    """
+    nothing = {"j_cross": 0.0, "active": 0.0, "cell": "0:0"}
+    nan_gate = {"e_a": float("nan"), "e_a_low": float("nan"),
+                "e_s": float("nan"), "e_s_high": float("nan"),
+                "gap": float("nan"), "separated": False}
+    assert verdict(nothing, nan_gate) == REJECT_NO_TRUE_EFFECT
