@@ -42,23 +42,40 @@ REJECT_NO_EFFECT = "no resolvable effect"
 REJECT_NOT_SEPARATED = "reference does not beat blind"
 
 
+def _best_cross(jacobian_path):
+    """The strongest cross cell AT THE RUN'S OWN HORIZON.
+
+    A T-A1 run at horizon h writes cells for every horizon 1..h, because the
+    loop reports each block boundary along the way. Ranking all of them
+    together picks whichever horizon happens to carry the largest response,
+    which is not the horizon the gate then runs at -- on transport h=3 that
+    returned an h=2 cell, and the descriptor columns described a different
+    measurement from the one being gated.
+    """
+    payload = json.loads(Path(jacobian_path).read_text())
+    horizon = payload["horizon_blocks"]
+    cross = [
+        v for v in payload["cells"].values()
+        if v.get("block") == "cross" and v.get("horizon_blocks") == horizon
+    ]
+    if not cross:
+        return None
+    return max(cross, key=lambda v: v["mean"])
+
+
 def strongest_cross_cell(jacobian_path):
     """The (agent, axis) whose CROSS response is largest, as `AGENT:AXIS`."""
-    cells = json.loads(Path(jacobian_path).read_text())["cells"]
-    cross = {k: v for k, v in cells.items() if v.get("block") == "cross"}
-    if not cross:
-        raise ValueError(f"{jacobian_path} has no cross cells")
-    best = max(cross.values(), key=lambda v: v["mean"])
+    best = _best_cross(jacobian_path)
+    if best is None:
+        raise ValueError(f"{jacobian_path} has no cross cells at its own horizon")
     return f"{best['intervened_agent']}:{best['intervened_axis']}"
 
 
 def cross_summary(jacobian_path):
     """Largest cross cell's magnitude and activity, for the descriptor columns."""
-    cells = json.loads(Path(jacobian_path).read_text())["cells"]
-    cross = [v for v in cells.values() if v.get("block") == "cross"]
-    if not cross:
+    best = _best_cross(jacobian_path)
+    if best is None:
         return {"j_cross": 0.0, "active": 0.0, "cell": "-"}
-    best = max(cross, key=lambda v: v["mean"])
     return {
         "j_cross": best["mean"],
         "active": best["active_fraction_above_1e-6"],

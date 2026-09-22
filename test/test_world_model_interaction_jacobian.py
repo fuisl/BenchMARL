@@ -827,14 +827,14 @@ def test_pooled_ratio_reports_empty_rather_than_crashing():
     assert math.isnan(empty["mean"])
 
 
-def _cells(entries):
-    return {"cells": {k: v for k, v in entries.items()}}
+def _cells(entries, horizon=3):
+    return {"horizon_blocks": horizon, "cells": dict(entries)}
 
 
-def _cross(agent, axis, mean, active, responder="agent_1"):
+def _cross(agent, axis, mean, active, responder="agent_1", horizon=3):
     return {"mean": mean, "active_fraction_above_1e-6": active, "block": "cross",
             "intervened_agent": agent, "intervened_axis": axis,
-            "responder": responder}
+            "responder": responder, "horizon_blocks": horizon}
 
 
 def test_gate_picks_the_strongest_cross_cell_not_a_self_cell(tmp_path):
@@ -848,10 +848,11 @@ def test_gate_picks_the_strongest_cross_cell_not_a_self_cell(tmp_path):
     path.write_text(json.dumps(_cells({
         "self_big": {"mean": 99.0, "active_fraction_above_1e-6": 1.0,
                      "block": "self", "intervened_agent": 3,
-                     "intervened_axis": 1, "responder": "agent_3"},
+                     "intervened_axis": 1, "responder": "agent_3",
+                     "horizon_blocks": 3},
         "weak": _cross(1, 1, 0.52, 0.56),
         "strong": _cross(1, 0, 1.554, 0.75),
-    })))
+    }, horizon=3)))
     assert strongest_cross_cell(path) == "1:0"
     assert cross_summary(path)["j_cross"] == pytest.approx(1.554)
 
@@ -880,3 +881,20 @@ def test_gate_calls_the_negative_control_by_the_right_name():
                 "e_s": float("nan"), "e_s_high": float("nan"),
                 "gap": float("nan"), "separated": False}
     assert verdict(nothing, nan_gate) == REJECT_NO_TRUE_EFFECT
+
+
+def test_gate_ranks_cells_only_at_the_runs_own_horizon(tmp_path):
+    """A T-A1 run at horizon h writes cells for every horizon 1..h.
+
+    Ranking across all of them returns whichever horizon carries the largest
+    response, not the one the gate runs at. On transport h=3 that picked an h=2
+    cell and the descriptor columns then described a different measurement from
+    the one being gated.
+    """
+    path = tmp_path / "ta1.json"
+    path.write_text(json.dumps(_cells({
+        "earlier_and_bigger": _cross(2, 0, 0.127, 0.096, horizon=2),
+        "at_this_horizon": _cross(1, 1, 0.102, 0.081, horizon=3),
+    }, horizon=3)))
+    assert strongest_cross_cell(path) == "1:1"
+    assert cross_summary(path)["j_cross"] == pytest.approx(0.102)
