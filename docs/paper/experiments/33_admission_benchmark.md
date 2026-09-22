@@ -21,6 +21,35 @@ reference and retired **experimentally** as the primary task. Its value in the
 paper is the contrast: a framework that explains *why* a world model cannot
 learn a counterfactual effect, rather than reporting which network won.
 
+## FROZEN MEASUREMENT CONVENTION (2026-09-21)
+
+Four conventions were each chosen implicitly, and two of them moved the headline
+by more than 10x (jobs 1514, 1515, 1516). They are now fixed. **Do not reopen
+any of them unless a positive or negative control actually falsifies it.**
+
+| Choice | Frozen value | Why |
+|---|---|---|
+| **Fitting target** | the **cross block**, fitted directly | Fitting the whole `ΔY` and scoring a subset spends head capacity on the shared response, which is 3.3x the cross term. Job 1514: 0.016 → 0.293 |
+| **Cells per fit** | **one** `(agent, axis)` cell per head | Pooling four heterogeneous cells charges the input for a representational burden that is not about information. Job 1515: 0.293 → 0.605-0.638 |
+| **Ladder intervention** | **sampled reference** (G0 design) | A planner queries joint actions in which both agents act. The midpoint grid leaves the partner passive |
+| **`Y`** | every body's full `(pos, vel, rot, ang_vel)`, per-column training-scaled, constant columns dropped | Wheel's line is pinned and only rotates; a motion-only target reads exactly zero there |
+| **Grid** | 3x3 midpoint surface, for `J_own`/`J_cross`/`C` **only** | A second difference needs a regular surface; it is not the information question |
+
+The information question is *is the effect recoverable from this input* — an
+upper bound on availability. Per-cell, cross-fitted answers that. The pooled
+variant answers a different and also legitimate question (can one function serve
+the whole intervention space), and is closer to what a world model faces; it is
+simply not the admission gate.
+
+### Known limitation, accepted for this screening pass
+
+`grid_rollouts` and `sampled_branches` intersect the live mask across **all**
+branches, so an anchor is dropped if *any* unrelated intervention terminated it.
+That can bias the surviving sample. Contrast-specific masks are the correct fix
+and are **owed before any final statistical claim**; for a screening pass whose
+purpose is ranking tasks, the bias is shared across scenarios and does not
+invalidate the comparison. Recorded here so it is not rediscovered as a defect.
+
 ## What runs: one protocol, every scenario, no world model trained
 
 ```
