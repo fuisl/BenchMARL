@@ -476,6 +476,43 @@ of sums replaces the mean of ratios in the frozen convention and the Balance
 audit is re-run. If they disagree on Buzz Wire, the headline numbers need
 re-deriving before anything else proceeds.
 
+### Implemented (commit `c314fd1`), gate running
+
+`pooled_ratio_by_episode` in `interaction_jacobian.py` implements the form
+above. The interval still resamples root episodes, but the ratio is recomputed
+*inside* each resample rather than averaging resampled per-anchor ratios — the
+two are not the same statistic when the denominator varies.
+
+`block_e_cf` now returns the residual and truth norms **undivided**, so the
+caller chooses where the division happens. `score` records both forms on the
+same fits, and `print_report` recomputes the whole recovery ladder `R` under
+each, so the agreement check compares two complete measurements rather than two
+numbers sharing a denominator.
+
+Three tests pin it:
+
+| test | pins |
+|---|---|
+| `..._scores_a_no_response_head_at_exactly_one` | pooled `E_CF = 1` for a zero-response head, so `E_CF < 1` keeps its meaning |
+| `..._survives_anchors_whose_effect_is_near_zero` | job 1527's failure reproduced: the per-anchor form exceeds `1e6`, the pooled form stays below 0.3 |
+| `..._reports_empty_rather_than_crashing` | a fully-terminated cell returns `nan` with `episodes = 0` |
+
+This is an **instrument** change. No LeWM edit, no `L_CF`, no world token, no
+planning, no change to the bank or the intervention design.
+
+Two jobs, submitted concurrently:
+
+| job | role | configuration |
+|---|---|---|
+| **1538** | the gate | job 1516's configuration re-run unchanged, both forms side by side |
+| **1540** | the re-run | job 1527's configuration, Balance `h=3`, cells `1:1` and `0:1` |
+
+1540 is 1539 resubmitted. 1539 requested `gpu:a100:1` and 40 G and queued
+behind another user; job 1527's own trace shows the workload peaked at **712
+MiB of GPU memory, 35% mean utilisation and 2.42 GB RSS**, because the cost is
+the CPU-side simulator rollouts. Re-sized to a `2g.10gb` slice with 10 G, it
+started immediately and runs in parallel with the gate.
+
 ## Results (job 1522)
 
 Five scenarios x three seeds, `references = 2`, `horizon = 1` block, frozen

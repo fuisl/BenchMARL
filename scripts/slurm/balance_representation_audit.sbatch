@@ -41,13 +41,21 @@
 # encodes a single frame either way, so the profile affects what was trained
 # rather than how it is read -- but it is a cross-profile comparison and must be
 # reported as one.
+# SIZING, measured on job 1527, which ran this exact workload on a FULL A100:
+# peak GPU memory 712 MiB of 40960, mean GPU utilisation 35%, peak RSS 2.42 GB
+# of the 40 GB requested. The card was idle most of the time because the cost is
+# the CPU-side simulator rollouts, not the head fits. Requesting a full A100 was
+# over-provisioning that only served to queue the job behind another user; a
+# 2g.10gb slice has 14x the GPU memory this needs, and 10 GB of RAM has 4x the
+# headroom. Expect a longer wall clock than 2:54 on the smaller slice, which the
+# 16 h limit absorbs.
 #SBATCH --job-name=balance-repr
 #SBATCH --partition=gpu
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=12
-#SBATCH --mem=40G
-#SBATCH --gres=gpu:a100:1
+#SBATCH --mem=10G
+#SBATCH --gres=gpu:a100_2g.10gb:1
 #SBATCH --time=16:00:00
 #SBATCH --output=slurm-%j.out
 
