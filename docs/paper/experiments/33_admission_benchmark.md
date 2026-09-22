@@ -513,6 +513,48 @@ MiB of GPU memory, 35% mean utilisation and 2.42 GB RSS**, because the cost is
 the CPU-side simulator rollouts. Re-sized to a `2g.10gb` slice with 10 G, it
 started immediately and runs in parallel with the gate.
 
+## Balance representation audit, re-run (job 1540): UNINFORMATIVE
+
+COMPLETED in 2:50:01. Same configuration as job 1527 -- cells `1:1` and `0:1`,
+`h=3`, sampled reference -- with the pooled aggregation in place. Artifacts:
+`outputs/balance_representation_1540/`.
+
+### The aggregation fix is confirmed on the data that broke
+
+Same fits, same anchors, the two forms side by side on cell `1:1`:
+
+| condition | **pooled** | mean of ratios |
+|---|---:|---:|
+| `actions_only` | 0.9351 | 5.9e10 |
+| `observation_raw` | 0.9148 | 4.4e10 |
+| `history` | 0.9097 | 3.7e10 |
+| `physical` | 0.9167 | 4.3e10 |
+
+Job 1527's `1e10` was the aggregation and nothing else. The identical data
+yields bounded numbers under pooling.
+
+### And the measurement is still uninformative
+
+| cell | `E_A` blind | `E_S` reference | gap | verdict |
+|---|---:|---:|---:|---|
+| `1:1` | 0.9351 [0.9035, 0.9640] | 0.9167 [0.8794, 0.9514] | +0.0184 | intervals overlap |
+| `0:1` | 0.9165 [0.8894, 0.9424] | 0.9244 [0.8960, 0.9520] | **-0.0079** | reference is WORSE than blind |
+
+Given the **true physical state**, the head does no better than one that sees
+only actions -- on `0:1`, measurably worse. Every latent arm sits at
+0.907-0.911, indistinguishable from all of it. The registered rule fires and no
+recovery ratio is computable; the `R = +1.5` printed in that log is 0.018
+divided by noise and means nothing.
+
+### Scope, stated narrowly
+
+This rules out **Balance axis-1 cells at `h=3` under sampled reference**. It
+does not rule out Balance. Those cells carry `J_cross ~ 0.52` at 56% activity
+while the task's axis-0 cells carry **1.369-1.554 at 59-75%**, and job 1541
+admits `balance h=2 cell 1:0` on exactly that basis. The cell list used here
+was inherited from the original audit rather than derived from T-A1's ranking,
+which is the error `admission_gate --pick-cell` now prevents.
+
 ## The aggregation gate (job 1538): PASSED
 
 Job 1516's configuration re-run unchanged, with both aggregations computed on
