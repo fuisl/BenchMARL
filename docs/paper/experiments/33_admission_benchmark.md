@@ -513,6 +513,91 @@ MiB of GPU memory, 35% mean utilisation and 2.42 GB RSS**, because the cost is
 the CPU-side simulator rollouts. Re-sized to a `2g.10gb` slice with 10 G, it
 started immediately and runs in parallel with the gate.
 
+## The A-vs-S admission gate (job 1541)
+
+Five scenarios x `h` in {1, 2, 3, 5}, five task streams in parallel on one full
+A100, `references = 3`, pooled `E_CF`, sampled-reference intervention. ~1 h.
+Artifacts: `outputs/admission_gate_1541/`.
+
+### The criterion changed
+
+Job 1540 forced the separation of two claims this note had been treating as
+one:
+
+| claim | measured by | role |
+|---|---|---|
+| a true interaction exists | `J_cross`, active fraction | **descriptive** |
+| the instrument can resolve it | `E_A - E_S` with separated intervals | **admission** |
+
+Balance at `h=3` satisfies the first and, on the cells 1527/1540 audited, fails
+the second. The old 50%-activity threshold is demoted: it is reported, it no
+longer admits. Separation is required rather than a positive sign, because a
+`+0.008` gap inside bootstrap noise is not a resolvable effect.
+
+The gate fits only `actions_only` and `physical`, on the strongest CROSS cell
+at the run's own horizon, and skips the per-checkpoint loop entirely. That buys
+all twenty cells for a fraction of one representation audit.
+
+### Results
+
+| task | h | cell | `J_cross` | active | anchors | `E_A` | `E_S` | gap | verdict |
+|---|--:|--:|--:|--:|--:|--:|--:|--:|---|
+| **buzz_wire** | 1 | 0:0 | 2.229 | 1.000 | 311 | 0.5783 | 0.3561 | **+0.2222** | **ADMIT** |
+| **balance** | 3 | 1:0 | 1.554 | 0.750 | 619 | 0.7457 | 0.6281 | **+0.1175** | **ADMIT** |
+| **balance** | 5 | 1:0 | 1.385 | 0.805 | 441 | 0.7534 | 0.6399 | **+0.1135** | **ADMIT** |
+| **balance** | 2 | 1:0 | 1.369 | 0.592 | 655 | 0.7297 | 0.6166 | **+0.1132** | **ADMIT** |
+| buzz_wire | 3 | 1:0 | 2.731 | 1.000 | **1** | 0.8708 | 0.3538 | +0.5169 | too little support |
+| buzz_wire | 2 | 0:0 | 2.915 | 1.000 | 82 | 0.5282 | 0.4846 | +0.0436 | intervals overlap |
+| balance | 1 | 1:1 | 0.257 | 0.378 | 669 | 0.8830 | 0.8389 | +0.0440 | intervals overlap |
+| transport | 1-5 | - | 0.093-0.127 | <=0.113 | 574-717 | ~0.996 | ~0.988 | <=+0.011 | reject |
+| wheel | 1-5 | - | 0.031-0.063 | <=0.062 | 384-480 | ~0.999 | ~0.999 | ~0.000 | reject |
+| dropout | 1-5 | 0:0 | 0.000 | 0.000 | 361-477 | - | - | - | no true effect |
+
+**Both controls hold.** Buzz Wire is admitted at `h=1`; Dropout is rejected at
+every horizon with `J_cross` exactly 0.000.
+
+### Balance is admitted, and the earlier audits were on the wrong cells
+
+`balance h=2/3/5 cell 1:0` admits with a gap of +0.113 to +0.118, ~600 anchors
+over 16 episodes, and train matching test. Jobs 1527 and 1540 audited cells
+`1:1` and `0:1` -- axis 1, `J_cross ~ 0.52` at 56% activity -- against these
+axis-0 cells at 1.369-1.554 and 59-80%. Same task, same horizon, same design,
+same bank, same aggregation: only the cell differs, and it decides the outcome.
+The cell list was inherited rather than derived from T-A1's ranking. Six hours
+of compute went into that.
+
+### Transport and Wheel are rejected at every horizon
+
+Not on activity, but on the instrument: `E_S ~ 0.999` against `E_A ~ 0.999`,
+agreeing to four decimals on Wheel. Given the TRUE physical state, the head
+does exactly as well as predicting no response at all. The weak-interaction
+reading of these two tasks survives a proper test rather than resting on a
+threshold.
+
+### Activity does not track measurability
+
+Stated as a finding rather than an aside, because it is what the night bought:
+
+* Balance `h=5` has the highest activity in the sweep, 0.805, and a SMALLER gap
+  than `h=3` at 0.750.
+* Buzz Wire `h=2` has 100% activity and is rejected.
+* Buzz Wire `h=3` has 100% activity and one surviving anchor.
+
+### A false admission the criterion let through
+
+Buzz Wire `h=3` was first admitted with the largest gap in the sweep, +0.5169.
+It has **one anchor in one episode**: everything else terminates by step 14.
+Resampling a single episode returns that anchor every time, both intervals
+collapse to points, and `E_S high < E_A low` holds trivially.
+
+The gate now requires 8 root episodes and 50 anchors on the weaker of the two
+conditions BEFORE separation is consulted. Those thresholds were chosen after
+seeing the failure, not before it. Their justification is structural -- the
+banks hold 16 root episodes, so half keeps the clustered resample from being
+dominated by one episode -- and every cell in this run either clears both
+comfortably or fails both badly, so no verdict here depends on where between
+them the line sits.
+
 ## Balance representation audit, re-run (job 1540): UNINFORMATIVE
 
 COMPLETED in 2:50:01. Same configuration as job 1527 -- cells `1:1` and `0:1`,
