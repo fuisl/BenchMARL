@@ -131,16 +131,21 @@ def body_target(source, step, scale):
 
 
 def grid_rollouts(task, sub, count, low, high, axis, args, steps):
-    """The 3x3 joint-action surface on `axis`, plus the live mask.
+    """The 3x3 joint-action surface on `axis`, with a mask PER BRANCH.
 
     Both agents move on the SAME axis so the mixed second difference is defined.
     Every other coordinate stays at the sampled reference, so this is a surface
     through one action point rather than a sweep of everything at once.
+
+    The masks are returned per branch, never pre-intersected. A single global
+    `live` would censor a perfectly valid cross-effect measurement because some
+    unrelated corner intervention happened to terminate that anchor, and this
+    gate now decides whether a whole task is usable.
     """
     agents, action_dim = low.shape
     mid = (low + high) / 2
     half = (high - low) / 2
-    surface, live = {}, None
+    surface, masks = {}, {}
     for reference in range(args.references):
         base = sample_actions(
             (count, 1, agents, action_dim), low, high, "independent",
@@ -155,10 +160,10 @@ def grid_rollouts(task, sub, count, low, high, axis, args, steps):
                 data = branch_rollouts(
                     task, sub, constant_plan(action, steps), args.batch_size, args.device
                 )
-                surface[(reference, a_level, b_level)] = data
-                mask = cumulative_valid(data["valid"])
-                live = mask if live is None else (live & mask)
-    return surface, live
+                key = (reference, a_level, b_level)
+                surface[key] = data
+                masks[key] = cumulative_valid(data["valid"])
+    return surface, masks
 
 
 def body_columns(scale, agents, shared_bodies):
@@ -228,31 +233,46 @@ def sampled_branches(task, sub, count, low, high, axis, args, steps):
     return branches, live
 
 
-def interaction_quantities(surface, live, step, scale, references, agents,
+def interaction_quantities(surface, masks, step, scale, references, agents,
                            shared_bodies, episode_ids):
-    """J_own, J_cross and the mixed second difference C, decomposed by responder.
+    """J_own, J_cross and C, each on ITS OWN validity mask.
 
-    Agent 0 is the reference "self": J_own is its response to its OWN action,
-    J_cross is its response to agent 1's action, and C is the mixed second
-    difference on the same body. `shared` is reported separately because the
-    jointly controlled object belongs to neither agent.
+    A contrast is valid exactly where the branches it differences are both (or
+    all four) still live:
+
+        M[J_own]   = M(+,0) & M(-,0)
+        M[J_cross] = M(0,+) & M(0,-)
+        M[C]       = M(+,+) & M(+,-) & M(-,+) & M(-,-)
+
+    Intersecting across all nine branches instead, as this did before, lets an
+    unrelated corner rollout censor a cross-effect measurement that was fine.
     """
-    def Y(reference, a, b):
-        return body_target(surface[(reference, a, b)], step + 1, scale)
-
-    mask = live[:, step]
+    contrasts = {
+        "J_own":   [(1.0, 0.0), (-1.0, 0.0)],
+        "J_cross": [(0.0, 1.0), (0.0, -1.0)],
+        "C":       [(1.0, 1.0), (1.0, -1.0), (-1.0, 1.0), (-1.0, -1.0)],
+    }
     groups = body_columns(scale, agents, shared_bodies)
     out = {}
     for responder, columns in groups.items():
-        parts = {"J_own": [], "J_cross": [], "C": [], "ids": []}
+        parts = {name: [] for name in contrasts}
+        parts.update({f"{name}__ids": [] for name in contrasts})
         for reference in range(references):
-            take = lambda a, b: Y(reference, a, b)[:, columns][mask]  # noqa: E731
-            parts["J_own"].append(take(1.0, 0.0) - take(-1.0, 0.0))
-            parts["J_cross"].append(take(0.0, 1.0) - take(0.0, -1.0))
-            parts["C"].append(
-                take(1.0, 1.0) - take(1.0, -1.0) - take(-1.0, 1.0) + take(-1.0, -1.0)
-            )
-            parts["ids"].append(episode_ids[mask])
+            def Y(a, b):
+                return body_target(
+                    surface[(reference, a, b)], step + 1, scale
+                )[:, columns]
+
+            for name, corners in contrasts.items():
+                mask = masks[(reference, *corners[0])][:, step]
+                for corner in corners[1:]:
+                    mask = mask & masks[(reference, *corner)][:, step]
+                if name == "C":
+                    value = Y(1.0, 1.0) - Y(1.0, -1.0) - Y(-1.0, 1.0) + Y(-1.0, -1.0)
+                else:
+                    value = Y(*corners[0]) - Y(*corners[1])
+                parts[name].append(value[mask])
+                parts[f"{name}__ids"].append(episode_ids[mask])
         out[responder] = {k: torch.cat(v) for k, v in parts.items()}
     return out
 
@@ -459,13 +479,13 @@ def classify(cross, ladders):
 
 
 def audit_scenario(name, data_root, args):
-    """One scenario, one comparable admission artifact."""
+    """One scenario, one comparable artifact. Stage 0 is true-simulator only."""
     data_root = Path(data_root)
     anchors, manifest = load_bank(data_root)
     task, _ = resolve_task(manifest)
     block = manifest.get("action_block", 5)
-    steps = args.horizon * block
-    step = steps - 1
+    horizons = sorted(args.horizons)
+    steps = max(horizons) * block
 
     splits, episode_ids, subs = {}, {}, {}
     for split in ("train", "test"):
@@ -481,184 +501,52 @@ def audit_scenario(name, data_root, args):
     regimes = [r for r in ("correlated", "independent")
                if (data_root / f"samples_{r}.pt").exists()]
     scale = task_scale(data_root, anchors, regimes)
-    informative = int(scale["agent"][1].sum()) * agents + int(scale["shared"][1].sum()) * 1
 
     print(f"\n=== {name} ({manifest['task_name']}) ===", flush=True)
-    print(f"  {len(splits['train'])} train / {len(splits['test'])} test anchors, "
-          f"{agents} agents x {action_dim} axes, block {block}, "
-          f"informative Y columns per body: agent "
+    print(f"  {len(splits['test'])} test anchors, {agents} agents x {action_dim} axes, "
+          f"block {block}, horizons {horizons}, informative Y columns: agent "
           f"{int(scale['agent'][1].sum())}/6, shared {int(scale['shared'][1].sum())}/6",
           flush=True)
 
     report = {
-        "scenario": name,
-        "task_name": manifest["task_name"],
-        "data_root": str(data_root),
-        "agents": agents,
-        "action_dim": action_dim,
-        "action_block": block,
-        "horizon_blocks": args.horizon,
-        "references": args.references,
-        "train_anchors": int(len(splits["train"])),
+        "scenario": name, "task_name": manifest["task_name"],
+        "data_root": str(data_root), "agents": agents, "action_dim": action_dim,
+        "action_block": block, "horizons": horizons,
+        "references": args.references, "seed": args.seed,
         "test_anchors": int(len(splits["test"])),
-        "informative_y_columns": {
-            "agent": int(scale["agent"][1].sum()),
-            "shared": int(scale["shared"][1].sum()),
-        },
+        "measurement": "true simulator only -- no probe, no latent, no model",
+        "mask": "per-contrast (each difference uses only the branches it needs)",
         "axes": {},
     }
 
     for axis in range(action_dim):
-        surface, live = {}, {}
-        for split in ("train", "test"):
-            surface[split], live[split] = grid_rollouts(
-                task, subs[split], len(splits[split]), low, high, axis, args, steps
+        surface, masks = grid_rollouts(
+            task, subs["test"], len(splits["test"]), low, high, axis, args, steps
+        )
+        shared_bodies = surface[(0, 0.0, 0.0)]["next_package_state"].shape[2]
+        report["axes"][str(axis)] = {}
+        for horizon in horizons:
+            step = horizon * block - 1
+            q = interaction_quantities(
+                surface, masks, step, scale, args.references, agents,
+                shared_bodies, episode_ids["test"],
             )
-        shared_bodies = surface["test"][(0, 0.0, 0.0)]["next_package_state"].shape[2]
-        quantities = interaction_quantities(
-            surface["test"], live["test"], step, scale, args.references,
-            agents, shared_bodies, episode_ids["test"],
-        )
-        # Agent 0 is the reference responder: J_cross is its response to agent
-        # 1's action, which is the multi-agent content the taxonomy turns on.
-        responder = quantities["agent_0"]
-        own = describe(responder["J_own"], responder["ids"], args.seed + 1)
-        cross = describe(responder["J_cross"], responder["ids"], args.seed + 2)
-        mixed = describe(responder["C"], responder["ids"], args.seed + 3)
-        shared = describe(
-            quantities["shared"]["J_cross"], quantities["shared"]["ids"], args.seed + 4
-        )
-        print(f"  axis {axis}: J_own={own['mean']:.4f}  J_cross={cross['mean']:.4f} "
-              f"(active {cross['active_fraction']:.2f}, state-dep "
-              f"{cross['state_dependence']:.2f})  C={mixed['mean']:.4f}  "
-              f"shared={shared['mean']:.4f}", flush=True)
-
-        # If there is no cross effect to recover, the ladder has nothing to
-        # predict: its target is identically zero, every error divides by ~0,
-        # and it reports numbers like 2e6 that mean nothing. Transport's smoke
-        # did exactly that. The registered taxonomy's first gate is activity, so
-        # decide here and skip the fits -- correct, and it saves hours across
-        # five scenarios.
-        if cross["active_fraction"] < ACTIVE_FRACTION:
-            print(f"    cross effect active on {cross['active_fraction']:.2f} of "
-                  f"anchors (< {ACTIVE_FRACTION}); skipping ladders", flush=True)
-            report["axes"][str(axis)] = {
+            r0 = q["agent_0"]
+            own = describe(r0["J_own"], r0["J_own__ids"], args.seed + 1)
+            cross = describe(r0["J_cross"], r0["J_cross__ids"], args.seed + 2)
+            mixed = describe(r0["C"], r0["C__ids"], args.seed + 3)
+            sh = q["shared"]
+            shared = describe(sh["J_cross"], sh["J_cross__ids"], args.seed + 4)
+            print(
+                f"  axis {axis} h={horizon}: J_own={own['mean']:7.4f}  "
+                f"J_cross={cross['mean']:7.4f} (active {cross['active_fraction']:.3f}, "
+                f"n={cross['anchors']:4d})  C={mixed['mean']:7.4f}  "
+                f"shared={shared['mean']:7.4f}", flush=True
+            )
+            report["axes"][str(axis)][str(horizon)] = {
                 "J_own": own, "J_cross": cross, "C_mixed": mixed,
                 "shared_response": shared,
-                "ladder_design": "not run -- cross effect inactive",
-                "information_ladders": {},
-                "classification": {
-                    "verdict": "weak_interaction_control",
-                    "reason": (
-                        f"cross effect active on only "
-                        f"{cross['active_fraction']:.3f} of anchors at this "
-                        f"horizon; nothing to recover"
-                    ),
-                    "cross_resolvable": False,
-                    "best_legitimate_cross_recovery": float("nan"),
-                    "mixed_above_own_floor": False,
-                    "cross_reference_relative_error": float("nan"),
-                    "mixed_reference_relative_error": float("nan"),
-                    "diagnostic_overfit": {},
-                    "shared_recovery_descriptive": float("nan"),
-                    "self_recovery_descriptive": float("nan"),
-                },
             }
-            continue
-
-        # Four targets, each with its own ladder and its own measurement
-        # floor. `cross` decides admission; `self` and `shared` are descriptive.
-        #
-        # The ladder is measured on the SAMPLED-reference design, not the
-        # midpoint grid. Job 1514: the grid's passive partner reads
-        # R_O = 0.674 where the sampled conditional reads 0.293, and a planner
-        # queries joint actions in which both agents act.
-        sampled, sampled_live = {}, {}
-        for split in ("train", "test"):
-            sampled[split], sampled_live[split] = sampled_branches(
-                task, subs[split], len(splits[split]), low, high, axis, args, steps
-            )
-        groups = body_columns(scale, agents, shared_bodies)
-        targets_by_name = {
-            "cross": "agent_0",
-            "self": "agent_1",
-            "shared": "shared",
-            "mixed": "agent_0",
-        }
-        ladders = {}
-        for label, responder in targets_by_name.items():
-            rows, targets, ids = {}, {}, {}
-            for split in ("train", "test"):
-                split_mask = sampled_live[split][:, step]
-                if int(split_mask.sum()) == 0:
-                    raise ValueError(f"{name} axis {axis}: no live {split} anchors")
-                built, target, episode = [], [], []
-                columns = groups[responder]
-                for reference in range(args.references):
-                    def Y(key):
-                        return body_target(
-                            sampled[split][key], step + 1, scale
-                        )[:, columns]
-
-                    if label == "mixed":
-                        branch = {
-                            "low": sampled[split][(reference, "corner", -1.0, -1.0)],
-                            "high": sampled[split][(reference, "corner", 1.0, 1.0)],
-                        }
-                        value = (
-                            Y((reference, "corner", 1.0, 1.0))
-                            - Y((reference, "corner", 1.0, -1.0))
-                            - Y((reference, "corner", -1.0, 1.0))
-                            + Y((reference, "corner", -1.0, -1.0))
-                        )
-                    else:
-                        branch = {
-                            "low": sampled[split][(reference, "partner", -1.0)],
-                            "high": sampled[split][(reference, "partner", 1.0)],
-                        }
-                        value = (
-                            Y((reference, "partner", 1.0))
-                            - Y((reference, "partner", -1.0))
-                        )
-                    built.append(
-                        ladder_inputs(
-                            data_root, anchors, splits[split], branch, split_mask,
-                            args, block,
-                        )
-                    )
-                    target.append(value[split_mask])
-                    episode.append(episode_ids[split][split_mask])
-                rows[split] = {
-                    key: torch.cat([b[key] for b in built]) for key in built[0]
-                }
-                targets[split] = torch.cat(target)
-                ids[split] = torch.cat(episode)
-            ladders[label] = information_ladder(rows, targets, ids, label, args)
-
-        report["axes"][str(axis)] = {
-            "J_own": own, "J_cross": cross, "C_mixed": mixed,
-            "shared_response": shared,
-            "ladder_design": "sampled_reference (G0); the 3x3 midpoint grid "
-                             "supplies J_own/J_cross/C only",
-            "information_ladders": {
-                label: {
-                    c: {"E": v["test_cross"]["mean"],
-                        "cosine": v["test_cross"]["cosine_mean"],
-                        "R_info": v["R_info"],
-                        "train_E": v["train_cross"]["mean"]}
-                    for c, v in ladder.items()
-                }
-                for label, ladder in ladders.items()
-            },
-            "classification": classify(cross, ladders),
-        }
-
-    # The scenario's verdict is its best axis, chosen by cross-effect size.
-    best = max(report["axes"], key=lambda a: report["axes"][a]["J_cross"]["mean"])
-    report["selected_axis"] = best
-    report["verdict"] = report["axes"][best]["classification"]
-    print(f"  -> axis {best}: {report['verdict']['verdict']} "
-          f"({report['verdict']['reason']})", flush=True)
     return report
 
 
@@ -669,7 +557,11 @@ def main():
         help="repeatable, e.g. --scenario wheel=outputs/wheel_1205/data",
     )
     parser.add_argument("--out", type=Path, required=True)
-    parser.add_argument("--horizon", type=int, default=1, help="blocks")
+    parser.add_argument(
+        "--horizons", type=int, nargs="+", default=[1, 2, 3, 5],
+        help="action blocks at which to read the interaction. One set of "
+        "rollouts is read at every horizon, so extra horizons are nearly free.",
+    )
     parser.add_argument("--references", type=int, default=2)
     parser.add_argument("--dense-frames", type=int, default=3)
     parser.add_argument("--model-frames", type=int, default=3)
@@ -688,27 +580,27 @@ def main():
         # Written after each scenario so a later failure cannot lose earlier work.
         (output / "admission_report.json").write_text(json.dumps(reports, indent=2))
 
-    print("\n=== ADMISSION REPORT ===")
-    print("R_* are recovery fractions on the CROSS-AGENT target only; "
-          "shared/self are descriptive")
-    print(f"{'scenario':<12} {'J_cross':>8} {'C_mix':>7} {'st-dep':>7} "
-          f"{'R_O':>6} {'R_Hd':>6} {'R_Hm':>6} {'R_shr':>6}  verdict")
+    print("\n=== INTERACTION vs HORIZON (true simulator, agent_0 responder) ===")
+    print("Does the cross-agent effect emerge at a planning-relevant horizon?\n")
+    horizons = sorted(args.horizons)
+    head = "  ".join(f"h={h}" for h in horizons)
+    print(f"{'scenario':<12} {'axis':>4}  {'quantity':<9}  {head}")
     for name, report in reports.items():
-        axis = report["axes"][report["selected_axis"]]
-        cross = axis["information_ladders"].get("cross")
-        verdict = report["verdict"]
-        cell = lambda v: f"{v:>6.3f}" if v == v else f"{'--':>6}"  # noqa: E731
-        recoveries = (
-            [cross[c]["R_info"] for c in ("O", "H_dense", "H_model")]
-            if cross else [float("nan")] * 3
+        best = max(
+            report["axes"],
+            key=lambda a: report["axes"][a][str(horizons[-1])]["J_cross"]["mean"],
         )
-        print(
-            f"{name:<12} {axis['J_cross']['mean']:>8.3f} {axis['C_mixed']['mean']:>7.3f} "
-            f"{axis['J_cross']['state_dependence']:>7.2f} "
-            + " ".join(cell(v) for v in recoveries) + " "
-            + cell(verdict["shared_recovery_descriptive"])
-            + f"  {verdict['verdict']}"
-        )
+        for label, key in (("J_cross", "J_cross"), ("active", None), ("C", "C_mixed")):
+            cells = []
+            for h in horizons:
+                e = report["axes"][best][str(h)]
+                cells.append(
+                    f"{e['J_cross']['active_fraction']:.2f}" if key is None
+                    else f"{e[key]['mean']:.3f}"
+                )
+            print(f"{name if label=='J_cross' else '':<12} {best if label=='J_cross' else '':>4}  "
+                  f"{label:<9}  " + "  ".join(f"{c:>5}" for c in cells))
+        print()
     print(f"\nWrote {output / 'admission_report.json'}")
 
 

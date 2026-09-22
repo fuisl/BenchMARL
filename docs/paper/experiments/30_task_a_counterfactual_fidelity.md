@@ -228,7 +228,7 @@ with the same information achieves. T-A2's models scored **1.05-1.19**. The gap
 of ~0.16-0.30 is attributable to the predictor, the probe and the context
 together, and the fabricated context is now a named candidate for part of it. So
 F13 may mean the conditioned models are **better than T-A2 reported** — but it
-cannot lift them past the ~0.89 information ceiling, so it does not overturn
+cannot lift them past the ~0.89 privileged reference, so it does not overturn
 "the observation is the binding constraint."
 
 Comparisons within T-A2 are **fair**: every arm received the identical context,
@@ -386,7 +386,7 @@ the head's architecture, budget and selection procedure; only the input differs.
 * `actions_only` — `g(a^low, a^high) → ΔY`. The **state-blind floor**. It can
   learn the average response to an intervention but nothing state-specific.
 * `physical` — `g(s_t, a^low, a^high) → ΔY` on the recorded simulator state. The
-  **information ceiling**, and model-independent, so it is fitted once.
+  **privileged reference**, and model-independent, so it is fitted once.
 
 Weight decay is selected on held-out **root episodes**, not rows: anchors from
 one episode are correlated, and a row-wise split would let the head memorise an
@@ -401,7 +401,7 @@ Let `B` = `actions_only`, `P` = `physical`, `L` = `latent`, all cross-block
 R=\frac{B-L}{B-P},
 ```
 
-the share of the blind-to-ceiling gap the latent closes.
+the share of the blind-to-reference gap the latent closes.
 
 | Condition | Verdict | Next |
 |---|---|---|
@@ -416,7 +416,7 @@ from T-A2 and are not re-derived to fit.
 ### Amendment, before any Test A result: the head must be shown adequate
 
 A pipeline smoke on three checkpoints produced `physical` 0.864 against
-`actions_only` 0.906 — a blind-to-ceiling gap of 0.04 with almost completely
+`actions_only` 0.906 — a blind-to-reference gap of 0.04 with almost completely
 overlapping intervals, which would have fired the "uninformative" branch above.
 The likelier cause was the instrument: the first head was a single hidden layer
 trained full-batch for 300 steps on unnormalized VMAS coordinates, which
@@ -511,7 +511,7 @@ cross block on one cell.
 | **latent** — ind / joint / rel | 0.033 / −0.001 / 0.013 | **0.214 / 0.212 / 0.211** | +0.866 |
 | **latent ⊕ agent pos/vel** | 0.043 / 0.031 / 0.034 | **0.557 / 0.538 / 0.531** | +0.878 |
 | latent ⊕ ball/linkage | 0.861 / 0.862 / 0.870 | 0.903 / 0.907 / 0.888 | +0.942 |
-| `physical` (ceiling) | 1.000 | 1.000 | +0.936 |
+| `physical` (privileged reference) | 1.000 | 1.000 | +0.936 |
 
 #### Two conclusions invert
 
@@ -564,13 +564,13 @@ from the measurement side rather than from an `L_CF` run.
 
 **Head adequacy passes**, so the decision table may be read. The self block is
 well predicted from every input (0.12 physical, 0.28 latent, 0.40 blind), train
-tracks test, and the blind-to-ceiling gap is 0.431 with separated intervals — against
+tracks test, and the blind-to-reference gap is 0.431 with separated intervals — against
 0.04 under the superseded head.
 
 | Input | cross `E_CF` | cross cosine | self `E_CF` |
 |---|---:|---:|---:|
 | `actions_only` (state-blind floor) | 0.8951 [0.804, 0.997] | +0.459 | 0.3993 |
-| **`physical` (ceiling)** | **0.4645** [0.402, 0.526] | **+0.873** | **0.1193** |
+| **`physical` (privileged reference)** | **0.4645** [0.402, 0.526] | **+0.873** | **0.1193** |
 | latent, independent | 0.8811 | +0.7128 | 0.2752 |
 | latent, joint | 0.8953 | +0.7151 | 0.2756 |
 | latent, relational | 0.8898 | +0.7130 | 0.2770 |

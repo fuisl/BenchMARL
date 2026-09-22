@@ -41,6 +41,26 @@ variant answers a different and also legitimate question (can one function serve
 the whole intervention space), and is closer to what a world model faces; it is
 simply not the admission gate.
 
+### Why the privileged arm is a reference, not a ceiling
+
+`E_S` measures how well **our diagnostic instrument** recovers the effect from
+privileged state. It is not the theoretical maximum recoverability. A learned
+probe on full state can fall short through too few independent anchors, weak
+regularization, function-class mismatch, dimensionality, scale or horizon
+complexity — the environment is deterministic, the estimator is not omniscient.
+Calling it a ceiling invites reading a probe limitation as a property of the
+task. The span guard exists for exactly this reason.
+
+This matters for Buzz Wire, where `E_S = 0.372` sits barely on the wrong side of
+the registered `1/3` threshold while the effect is active on 100% of anchors and
+legitimate observation recovers 0.72. That reads as an estimator that cannot fit
+the local response well enough at this sample size, not as privileged state
+lacking the information. The indicated check is `E_train` against `E_test` as
+independent anchor count rises: converging means sample complexity, plateauing
+near 0.37 means target or function-class mismatch. Note that references from one
+anchor are **not** independent states, so the row count overstates statistical
+support.
+
 ### Known limitation, accepted for this screening pass
 
 `grid_rollouts` and `sampled_branches` intersect the live mask across **all**

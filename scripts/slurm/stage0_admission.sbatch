@@ -1,6 +1,26 @@
 #!/usr/bin/env bash
-# Stage 0/1: cross-scenario admission benchmark, 3 seeds, concurrent, full A100.
-# NO world model is trained. This is task characterization, not architecture work.
+# Stage 0 ONLY: does the cross-agent effect emerge at a planning-relevant horizon?
+#
+# TRUE SIMULATOR ONLY. No probe, no latent, no JEPA, no information ladder, no
+# R_info, no reconstruction, no CEM. Just J_own(h), J_cross(h) and C(h) measured
+# on the real environment at h = 1, 2, 3, 5 action blocks.
+#
+# Job 1522 asked whether perturbing one agent moves the other within ONE block,
+# and found Transport 5% active, Balance 31%, Wheel 0%. That is a question about
+# LOCAL mechanical coupling. Transport's chain runs
+#   a_2 -> package acceleration -> package motion -> configuration -> Y_1,
+# and at five primitive steps the last arrow may barely have happened. So the
+# open question is whether 1522 found weak interaction or merely DELAYED
+# interaction, and one horizon cannot tell them apart.
+#
+# Buzz Wire is the positive reference (2.24, 100% active at h=1) and Dropout the
+# negative one (exactly 0.000). If Buzz Wire stays strong, Dropout stays zero,
+# and Transport/Balance rise with horizon, the instrument is working and the
+# original admission horizon asked the wrong dynamical question.
+#
+# Each contrast now carries its OWN validity mask, so an unrelated corner
+# rollout can no longer censor a valid cross-effect row. That mattered less for
+# screening; it matters now that this gate decides whether a task is usable.
 #
 # The question is only which existing VMAS task provides the clean OBSERVABLE
 # interaction setting Buzz Wire does not: a real cross-agent effect, recoverable
@@ -41,14 +61,14 @@ export PYTHONUNBUFFERED=1
 export PYTHONPATH="${SLURM_SUBMIT_DIR}${PYTHONPATH:+:$PYTHONPATH}"
 
 references="${ADM_REFERENCES:-2}"
-horizon="${ADM_HORIZON:-1}"
+horizons="${ADM_HORIZONS:-1 2 3 5}"
 seeds="${ADM_SEEDS:-7301 7302 7303}"
 output="${SLURM_SUBMIT_DIR}/outputs/stage0_admission_${SLURM_JOB_ID}"
 mkdir -p "$output/source"
 exec > >(tee -a "$output/batch.log") 2>&1
 
-printf 'Stage 0/1 admission: job=%s seeds=[%s] references=%s horizon=%s\n' \
-    "$SLURM_JOB_ID" "$seeds" "$references" "$horizon"
+printf 'Stage 0/1 admission: job=%s seeds=[%s] references=%s horizons=[%s]\n' \
+    "$SLURM_JOB_ID" "$seeds" "$references" "$horizons"
 printf 'CUDA_VISIBLE_DEVICES=%s\n' "${CUDA_VISIBLE_DEVICES:?}"
 
 git rev-parse HEAD > "$output/commit.txt"
@@ -74,7 +94,7 @@ for seed in $seeds; do
         --scenario buzz_wire=outputs/buzz_wire_1196/data \
         --scenario dropout=outputs/dropout_control_1193/data \
         --out "$output/result_seed${seed}" --references "$references" \
-        --horizon "$horizon" --seed "$seed" --device cuda \
+        --horizons $horizons --seed "$seed" --device cuda \
         > "$output/run_seed${seed}.log" 2>&1 &
     pids+=("$!")
     printf 'launched seed %s (pid %s)\n' "$seed" "$!"

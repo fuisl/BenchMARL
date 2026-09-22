@@ -688,3 +688,80 @@ def test_regime_index_beyond_the_manifest_raises(tmp_path):
     }
     with pytest.raises(ValueError, match="exceeds the manifest"):
         resolve_regime_files(tmp_path, anchors, torch.tensor([0]), torch.zeros(1, 2, 6))
+
+
+# --- Per-contrast validity masks --------------------------------------------
+
+from examples.world_model.admission_benchmark import (  # noqa: E402
+    interaction_quantities,
+)
+
+
+def _surface_branch(anchors, steps, agents, bodies, value, live_steps):
+    valid = torch.zeros(anchors, steps, dtype=torch.bool)
+    valid[:, :live_steps] = True
+    return {
+        "next_agent_state": torch.full((anchors, steps, agents, 6), float(value)),
+        "next_package_state": torch.full((anchors, steps, bodies, 6), float(value)),
+        "valid": valid,
+    }
+
+
+def test_a_dead_corner_does_not_censor_the_cross_effect():
+    """The mask fix. An unrelated corner rollout must not delete J_cross rows.
+
+    The admission gate now decides whether a whole task is scientifically
+    usable, so a contrast must be valid exactly where the branches IT
+    differences are live -- not where all nine happen to be.
+    """
+    from examples.world_model.admission_benchmark import LEVELS
+
+    anchors, steps, agents, bodies = 6, 5, 2, 1
+    scale = {"agent": (torch.ones(6), torch.ones(6, dtype=torch.bool)),
+             "shared": (torch.ones(6), torch.ones(6, dtype=torch.bool))}
+    surface, masks = {}, {}
+    for a in LEVELS:
+        for b in LEVELS:
+            # Every branch lives the whole way EXCEPT one corner, which dies at once.
+            dead = (a == -1.0 and b == -1.0)
+            data = _surface_branch(anchors, steps, agents, bodies,
+                                   value=a * 2 + b, live_steps=1 if dead else steps)
+            surface[(0, a, b)] = data
+            masks[(0, a, b)] = data["valid"].cumprod(dim=1).bool()
+
+    q = interaction_quantities(surface, masks, step=steps - 1, scale=scale,
+                               references=1, agents=agents, shared_bodies=bodies,
+                               episode_ids=torch.arange(anchors))
+    r = q["agent_0"]
+    # J_cross differences (0,+1) and (0,-1) -- neither is the dead corner.
+    assert r["J_cross"].shape[0] == anchors
+    assert r["J_own"].shape[0] == anchors
+    # C needs all four corners, one of which died, so it is legitimately empty.
+    assert r["C"].shape[0] == 0
+    assert r["J_cross__ids"].shape[0] == anchors
+
+
+def test_each_contrast_carries_its_own_episode_ids():
+    """Uncertainty is clustered by episode, so ids must track their own mask."""
+    from examples.world_model.admission_benchmark import LEVELS
+
+    anchors, steps, agents, bodies = 4, 4, 2, 1
+    scale = {"agent": (torch.ones(6), torch.ones(6, dtype=torch.bool)),
+             "shared": (torch.ones(6), torch.ones(6, dtype=torch.bool))}
+    surface, masks = {}, {}
+    for a in LEVELS:
+        for b in LEVELS:
+            live = 1 if (a == 0.0 and b == 1.0) else steps
+            data = _surface_branch(anchors, steps, agents, bodies, a - b, live)
+            surface[(0, a, b)] = data
+            masks[(0, a, b)] = data["valid"].cumprod(dim=1).bool()
+
+    q = interaction_quantities(surface, masks, step=steps - 1, scale=scale,
+                               references=1, agents=agents, shared_bodies=bodies,
+                               episode_ids=torch.arange(anchors))
+    r = q["agent_0"]
+    # Now J_cross is the censored one and J_own is untouched.
+    assert r["J_cross"].shape[0] == 0
+    assert r["J_cross__ids"].shape[0] == 0
+    assert r["J_own"].shape[0] == anchors
+    assert r["J_own__ids"].shape[0] == anchors
