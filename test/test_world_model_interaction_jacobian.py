@@ -9,6 +9,8 @@ exactly zero response.
 
 import json
 import math
+import pathlib
+import tempfile
 
 import pytest
 import torch
@@ -16,7 +18,9 @@ import torch
 from examples.world_model.admission_gate import (
     ADMIT,
     REJECT_NOT_SEPARATED,
+    REJECT_NO_SUPPORT,
     REJECT_NO_TRUE_EFFECT,
+    gate,
     cross_summary,
     strongest_cross_cell,
     verdict,
@@ -898,3 +902,37 @@ def test_gate_ranks_cells_only_at_the_runs_own_horizon(tmp_path):
     }, horizon=3)))
     assert strongest_cross_cell(path) == "1:1"
     assert cross_summary(path)["j_cross"] == pytest.approx(0.102)
+
+
+def test_gate_refuses_to_admit_on_a_degenerate_bootstrap_interval():
+    """Buzz Wire at h=3 leaves ONE anchor in ONE episode.
+
+    Everything else terminates by step 14. Resampling a single episode returns
+    that anchor every time, so both intervals collapse to points and
+    `E_S high < E_A low` is satisfied trivially -- the cell was admitted on a
+    sample of one, with a gap of +0.5169 that looked like the strongest result
+    in the sweep. Support has to gate the separation test, not sit beside it.
+    """
+    real = {"j_cross": 2.731, "active": 1.0, "cell": "1:0"}
+    degenerate = {"e_a": 0.8708, "e_a_low": 0.8708, "e_s": 0.3538,
+                  "e_s_high": 0.3538, "gap": 0.5169, "separated": True,
+                  "episodes": 1, "anchors": 1, "supported": False}
+    assert verdict(real, degenerate) == REJECT_NO_SUPPORT
+
+    supported = dict(degenerate, episodes=16, anchors=311, supported=True)
+    assert verdict(real, supported) == ADMIT
+
+
+def test_gate_reads_support_from_the_weaker_of_the_two_conditions():
+    """A cell is only as well supported as its thinner arm."""
+    shared = {
+        "actions_only": {"test_cross": {"mean": 0.9, "low": 0.85, "high": 0.95,
+                                        "episodes": 16, "anchors": 600}},
+        "physical": {"test_cross": {"mean": 0.6, "low": 0.55, "high": 0.65,
+                                    "episodes": 2, "anchors": 9}},
+    }
+    path = pathlib.Path(tempfile.mkdtemp()) / "loc.json"
+    path.write_text(json.dumps({"shared": shared}))
+    result = gate(path)
+    assert result["episodes"] == 2 and result["anchors"] == 9
+    assert result["supported"] is False

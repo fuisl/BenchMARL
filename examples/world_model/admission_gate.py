@@ -40,6 +40,24 @@ ADMIT = "ADMIT"
 REJECT_NO_TRUE_EFFECT = "no true effect to resolve"
 REJECT_NO_EFFECT = "no resolvable effect"
 REJECT_NOT_SEPARATED = "reference does not beat blind"
+REJECT_NO_SUPPORT = "too little surviving support"
+
+# Minimum support for the separation test to mean anything. Buzz Wire at h=3
+# leaves ONE anchor in ONE episode -- everything else terminates by step 14 --
+# and a bootstrap over a single episode returns that anchor's value every time.
+# The interval collapses to a point, so `E_S high < E_A low` is satisfied
+# trivially and the cell was admitted on a sample of one.
+#
+# These thresholds were chosen AFTER seeing that failure, not before it. Their
+# justification is structural rather than tuned: the banks hold 16 root
+# episodes, so requiring half of them keeps the episode-clustered resample from
+# being dominated by any single episode, and 50 anchors is the floor below
+# which the head is fitting a handful of points. Every cell in job 1541 either
+# clears both comfortably (311-655 anchors, 16 episodes) or fails them badly
+# (1 anchor, 1 episode), so no result in that run is sensitive to where exactly
+# between those the line sits.
+MIN_EPISODES = 8
+MIN_ANCHORS = 50
 
 
 def _best_cross(jacobian_path):
@@ -92,6 +110,8 @@ def gate(localization_path):
     # Bootstrapped over root episodes, so this is the clustered interval, not
     # an anchor-level one that would overstate separation.
     separated = reference["high"] < blind["low"]
+    episodes = min(blind["episodes"], reference["episodes"])
+    anchors = min(blind["anchors"], reference["anchors"])
     return {
         "e_a": blind["mean"],
         "e_a_low": blind["low"],
@@ -99,6 +119,9 @@ def gate(localization_path):
         "e_s_high": reference["high"],
         "gap": gap,
         "separated": bool(separated),
+        "episodes": int(episodes),
+        "anchors": int(anchors),
+        "supported": bool(episodes >= MIN_EPISODES and anchors >= MIN_ANCHORS),
     }
 
 
@@ -110,6 +133,10 @@ def verdict(cross, gated):
     # branch it would fall through to the separation test and be mislabelled.
     if math.isnan(gated["gap"]) or cross["j_cross"] <= 0.0:
         return REJECT_NO_TRUE_EFFECT
+    # Checked BEFORE separation: a degenerate interval separates trivially, so
+    # support has to gate the test rather than be reported next to it.
+    if not gated.get("supported", True):
+        return REJECT_NO_SUPPORT
     if gated["gap"] <= 0:
         return REJECT_NO_EFFECT
     if not gated["separated"]:
@@ -144,7 +171,7 @@ def print_table(rows):
     print("`sep` = the reference's 95% upper bound sits below the blind's lower")
     print("bound, both resampled over root episodes.\n")
     header = (f"  {'task':<11}{'h':>2} {'cell':>5} {'J_cross':>9} {'active':>7} "
-              f"{'E_A':>7} {'E_S':>7} {'E_A-E_S':>9} {'sep':>4}  verdict")
+              f"{'anch':>5} {'E_A':>7} {'E_S':>7} {'E_A-E_S':>9} {'sep':>4}  verdict")
     print(header)
     print("  " + "-" * (len(header) - 2))
     for r in rows:
@@ -152,17 +179,18 @@ def print_table(rows):
             print(f"  {r['task']:<11}{r['h']:>2} {r.get('cell', '-'):>5} "
                   f"{r.get('j_cross', float('nan')):>9.3f} "
                   f"{r.get('active', float('nan')):>7.3f} "
-                  f"{'':>7}{'':>7}{'':>9}{'':>4}  {r['verdict']}")
+                  f"{'':>5}{'':>7}{'':>7}{'':>9}{'':>4}  {r['verdict']}")
             continue
         print(f"  {r['task']:<11}{r['h']:>2} {r['cell']:>5} {r['j_cross']:>9.3f} "
-              f"{r['active']:>7.3f} {r['e_a']:>7.4f} {r['e_s']:>7.4f} "
-              f"{r['gap']:>+9.4f} {'yes' if r['separated'] else 'no':>4}  "
-              f"{r['verdict']}")
+              f"{r['active']:>7.3f} {r['anchors']:>5} {r['e_a']:>7.4f} "
+              f"{r['e_s']:>7.4f} {r['gap']:>+9.4f} "
+              f"{'yes' if r['separated'] else 'no':>4}  {r['verdict']}")
     admitted = [r for r in rows if r.get("verdict") == ADMIT]
     print(f"\n  ADMITTED: {len(admitted)} of {len(rows)} cells")
     for r in admitted:
         print(f"    {r['task']} h={r['h']} cell {r['cell']}  "
-              f"gap {r['gap']:+.4f}  J_cross {r['j_cross']:.3f}")
+              f"gap {r['gap']:+.4f}  J_cross {r['j_cross']:.3f}  "
+              f"({r['anchors']} anchors / {r['episodes']} episodes)")
     if not admitted:
         print("    none -- no task/horizon supports the representation ladder.")
 
