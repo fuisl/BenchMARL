@@ -513,6 +513,47 @@ MiB of GPU memory, 35% mean utilisation and 2.42 GB RSS**, because the cost is
 the CPU-side simulator rollouts. Re-sized to a `2g.10gb` slice with 10 G, it
 started immediately and runs in parallel with the gate.
 
+## The aggregation gate (job 1538): PASSED
+
+Job 1516's configuration re-run unchanged, with both aggregations computed on
+the **same fits, same anchors, same seeds**. COMPLETED in 55:00 on one 3g.20gb
+slice. Artifacts: `outputs/ecf_agreement_1538/`.
+
+| quantity | pooled (ratio of sums) | mean of ratios | delta |
+|---|---:|---:|---:|
+| `E` blind (`actions_only`) | 0.5445 | 0.8243 | -0.280 |
+| `E` reference (`physical`) | 0.2921 | 0.3265 | -0.034 |
+| blind-to-reference gap | 0.2524 | 0.4978 | -0.245 |
+| **R_observation** | **0.537** | **0.605** | -0.067 |
+| R_history | 0.560 | 0.627 | -0.067 |
+| **R_latent** (6 arms x 8 seeds) | **0.188** | **0.212** | -0.025 |
+| R_latent+agentphys | 0.402 | 0.542 | -0.140 |
+| R_latent+state | 0.929 | 0.899 | +0.029 |
+| **O / Z** | **2.865** | **2.848** | **+0.017** |
+
+### Verdict
+
+`O >> Z` holds under both forms and the ratio carrying the claim is stable to
+**0.6%**. The ladder ordering is unchanged. The pooled form is adopted as the
+frozen convention.
+
+The absolute `E` values move substantially — blind 0.824 -> 0.545 — because the
+per-anchor form was inflating them even on Buzz Wire: the ratio *median* on
+`physical` is 0.145 against a mean of 0.327, so tail mass exists here too, just
+not enough to break the measurement. The recovery ratios absorb most of that
+through the shared denominator. One rung moves materially: `latent+agentphys`
+falls 0.542 -> 0.402.
+
+**Restated headline, pooled convention:** `O = 0.537`, `Z = 0.188`, ladder
+`0.188 -> 0.402 -> 0.929`.
+
+### A weakness in how this gate was registered
+
+"If they agree" was registered without a numeric criterion for agreement. The
+stability of `O / Z` to 0.6% is the strongest available ground for calling it a
+pass, and it is recorded as the reason rather than presented as a threshold
+that was set in advance, because it was not.
+
 ## Results (job 1522)
 
 Five scenarios x three seeds, `references = 2`, `horizon = 1` block, frozen

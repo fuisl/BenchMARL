@@ -534,6 +534,27 @@ position and velocity — which the observation already contains and the encoder
 already consumed.** Handing the encoder's own input back to the probe in raw
 form nearly triples recovery. The latent is discarding information it was given.
 
+#### Restated under the pooled aggregation (job 1538)
+
+The table above averages per-anchor ratios. That aggregation was replaced after
+job 1527, and job 1538 re-ran **this exact configuration** with both forms on
+the same fits. Note 33 carries the full comparison; the conclusions above are
+unchanged, but the numbers to quote are these:
+
+| input | `R`, mean of ratios | **`R`, pooled** |
+|---|---:|---:|
+| `observation_raw` | 0.605 | **0.537** |
+| `history` (3 frames) | 0.627 | 0.560 |
+| latent | 0.212 | **0.188** |
+| latent + agent pos/vel | 0.542 | **0.402** |
+| latent + ball/linkage | 0.899 | 0.929 |
+
+`O / Z` is 2.85 against 2.87 — the claim these two conclusions rest on is stable
+to 0.6%. The one rung that moves materially is `+agent-physical`, 0.542 ->
+0.402, so "recovers half the gap" above should read **recovers about 40% of the
+gap**. It is still the second conclusion's point that handing the encoder's own
+input back raw roughly doubles recovery over the latent alone.
+
 #### What survives
 
 * The **ordering** latent ≪ latent+agent ≪ latent+ball, on all three
