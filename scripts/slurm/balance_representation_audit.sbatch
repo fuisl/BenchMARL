@@ -18,6 +18,21 @@
 # and starts looking like a limitation of predictive latent objectives for
 # multi-agent counterfactual reasoning.
 #
+# RERUN after job 1527. That job completed but produced NO MEASUREMENT: every
+# input returned E ~ 1e10 with train matching test, so the overfit guard did not
+# fire. The cause was the aggregation, not the fit -- `E_CF` divided by
+# ||dY_true|| per anchor and averaged, and 44% of Balance anchors at h=3 carry
+# essentially no response, so those rows dominated. `E_CF` is now pooled as a
+# ratio of sums; both forms are reported side by side, and the companion job on
+# Buzz Wire (`ecf_aggregation_agreement.sbatch`) is the gate on whether the
+# pooled column may be read against the published Buzz Wire numbers.
+#
+# A second correction carried in from 1527: job 1525's 62-74% activity at h=3
+# was measured on the 3x3 MIDPOINT GRID. The same cells under the SAMPLED
+# REFERENCE design this audit uses are only ~56% active. Activity is a property
+# of the intervention, not of the task alone, so the grid figures quoted above
+# are not the ones that govern this run.
+#
 # NOTHING is changed in the model: no LeWM edit, no L_CF, no world token, no
 # planning. Existing checkpoints, existing bank, frozen measurement convention.
 #

@@ -46,6 +46,7 @@ Run:
 
 import argparse
 import json
+import math
 from pathlib import Path
 
 import torch
@@ -165,6 +166,61 @@ def bootstrap_by_episode(values, episode_ids, samples=2000, seed=7301):
         "high": float(means.quantile(0.975)),
         "episodes": int(len(groups)),
         "anchors": int(values.numel()),
+    }
+
+
+def pooled_ratio_by_episode(residual, truth, episode_ids, samples=2000, seed=7301):
+    """E_CF as a RATIO OF SUMS: sqrt(sum ||dYhat - dY||^2 / sum ||dY||^2).
+
+    The mean of per-anchor ratios divides by ||dY_true|| once per anchor, so it
+    is only stable where the effect is bounded away from zero on every anchor.
+    Buzz Wire satisfies that (100% of anchors clear the floor, median ~ mean);
+    Balance at h=3 does not (56% active, mean 11x the median), and job 1527
+    returned E ~ 1e10 on every input as a result.
+
+    Pooling first is scale-stable: a near-zero anchor contributes near-zero to
+    BOTH sums instead of producing an unbounded ratio. The property the frozen
+    convention depends on survives -- a head predicting no response has
+    residual == truth on every anchor, so the pooled ratio is exactly 1.
+
+    The interval resamples ROOT EPISODES for the same reason as
+    `bootstrap_by_episode`, and the ratio is recomputed inside each resample
+    rather than averaged over resampled per-anchor ratios.
+    """
+    residual, truth = residual.double(), truth.double()
+    unique = torch.unique(episode_ids)
+    groups = [
+        (residual[episode_ids == episode], truth[episode_ids == episode])
+        for episode in unique.tolist()
+    ]
+    groups = [g for g in groups if g[0].numel() > 0]
+    if not groups:
+        return {
+            "mean": float("nan"),
+            "low": float("nan"),
+            "high": float("nan"),
+            "episodes": 0,
+            "anchors": 0,
+        }
+
+    def ratio(pairs):
+        top = sum(float((r**2).sum()) for r, _ in pairs)
+        bottom = sum(float((t**2).sum()) for _, t in pairs)
+        return math.sqrt(top / bottom) if bottom > 0 else float("nan")
+
+    generator = torch.Generator().manual_seed(seed)
+    draws = []
+    for _ in range(samples):
+        picks = torch.randint(len(groups), (len(groups),), generator=generator)
+        draws.append(ratio([groups[p] for p in picks.tolist()]))
+    draws = torch.tensor(draws, dtype=torch.float64)
+    finite = draws[torch.isfinite(draws)]
+    return {
+        "mean": ratio(groups),
+        "low": float(finite.quantile(0.025)) if finite.numel() else float("nan"),
+        "high": float(finite.quantile(0.975)) if finite.numel() else float("nan"),
+        "episodes": int(len(groups)),
+        "anchors": int(residual.numel()),
     }
 
 

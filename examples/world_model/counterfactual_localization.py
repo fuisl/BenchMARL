@@ -77,6 +77,7 @@ from examples.world_model.interaction_jacobian import (
     SPLITS,
     action_bounds,
     bootstrap_by_episode,
+    pooled_ratio_by_episode,
     load_bank,
     resolve_task,
     training_scale,
@@ -322,12 +323,20 @@ def build_rows(branches, block, step, agents, scale, episode_ids, latents, histo
 
 
 def block_e_cf(predicted, truth, columns):
-    """E_CF and cosine restricted to one block, whose columns vary by cell."""
+    """Per-anchor residual norm, truth norm, ratio and cosine on one block.
+
+    The residual and truth norms are returned UNDIVIDED so the caller can pool
+    them before taking the ratio. Dividing per anchor is only sound where every
+    anchor's effect clears the floor; see `pooled_ratio_by_episode`.
+    """
     picked_pred = predicted.gather(1, columns)
     picked_true = truth.gather(1, columns)
-    denominator = picked_true.norm(dim=1) + 1e-12
+    residual = (picked_pred - picked_true).norm(dim=1)
+    magnitude = picked_true.norm(dim=1)
     return (
-        (picked_pred - picked_true).norm(dim=1) / denominator,
+        residual,
+        magnitude,
+        residual / (magnitude + 1e-12),
         torch.nn.functional.cosine_similarity(
             picked_pred, picked_true, dim=1, eps=1e-12
         ),
@@ -366,8 +375,21 @@ def score(net, stats, rows, device, seed, decay):
         with torch.no_grad():
             predicted = net(((features - mean) / std).to(device)).cpu()
         for block in ("cross", "self"):
-            e_cf, cosine = block_e_cf(predicted, target, columns[block])
-            entry = bootstrap_by_episode(e_cf, episodes, seed=seed + 11)
+            residual, magnitude, e_cf, cosine = block_e_cf(
+                predicted, target, columns[block]
+            )
+            entry = pooled_ratio_by_episode(
+                residual, magnitude, episodes, seed=seed + 11
+            )
+            # Both forms are reported side by side. They coincide where the
+            # effect is bounded away from zero on every anchor (Buzz Wire) and
+            # diverge where it is not (Balance at h=3), so a reader can see
+            # which regime a number came from instead of trusting the label.
+            entry["mean_of_ratios"] = bootstrap_by_episode(
+                e_cf, episodes, seed=seed + 11
+            )
+            entry["ratio_median"] = float(e_cf.median())
+            entry["effect_median"] = float(magnitude.median())
             entry["cosine_mean"] = float(cosine.mean())
             entry["fraction_below_one"] = float((e_cf < 1.0).double().mean())
             summary[f"{split}_{block}"] = entry
@@ -540,15 +562,19 @@ def run(args):
 def print_report(results):
     print("\n=== Test A: is the CURRENT latent counterfactually sufficient? ===")
     print("cross = the question; self = the head's sanity control; train = underfit check")
-    print("(E_CF; 1.0 = no better than predicting no response)\n")
+    print("(E_CF as a POOLED RATIO OF SUMS; 1.0 = predicts no response at all.)")
+    print("`mean-of-ratios` is the superseded per-anchor form, reported so the")
+    print("two can be compared wherever the effect is not uniformly active.\n")
 
     def line(label, summary):
         cross, self_ = summary["test_cross"], summary["test_self"]
+        ratios = cross.get("mean_of_ratios", {}).get("mean", float("nan"))
         print(
             f"  {label:<34} cross {cross['mean']:.4f} "
             f"[{cross['low']:.4f}, {cross['high']:.4f}]   "
             f"self {self_['mean']:.4f}   "
-            f"train-cross {summary['train_cross']['mean']:.4f}"
+            f"train-cross {summary['train_cross']['mean']:.4f}   "
+            f"mean-of-ratios {ratios:.4f}"
         )
 
     for name, summary in results["shared"].items():
@@ -572,10 +598,29 @@ def print_report(results):
             f"train-cross {mean['train_cross']:.4f}   ({len(runs)} seeds)"
         )
 
-    blind = results["shared"].get("actions_only", {}).get("test_cross", {}).get("mean")
-    ceiling = results["shared"].get("physical", {}).get("test_cross", {}).get("mean")
-    if blind is None or ceiling is None:
+    # The agreement check. R is recomputed end to end under each aggregation so
+    # the comparison is between two complete measurements, not between two
+    # numbers that happen to share a denominator.
+    for form in ("pooled", "mean_of_ratios"):
+        report_recovery(results, by_arm, form)
+
+
+def _pick(entry, form):
+    return entry["mean"] if form == "pooled" else entry["mean_of_ratios"]["mean"]
+
+
+def report_recovery(results, by_arm, form):
+    print(f"\n--- recovery ratios under `{form}` ---")
+    blind_entry = results["shared"].get("actions_only", {}).get("test_cross")
+    ceiling_entry = results["shared"].get("physical", {}).get("test_cross")
+    if blind_entry is None or ceiling_entry is None:
         return
+    if form == "mean_of_ratios" and "mean_of_ratios" not in blind_entry:
+        return
+    blind, ceiling = _pick(blind_entry, form), _pick(ceiling_entry, form)
+    for name, entry in results["shared"].items():
+        value = _pick(entry["test_cross"], form)
+        print(f"  E[{name:<40}] = {value:.4f}")
     gap = blind - ceiling
     print(f"\n  blind-to-ceiling gap on cross: {gap:+.4f}")
     if gap <= 0:
@@ -585,7 +630,7 @@ def print_report(results):
     blind_cos = results["shared"]["actions_only"]["test_cross"]["cosine_mean"]
     ceiling_cos = results["shared"]["physical"]["test_cross"]["cosine_mean"]
     for name, runs in sorted(by_arm.items()):
-        latent = sum(r["test_cross"]["mean"] for r in runs) / len(runs)
+        latent = sum(_pick(r["test_cross"], form) for r in runs) / len(runs)
         cos = sum(r["test_cross"]["cosine_mean"] for r in runs) / len(runs)
         # Both, because they can disagree: a head can recover the DIRECTION of
         # the response while still missing its scale, and E_CF alone hides that.

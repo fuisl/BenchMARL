@@ -9,11 +9,14 @@ exactly zero response.
 
 import json
 
+import math
+
 import pytest
 import torch
 
 from examples.world_model.interaction_jacobian import (
     bootstrap_by_episode,
+    pooled_ratio_by_episode,
     constant_plan,
     cumulative_valid,
     resolve_task,
@@ -765,3 +768,53 @@ def test_each_contrast_carries_its_own_episode_ids():
     assert r["J_cross__ids"].shape[0] == 0
     assert r["J_own"].shape[0] == anchors
     assert r["J_own__ids"].shape[0] == anchors
+
+
+def test_pooled_ratio_scores_a_no_response_head_at_exactly_one():
+    """The frozen convention's anchor property must survive the change.
+
+    A head predicting zero response has residual == truth on every anchor. The
+    mean of ratios gives exactly 1; the pooled ratio must too, or `E_CF < 1`
+    stops meaning "better than predicting nothing".
+    """
+    truth = torch.rand(60).double() + 0.1
+    ids = torch.arange(60) % 6
+    pooled = pooled_ratio_by_episode(truth, truth, ids, samples=50)
+    assert pooled["mean"] == pytest.approx(1.0)
+    assert pooled["anchors"] == 60
+    assert pooled["episodes"] == 6
+
+
+def test_pooled_ratio_survives_anchors_whose_effect_is_near_zero():
+    """Job 1527's failure mode, reproduced and fixed.
+
+    Balance at h=3 leaves 44% of anchors with essentially no response. Dividing
+    per anchor makes those rows explode and dominate the average; pooling first
+    leaves them contributing near-zero to both sums.
+    """
+    inactive, active = 44, 56
+    truth = torch.cat([torch.full((inactive,), 1e-10), torch.rand(active) + 0.5])
+    residual = truth * 0.25
+    ids = torch.arange(inactive + active) % 8
+
+    per_anchor = bootstrap_by_episode(residual / (truth + 1e-12), ids, samples=50)
+    pooled = pooled_ratio_by_episode(residual, truth, ids, samples=50)
+    assert pooled["mean"] == pytest.approx(0.25, abs=1e-6)
+    assert per_anchor["mean"] == pytest.approx(0.25, abs=0.01)
+
+    # Now perturb the inactive rows by a fixed absolute amount that is tiny in
+    # physical terms but enormous relative to a 1e-10 effect. This is what the
+    # fitted head actually does, and it is what produced E ~ 1e10.
+    residual[:inactive] = 1e-3
+    blown = bootstrap_by_episode(residual / (truth + 1e-12), ids, samples=50)
+    stable = pooled_ratio_by_episode(residual, truth, ids, samples=50)
+    assert blown["mean"] > 1e6
+    assert stable["mean"] < 0.3
+
+
+def test_pooled_ratio_reports_empty_rather_than_crashing():
+    empty = pooled_ratio_by_episode(
+        torch.empty(0), torch.empty(0), torch.empty(0, dtype=torch.long)
+    )
+    assert empty["episodes"] == 0 and empty["anchors"] == 0
+    assert math.isnan(empty["mean"])
