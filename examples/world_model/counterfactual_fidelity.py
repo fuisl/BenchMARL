@@ -176,9 +176,62 @@ def verify_against_jacobian(branches, agents, block, scale_agent, recorded, hori
     return len(observed)
 
 
-# Anchor `source_regime` indexes these in this order, verified bit-exactly
-# against each branch's own step-0 observation.
-SOURCE_REGIMES = ("independent", "correlated")
+def resolve_regime_files(data_root, anchors, rows, observed):
+    """Map each `source_regime` index to its trajectory, from the MANIFEST.
+
+    The producer records the resolved list. `collect.py` builds
+    `source_regimes = list(REGIMES)` and appends `"heuristic"` when that source
+    is enabled, then numbers them by position, and writes the result to the
+    manifest as `source_regimes`. So the mapping is stated by the bank itself
+    and does not have to be inferred.
+
+    Two earlier attempts were wrong. A hardcoded two-entry tuple, validated on
+    Buzz Wire, raised `KeyError: 2` on Transport and Balance, which carry a
+    third heuristic source (job 1521). Inferring the mapping by matching frames
+    then proved ambiguous, because the regimes branch from a shared anchor bank
+    and their observations coincide at many anchors.
+
+    The manifest is authoritative; the frame check is retained only to catch a
+    manifest that disagrees with the files beside it.
+    """
+    manifest = json.loads((data_root / "manifest.json").read_text())
+    names = manifest.get("source_regimes")
+    if not names:
+        raise ValueError(
+            f"{data_root}/manifest.json records no `source_regimes`; the index "
+            "order cannot be recovered and must not be guessed"
+        )
+    present = sorted(set(anchors["source_regime"][rows].tolist()))
+    missing = [i for i in present if i >= len(names)]
+    if missing:
+        raise ValueError(
+            f"source_regime {missing} exceeds the manifest's {names}"
+        )
+
+    mapping, episode, step = {}, anchors["episode_id"][rows], anchors["source_step"][rows]
+    regime = anchors["source_regime"][rows]
+    for index in present:
+        path = data_root / f"trajectories_{names[index]}.pt"
+        if not path.exists():
+            raise FileNotFoundError(
+                f"manifest names source_regime {index} as '{names[index]}' but "
+                f"{path.name} is absent"
+            )
+        source = torch.load(path, map_location="cpu", weights_only=True)
+        here = (regime == index).nonzero().squeeze(-1)
+        probe = here[: min(32, len(here))]
+        looked_up = torch.stack(
+            [source["observation"][int(e), int(s)]
+             for e, s in zip(episode[probe], step[probe])]
+        )
+        if not torch.equal(looked_up, observed[probe]):
+            raise ValueError(
+                f"{path.name} disagrees with the anchors it is supposed to "
+                f"describe for source_regime {index}: max difference "
+                f"{float((looked_up - observed[probe]).abs().max()):.3e}"
+            )
+        mapping[index] = source
+    return mapping
 
 
 def reference_context(anchors, rows, data_root, history_size, block, observed):
@@ -202,12 +255,7 @@ def reference_context(anchors, rows, data_root, history_size, block, observed):
     episode = anchors["episode_id"][rows]
     step = anchors["source_step"][rows]
     regime = anchors["source_regime"][rows]
-    trajectories = {
-        index: torch.load(
-            data_root / f"trajectories_{name}.pt", map_location="cpu", weights_only=True
-        )
-        for index, name in enumerate(SOURCE_REGIMES)
-    }
+    trajectories = resolve_regime_files(data_root, anchors, rows, observed)
 
     frames, actions = [], []
     for e, s, r in zip(episode.tolist(), step.tolist(), regime.tolist()):

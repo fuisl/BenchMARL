@@ -533,6 +533,39 @@ def audit_scenario(name, data_root, args):
               f"{cross['state_dependence']:.2f})  C={mixed['mean']:.4f}  "
               f"shared={shared['mean']:.4f}", flush=True)
 
+        # If there is no cross effect to recover, the ladder has nothing to
+        # predict: its target is identically zero, every error divides by ~0,
+        # and it reports numbers like 2e6 that mean nothing. Transport's smoke
+        # did exactly that. The registered taxonomy's first gate is activity, so
+        # decide here and skip the fits -- correct, and it saves hours across
+        # five scenarios.
+        if cross["active_fraction"] < ACTIVE_FRACTION:
+            print(f"    cross effect active on {cross['active_fraction']:.2f} of "
+                  f"anchors (< {ACTIVE_FRACTION}); skipping ladders", flush=True)
+            report["axes"][str(axis)] = {
+                "J_own": own, "J_cross": cross, "C_mixed": mixed,
+                "shared_response": shared,
+                "ladder_design": "not run -- cross effect inactive",
+                "information_ladders": {},
+                "classification": {
+                    "verdict": "weak_interaction_control",
+                    "reason": (
+                        f"cross effect active on only "
+                        f"{cross['active_fraction']:.3f} of anchors at this "
+                        f"horizon; nothing to recover"
+                    ),
+                    "cross_resolvable": False,
+                    "best_legitimate_cross_recovery": float("nan"),
+                    "mixed_above_own_floor": False,
+                    "cross_reference_relative_error": float("nan"),
+                    "mixed_reference_relative_error": float("nan"),
+                    "diagnostic_overfit": {},
+                    "shared_recovery_descriptive": float("nan"),
+                    "self_recovery_descriptive": float("nan"),
+                },
+            }
+            continue
+
         # Four targets, each with its own ladder and its own measurement
         # floor. `cross` decides admission; `self` and `shared` are descriptive.
         #
@@ -662,14 +695,19 @@ def main():
           f"{'R_O':>6} {'R_Hd':>6} {'R_Hm':>6} {'R_shr':>6}  verdict")
     for name, report in reports.items():
         axis = report["axes"][report["selected_axis"]]
-        cross = axis["information_ladders"]["cross"]
+        cross = axis["information_ladders"].get("cross")
         verdict = report["verdict"]
+        cell = lambda v: f"{v:>6.3f}" if v == v else f"{'--':>6}"  # noqa: E731
+        recoveries = (
+            [cross[c]["R_info"] for c in ("O", "H_dense", "H_model")]
+            if cross else [float("nan")] * 3
+        )
         print(
             f"{name:<12} {axis['J_cross']['mean']:>8.3f} {axis['C_mixed']['mean']:>7.3f} "
             f"{axis['J_cross']['state_dependence']:>7.2f} "
-            f"{cross['O']['R_info']:>6.3f} {cross['H_dense']['R_info']:>6.3f} "
-            f"{cross['H_model']['R_info']:>6.3f} "
-            f"{verdict['shared_recovery_descriptive']:>6.3f}  {verdict['verdict']}"
+            + " ".join(cell(v) for v in recoveries) + " "
+            + cell(verdict["shared_recovery_descriptive"])
+            + f"  {verdict['verdict']}"
         )
     print(f"\nWrote {output / 'admission_report.json'}")
 

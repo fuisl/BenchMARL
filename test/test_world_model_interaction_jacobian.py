@@ -302,14 +302,26 @@ def test_build_rows_self_and_cross_columns_are_disjoint_per_row():
 # --- G0: history window alignment -------------------------------------------
 
 from examples.world_model.counterfactual_localization import (  # noqa: E402
-    SOURCE_REGIMES,
     history_window,
 )
+
+# Bank sources vary: two for Buzz Wire/Wheel/Dropout, three for
+# Transport/Balance. The mapping is discovered per bank, so tests name files
+# literally rather than importing a constant that no longer exists.
+LOCALIZATION_REGIMES = ("independent", "correlated")
+
+
+def _write_manifest(tmp_path, names):
+    """Banks state their own regime index order; the resolver reads it."""
+    (tmp_path / "manifest.json").write_text(
+        json.dumps({"task_name": "vmas/buzz_wire", "source_regimes": list(names)})
+    )
 
 
 def _fake_bank(tmp_path, episodes=4, steps=10, agents=2, obs=6, act=2):
     """Two regime trajectory files whose contents are distinguishable."""
-    for index, name in enumerate(SOURCE_REGIMES):
+    _write_manifest(tmp_path, LOCALIZATION_REGIMES)
+    for index, name in enumerate(LOCALIZATION_REGIMES):
         torch.save(
             {
                 "observation": torch.arange(
@@ -339,7 +351,7 @@ def test_history_window_rejects_a_misaligned_lookup(tmp_path):
     }
     rows = torch.tensor([0, 1])
     wrong = torch.zeros(2, 2, 6)
-    with pytest.raises(ValueError, match="misaligned"):
+    with pytest.raises(ValueError, match="misaligned|disagrees with the anchors"):
         history_window(anchors, rows, tmp_path, 3, wrong)
 
 
@@ -351,7 +363,7 @@ def test_history_window_shape_and_episode_start_clamping(tmp_path):
     """
     _fake_bank(tmp_path)
     source = torch.load(
-        tmp_path / f"trajectories_{SOURCE_REGIMES[0]}.pt", weights_only=True
+        tmp_path / f"trajectories_{LOCALIZATION_REGIMES[0]}.pt", weights_only=True
     )
     anchors = {
         "episode_id": torch.tensor([0]),
@@ -373,12 +385,16 @@ def test_history_window_shape_and_episode_start_clamping(tmp_path):
 # --- F13: authentic reference context ---------------------------------------
 
 from examples.world_model.counterfactual_fidelity import (  # noqa: E402
-    SOURCE_REGIMES as CF_SOURCE_REGIMES,
     reference_context,
 )
 
+# Named literally; the real mapping is discovered per bank because banks differ
+# in how many sources they carry.
+CF_SOURCE_REGIMES = ("independent", "correlated")
+
 
 def _cf_bank(tmp_path, episodes=4, steps=40, agents=2, obs=6, act=2):
+    _write_manifest(tmp_path, CF_SOURCE_REGIMES)
     for index, name in enumerate(CF_SOURCE_REGIMES):
         torch.save(
             {
@@ -431,7 +447,7 @@ def test_reference_context_rejects_a_misaligned_anchor(tmp_path):
         "source_step": torch.tensor([20]),
         "source_regime": torch.tensor([0]),
     }
-    with pytest.raises(ValueError, match="misaligned"):
+    with pytest.raises(ValueError, match="misaligned|disagrees with the anchors"):
         reference_context(
             anchors, torch.tensor([0]), tmp_path, 3, 5, torch.zeros(1, 2, 6)
         )
@@ -600,3 +616,75 @@ def test_body_columns_separate_each_agent_from_the_shared_bodies():
     assert groups["agent_0"].tolist() == [0, 1, 2, 3]
     assert groups["agent_1"].tolist() == [4, 5, 6, 7]
     assert groups["shared"].tolist() == list(range(8, 8 + 18))
+
+
+def test_regime_mapping_is_read_from_the_manifest(tmp_path):
+    """A three-source bank must work, and the mapping must be verified.
+
+    Transport and Balance carry a heuristic source as `source_regime == 2`
+    alongside independent and correlated. A hardcoded two-entry tuple, validated
+    on Buzz Wire, raised `KeyError: 2` on the first three-source bank it met
+    (job 1521) and killed all three seeds.
+    """
+    from examples.world_model.counterfactual_fidelity import resolve_regime_files
+
+    episodes, steps, agents, obs = 3, 12, 2, 6
+    _write_manifest(tmp_path, ("independent", "correlated", "heuristic"))
+    sources = {}
+    for offset, name in enumerate(("independent", "correlated", "heuristic")):
+        frames = torch.full((episodes, steps, agents, obs), float(offset))
+        frames += torch.arange(steps).view(1, steps, 1, 1) * 0.01
+        sources[name] = frames
+        torch.save(
+            {"observation": frames,
+             "action": torch.zeros(episodes, steps, agents, 2)},
+            tmp_path / f"trajectories_{name}.pt",
+        )
+
+    anchors = {
+        "episode_id": torch.tensor([0, 1, 2]),
+        "source_step": torch.tensor([4, 5, 6]),
+        "source_regime": torch.tensor([0, 1, 2]),
+    }
+    rows = torch.arange(3)
+    observed = torch.stack([
+        sources["independent"][0, 4],
+        sources["correlated"][1, 5],
+        sources["heuristic"][2, 6],
+    ])
+    mapping = resolve_regime_files(tmp_path, anchors, rows, observed)
+    assert sorted(mapping) == [0, 1, 2]
+    assert torch.equal(mapping[2]["observation"], sources["heuristic"])
+
+
+def test_regime_mapping_raises_when_the_manifest_disagrees_with_the_files(tmp_path):
+    """A silent mis-mapping would corrupt every history built on it."""
+    from examples.world_model.counterfactual_fidelity import resolve_regime_files
+
+    _write_manifest(tmp_path, ("independent",))
+    torch.save(
+        {"observation": torch.zeros(2, 8, 2, 6),
+         "action": torch.zeros(2, 8, 2, 2)},
+        tmp_path / "trajectories_independent.pt",
+    )
+    anchors = {
+        "episode_id": torch.tensor([0]),
+        "source_step": torch.tensor([3]),
+        "source_regime": torch.tensor([0]),
+    }
+    with pytest.raises(ValueError, match="disagrees with the anchors"):
+        resolve_regime_files(tmp_path, anchors, torch.tensor([0]), torch.ones(1, 2, 6))
+
+
+def test_regime_index_beyond_the_manifest_raises(tmp_path):
+    """The exact failure that killed job 1521, now caught with a real message."""
+    from examples.world_model.counterfactual_fidelity import resolve_regime_files
+
+    _write_manifest(tmp_path, ("independent", "correlated"))
+    anchors = {
+        "episode_id": torch.tensor([0]),
+        "source_step": torch.tensor([0]),
+        "source_regime": torch.tensor([2]),   # a heuristic source
+    }
+    with pytest.raises(ValueError, match="exceeds the manifest"):
+        resolve_regime_files(tmp_path, anchors, torch.tensor([0]), torch.zeros(1, 2, 6))

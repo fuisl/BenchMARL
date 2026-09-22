@@ -68,6 +68,7 @@ import yaml
 from examples.world_model.counterfactual_evaluation import blocked
 from examples.world_model.counterfactual_fidelity import (
     collect_branches,
+    resolve_regime_files,
     column_groups,
     scaled_truth,
     verify_against_jacobian,
@@ -84,10 +85,6 @@ from examples.world_model.physical_response import encoded, state_input_frames
 from examples.world_model.plan_ranking import select_anchor_states
 from examples.world_model.train import load_model
 
-# Anchor `source_regime` indexes these in THIS order. Verified bit-exactly
-# against each branch's own step-0 observation before any history is built; the
-# reversed order disagrees by ~0.96, so a silent swap is not survivable.
-SOURCE_REGIMES = ("independent", "correlated")
 
 
 def history_window(anchors, rows, data_root, frames, observed):
@@ -109,12 +106,9 @@ def history_window(anchors, rows, data_root, frames, observed):
     episode = anchors["episode_id"][rows]
     step = anchors["source_step"][rows]
     regime = anchors["source_regime"][rows]
-    trajectories = {
-        index: torch.load(
-            data_root / f"trajectories_{name}.pt", map_location="cpu", weights_only=True
-        )
-        for index, name in enumerate(SOURCE_REGIMES)
-    }
+    # Discovered and verified per bank, never assumed: see
+    # `counterfactual_fidelity.resolve_regime_files`.
+    trajectories = resolve_regime_files(data_root, anchors, rows, observed)
 
     observations, actions = [], []
     for e, s, r in zip(episode.tolist(), step.tolist(), regime.tolist()):
