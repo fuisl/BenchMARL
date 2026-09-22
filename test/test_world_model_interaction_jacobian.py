@@ -835,10 +835,12 @@ def _cells(entries, horizon=3):
     return {"horizon_blocks": horizon, "cells": dict(entries)}
 
 
-def _cross(agent, axis, mean, active, responder="agent_1", horizon=3):
+def _cross(agent, axis, mean, active, responder="agent_1", horizon=3,
+           anchors=600, episodes=16):
     return {"mean": mean, "active_fraction_above_1e-6": active, "block": "cross",
             "intervened_agent": agent, "intervened_axis": axis,
-            "responder": responder, "horizon_blocks": horizon}
+            "responder": responder, "horizon_blocks": horizon,
+            "anchors": anchors, "episodes": episodes}
 
 
 def test_gate_picks_the_strongest_cross_cell_not_a_self_cell(tmp_path):
@@ -936,3 +938,23 @@ def test_gate_reads_support_from_the_weaker_of_the_two_conditions():
     result = gate(path)
     assert result["episodes"] == 2 and result["anchors"] == 9
     assert result["supported"] is False
+
+
+def test_gate_never_picks_a_cell_whose_anchors_have_all_terminated(tmp_path):
+    """`max` PREFERS nan, because every comparison against nan is False.
+
+    Buzz Wire at h=5 has cells with zero surviving anchors and mean = nan
+    alongside one with 7 anchors. The picker returned an empty cell and the fit
+    then died on `torch.cat(): expected a non-empty list of Tensors`.
+    """
+    path = tmp_path / "ta1.json"
+    path.write_text(json.dumps(_cells({
+        "terminated": dict(_cross(0, 0, float("nan"), float("nan"), horizon=5),
+                           anchors=0, episodes=0),
+        "surviving": dict(_cross(0, 1, 2.315, 1.0, horizon=5),
+                          anchors=7, episodes=7),
+    }, horizon=5)))
+    assert strongest_cross_cell(path) == "0:1"
+    summary = cross_summary(path)
+    assert summary["ta1_anchors"] == 7
+    assert summary["j_cross"] == pytest.approx(2.315)

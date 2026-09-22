@@ -75,6 +75,11 @@ def _best_cross(jacobian_path):
     cross = [
         v for v in payload["cells"].values()
         if v.get("block") == "cross" and v.get("horizon_blocks") == horizon
+        # A cell whose anchors have all terminated carries mean = nan, and
+        # `max` silently PREFERS it because every comparison against nan is
+        # False. On Buzz Wire h=5 that returned an empty cell over one with 7
+        # surviving anchors, and the gate then crashed on an empty tensor list.
+        and v.get("anchors", 0) > 0 and not math.isnan(v["mean"])
     ]
     if not cross:
         return None
@@ -98,6 +103,8 @@ def cross_summary(jacobian_path):
         "j_cross": best["mean"],
         "active": best["active_fraction_above_1e-6"],
         "cell": f"{best['intervened_agent']}:{best['intervened_axis']}",
+        "ta1_anchors": int(best.get("anchors", 0)),
+        "ta1_episodes": int(best.get("episodes", 0)),
     }
 
 
@@ -156,8 +163,17 @@ def summarize(root):
             continue
         cross = cross_summary(jacobian)
         if not localization.exists():
-            rows.append({"task": task, "h": horizon, **cross,
-                         "verdict": "gate missing"})
+            # T-A1 already knows how many anchors survive to this horizon. When
+            # that is below the support floor the gate cannot say anything, and
+            # a missing result there is a verdict rather than a gap: Buzz Wire
+            # at h=5 has ZERO surviving anchors and crashed the fit.
+            starved = (cross["ta1_anchors"] < MIN_ANCHORS
+                       or cross["ta1_episodes"] < MIN_EPISODES)
+            rows.append({
+                "task": task, "h": horizon, **cross,
+                "anchors": cross["ta1_anchors"], "episodes": cross["ta1_episodes"],
+                "verdict": REJECT_NO_SUPPORT if starved else "gate missing",
+            })
             continue
         gated = gate(localization)
         rows.append({"task": task, "h": horizon, **cross, **gated,
@@ -176,10 +192,12 @@ def print_table(rows):
     print("  " + "-" * (len(header) - 2))
     for r in rows:
         if "e_a" not in r:
+            anchors = r.get("anchors")
             print(f"  {r['task']:<11}{r['h']:>2} {r.get('cell', '-'):>5} "
                   f"{r.get('j_cross', float('nan')):>9.3f} "
                   f"{r.get('active', float('nan')):>7.3f} "
-                  f"{'':>5}{'':>7}{'':>7}{'':>9}{'':>4}  {r['verdict']}")
+                  f"{anchors if anchors is not None else '':>5}"
+                  f"{'':>7}{'':>7}{'':>9}{'':>4}  {r['verdict']}")
             continue
         print(f"  {r['task']:<11}{r['h']:>2} {r['cell']:>5} {r['j_cross']:>9.3f} "
               f"{r['active']:>7.3f} {r['anchors']:>5} {r['e_a']:>7.4f} "
