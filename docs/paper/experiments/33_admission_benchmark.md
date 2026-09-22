@@ -401,6 +401,81 @@ isolates (1) from (2). Until then:
 This is recorded before the run rather than after, so the outcome cannot be
 re-narrated.
 
+## Balance representation audit (job 1527): NO MEASUREMENT
+
+The registered next experiment — repeat the corrected representation audit on
+Balance at `h=3`, changing nothing in the model — ran for 2:54 and **produced no
+usable number**. Reported as a failed measurement, not a result.
+
+Both cells returned `E` values around **10^10** on every input condition:
+
+| input | cell `1:1` | cell `0:1` |
+|---|---:|---:|
+| `actions_only` | 5.9e10 | 1.2e11 |
+| `observation_raw` | 4.4e10 | 8.0e10 |
+| `history` | 3.7e10 | 8.0e10 |
+| `physical` | 4.3e10 | 7.6e10 |
+
+**This is not overfitting.** Train and test agree to within a few percent on
+every row, so the earlier `diagnostic_overfit` guard correctly did not fire —
+the failure is elsewhere.
+
+### Cause: `E_CF` is a mean of per-anchor ratios, and Balance has mass at zero
+
+`E_CF` divides by `‖ΔY_true‖` **per anchor** and then averages. That is stable
+only when the true effect is bounded away from zero on most anchors. Compare the
+two tasks at the horizon each is measured on:
+
+| task, cell | mean | median | mean/median | active |
+|---|---:|---:|---:|---:|
+| buzz_wire `a1_axis0 → agent_0`, h=1 | 2.152 | 2.283 | **0.9** | **1.000** |
+| buzz_wire `a0_axis0 → agent_1`, h=1 | 2.231 | 2.351 | **0.9** | **1.000** |
+| balance `a1_axis1 → agent_0`, h=3 | 0.522 | 0.048 | **11.0** | **0.560** |
+| balance `a0_axis1 → agent_1`, h=3 | 0.626 | 0.108 | **5.8** | **0.586** |
+
+Buzz Wire's effect is active on **every** anchor with median ≈ mean, so the
+per-anchor ratio is well behaved and the convention never showed strain.
+Balance's is heavy-tailed: the median sits an order of magnitude below the mean
+and **44% of anchors carry essentially no effect**. Those rows divide by ~0 and
+dominate the average.
+
+So job 1525's headline — Balance reaching 62-74% activity at `h=3` — is true of
+the *3x3 midpoint grid* and does not transfer to the sampled-reference design the
+audit uses, where the same cells are only ~56% active. Two different
+interventions, two different activity levels, and the frozen convention was
+validated only against the one where activity was total.
+
+### What this does and does not touch
+
+**It does not invalidate the Buzz Wire numbers.** `O = 0.605` against
+`Z = 0.212` was measured where median ≈ mean and activity was 1.000, which is
+exactly the regime where a mean-of-ratios is sound.
+
+**It does invalidate the aggregation for any task with mass near zero**, which
+is every task except Buzz Wire in this suite. The reproduction question the
+audit was run to answer — does `O ≫ Z` hold on a second task — is therefore
+**still open**.
+
+### The fix, registered before it is run
+
+Aggregate as a **ratio of sums** rather than a mean of ratios:
+
+```math
+E_{\rm CF}=\sqrt{\frac{\sum_s\lVert \Delta\hat Y_s-\Delta Y_s\rVert^2}
+{\sum_s\lVert \Delta Y_s\rVert^2}}
+```
+
+This is the form `physical_response.py` used originally, and it is scale-stable
+because a near-zero anchor contributes near-zero to both sums instead of an
+unbounded ratio. It keeps the property the convention depends on — a predictor
+of no response still scores exactly 1 — while removing the division by each
+anchor.
+
+Both forms must be reported on Buzz Wire first. If they agree there, the ratio
+of sums replaces the mean of ratios in the frozen convention and the Balance
+audit is re-run. If they disagree on Buzz Wire, the headline numbers need
+re-deriving before anything else proceeds.
+
 ## Results (job 1522)
 
 Five scenarios x three seeds, `references = 2`, `horizon = 1` block, frozen
