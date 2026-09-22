@@ -547,6 +547,7 @@ all twenty cells for a fraction of one representation audit.
 | **balance** | 5 | 1:0 | 1.385 | 0.805 | 441 | 0.7534 | 0.6399 | **+0.1135** | **ADMIT** |
 | **balance** | 2 | 1:0 | 1.369 | 0.592 | 655 | 0.7297 | 0.6166 | **+0.1132** | **ADMIT** |
 | buzz_wire | 3 | 1:0 | 2.731 | 1.000 | **1** | 0.8708 | 0.3538 | +0.5169 | too little support |
+| buzz_wire | 5 | 0:1 | 2.315 | 1.000 | **7** | - | - | - | too little support |
 | buzz_wire | 2 | 0:0 | 2.915 | 1.000 | 82 | 0.5282 | 0.4846 | +0.0436 | intervals overlap |
 | balance | 1 | 1:1 | 0.257 | 0.378 | 669 | 0.8830 | 0.8389 | +0.0440 | intervals overlap |
 | transport | 1-5 | - | 0.093-0.127 | <=0.113 | 574-717 | ~0.996 | ~0.988 | <=+0.011 | reject |
@@ -573,6 +574,30 @@ agreeing to four decimals on Wheel. Given the TRUE physical state, the head
 does exactly as well as predicting no response at all. The weak-interaction
 reading of these two tasks survives a proper test rather than resting on a
 threshold.
+
+### Buzz Wire's measurable window is `h=1`, and that is a survival limit
+
+Anchors surviving to the horizon, on Buzz Wire:
+
+| horizon | anchors | episodes |
+|---:|---:|---:|
+| 1 | 311 | 16 |
+| 2 | 82 | 16 |
+| 3 | 2 | 2 |
+| 5 | 0 | 0 |
+
+Its episodes terminate fast, so the positive control is usable at `h=1`,
+marginal at `h=2` and gone after. This is the constraint behind both the `h=3`
+false admission and the `h=5` crash, and it is a property of the task rather
+than of the instrument. Balance still holds **441 anchors over 16 episodes at
+`h=5`**, which is why it can be audited across a horizon range at all.
+
+`h=5` also exposed a defect: `max` PREFERS `nan`, because every comparison
+against `nan` is False, so the picker returned a fully-terminated cell over one
+with 7 surviving anchors and the fit died on an empty tensor list. The sbatch
+caught it and the sweep completed. Empty cells are now excluded from the
+ranking, and a cell whose T-A1 support is already below the floor is reported as
+a verdict rather than as a missing result.
 
 ### Activity does not track measurability
 
