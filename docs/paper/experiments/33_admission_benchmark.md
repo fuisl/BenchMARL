@@ -381,6 +381,87 @@ isolates (1) from (2). Until then:
 This is recorded before the run rather than after, so the outcome cannot be
 re-narrated.
 
-## Results
+## Results (job 1522)
 
-*(none yet — registered ahead of its runs)*
+Five scenarios x three seeds, `references = 2`, `horizon = 1` block, frozen
+convention. COMPLETED in 29:43 on one full A100. Artifacts:
+`outputs/stage0_admission_1522/`.
+
+### No scenario is admitted
+
+| scenario | axis | `J_own` | `J_cross` | **active** | `C_mixed` | verdict |
+|---|---:|---:|---:|---:|---:|---|
+| transport | 0 | 6.49–6.52 | **0.042–0.051** | **0.050–0.056** | 0.10–0.11 | weak-interaction control |
+| wheel | 0 | 6.91–6.92 | **0.000–0.013** | **0.000–0.006** | 0.07 | weak-interaction control |
+| balance | 1 | 3.80–3.83 | **0.183–0.214** | **0.305–0.316** | 0.38–0.41 | weak-interaction control |
+| **buzz_wire** | 0 | 3.98–4.05 | **2.20–2.25** | **1.000** | 1.14–1.18 | undetermined (overfit) |
+| dropout | 0 | 7.03 | **0.000** | **0.000** | 0.000 | weak-interaction control |
+
+Seed agreement is tight throughout: the three seeds are independent draws of the
+reference joint action, and no verdict changes across them.
+
+### The two controls behave oppositely
+
+**Dropout passes as the negative control.** `J_cross` is exactly 0.000 on both
+axes, on all three seeds. Its agents have no cross-agent dynamics by
+construction, and the benchmark reports that without qualification. The
+instrument does not manufacture interaction where none exists.
+
+**Buzz Wire does not cleanly pass as the positive control.** It is the only
+scenario with a cross effect active on **100%** of anchors, and its observation
+recovers **0.72** of the blind-to-reference gap — but it still fails to
+classify, for two independent reasons:
+
+* `cross_reference_relative_error = 0.372`, just above the registered
+  `1/3` resolution threshold. Even the privileged state does not resolve the
+  cross effect quite well enough to license an ordering.
+* The mixed second difference is not measurable at all
+  (`mixed_reference_relative_error = 1.958`), so the overfit guard fires on that
+  ladder and classification is refused.
+
+### The three candidate tasks are far weaker than Buzz Wire
+
+This is the substantive finding, and it is not close:
+
+```math
+J_{\rm cross}:\quad
+\text{buzz\_wire } 2.24
+\;\gg\;
+\text{balance } 0.18
+\;>\;
+\text{transport } 0.05
+\;>\;
+\text{wheel } 0.00
+\;=\;
+\text{dropout } 0.00
+```
+
+Activity is the binding failure: Transport moves agent 0 on **5%** of anchors,
+Balance on **31%**, Wheel on **0%**. The registered gate needs 50%.
+
+Transport's reading reproduces the existing record rather than contradicting it:
+K9 records 31/239 active anchors there, and the M5 note records **0/239** after
+one primitive step. Wheel's zero reproduces K9 as well.
+
+### What this does and does not establish
+
+**It does not say these tasks have no interaction.** It says that *at one action
+block, under this intervention*, an action by one agent does not measurably move
+the other. Transport's package has mass 50 against a `u_multiplier` of 0.6, so
+five primitive steps of one agent's force may simply be too short to transmit.
+The same caveat that retired K9's "no interaction" reading applies here, and is
+why the verdict is "weak-interaction **control**", a role, not "no interaction",
+a property.
+
+**The obvious next question is horizon.** `horizon = 1` was inherited from the
+Buzz Wire work, where the rigid joint transmits force immediately. A
+force-superposition task on a heavy shared object plausibly needs several
+blocks. Re-running the same benchmark at `horizon = 2, 3, 5` is cheap — the
+banks store 25 primitive steps — and is the minimal test of whether these tasks
+are weakly coupled or merely slow.
+
+**Until that runs, no task is available for H0/H1/H2.** Buzz Wire remains the
+only scenario with a measurable cross-agent effect, and it is the one whose
+observation we already know is partially deficient.
+
+
