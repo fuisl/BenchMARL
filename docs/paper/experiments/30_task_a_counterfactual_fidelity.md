@@ -4,6 +4,20 @@
 metrics and the decision rules **before** any result exists, following the A1.2
 precedent (commits `1293046`, `8f6b9c6`). Updated: 2026-09-21.
 
+> **Superseded in part, 2026-09-23 — read [34](34_convention_audit_scaling_balance.md) first.**
+> Every T-A2 verdict below was scored as a *mean of per-anchor ratios*. Under the
+> frozen pooled convention (job 1545), and per interaction axis, the headline
+> results change:
+> * **K21 reverses on the strong coupling.** H1 beats H0 on 8/8 seeds at h = 1 and
+>   h = 2 on axis 0 (E 0.66, cos +0.80, gain 0.64) and still loses on the weak axis 1.
+> * **K22 and K22b do not survive.** Relational vs joint is probe-dependent and
+>   null, and its axis-1 wins are shrinkage.
+> * **K24's decay is withdrawn.** Axis-0 cosine is flat from h = 1 to 2, and h = 3
+>   is survivor-limited.
+> * **T-A2b's encoder loss (K36) is about half head capacity.**
+>
+> The design and decision rules in this note remain the record of what was registered.
+
 Direction: [`../direction_2026-09-21.md`](../direction_2026-09-21.md).
 Governance: [`../coding_rules.md`](../coding_rules.md),
 [knowledge index](../../RESEARCH_KNOWLEDGE_INDEX.md) §10 update contract.

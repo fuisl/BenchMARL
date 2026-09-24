@@ -3,6 +3,14 @@
 **Status: registered 2026-09-21, before any scenario has been measured.**
 Thresholds and the taxonomy are fixed here ahead of results.
 
+> **Update 2026-09-23 — see [34](34_convention_audit_scaling_balance.md) §6.** The
+> admitted Balance cell `1:0` was trained and graded (jobs 1561, 1564, 1565). It
+> **fails T-A2's own probe-floor rule** at every horizon: floor 0.52 / 0.39 / 0.41
+> against ≤ 1/3. The head-separation gate therefore does not imply gradability, and
+> any future admission must also check the grading probe's floor. The pooled
+> convention frozen here was never re-applied to Buzz Wire's T-A2 until job 1545,
+> which reverses K21 on the strong axis.
+
 Direction: [`../direction_joint_representation_2026-09-21.md`](../direction_joint_representation_2026-09-21.md).
 Prior results this replaces as the main line:
 [`30_task_a_counterfactual_fidelity.md`](30_task_a_counterfactual_fidelity.md),
