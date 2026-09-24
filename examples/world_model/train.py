@@ -66,6 +66,7 @@ def loaders(cfg):
             action_block=cfg.data.action_block,
             state_input=cfg.data.state_input,
             history_frames=cfg.data.history_frames,
+            train_fraction=cfg.data.get("train_fraction", 1.0) if split == "train" else 1.0,
         )
         splits[split] = DataLoader(
             data,
@@ -83,13 +84,17 @@ def loaders(cfg):
     return splits
 
 
-def reference_training_view(model, batch):
+def reference_training_view(model, batch, random_window=False):
     """Return LeWM's registered 3-context/1-prediction training window.
 
     Pinned LeWM loads four frames, feeds the first three embeddings/actions to
     the predictor, and uses frames 1..3 as shifted targets.  Existing offline
     snippets are longer, so step 1 takes their first exact reference window;
     it does not reinterpret the legacy concatenated-history input condition.
+
+    ``random_window`` draws each row's window start uniformly instead, the way
+    LeWM's loader samples windows from whole trajectories. The first-window
+    default uses only four frames of every snippet and discards the rest.
     """
     if getattr(model, "profile", "legacy_compact") != "lewm_reference":
         return batch
@@ -116,12 +121,22 @@ def reference_training_view(model, batch):
         "terminated",
         "truncated",
     }
+    frames = batch["observation"].shape[1]
+    rows = batch["observation"].shape[0]
+    device = batch["observation"].device
+    if random_window and frames > required_frames:
+        start = torch.randint(0, frames - required_frames + 1, (rows,), device=device)
+    else:
+        start = torch.zeros(rows, dtype=torch.long, device=device)
+    row = torch.arange(rows, device=device).unsqueeze(1)
+    frame_index = start.unsqueeze(1) + torch.arange(required_frames, device=device)
+    block_index = frame_index[:, : model.history_size]
     view = {}
     for key, value in batch.items():
         if key in frame_keys:
-            value = value[:, :required_frames]
+            value = value[row, frame_index]
         elif key in block_keys:
-            value = value[:, : model.history_size]
+            value = value[row, block_index]
         view[key] = value
     return view
 
@@ -247,7 +262,9 @@ def sigreg_loss(model, sigreg, latent, observation_valid, cfg):
 
 def dynamics_losses(model, sigreg, batch, cfg):
     """LeWM's two-term objective, masked to valid blocks/frames."""
-    batch = reference_training_view(model, batch)
+    batch = reference_training_view(
+        model, batch, cfg.train.get("reference_window", "first") == "random"
+    )
     latent = model.encode(batch["observation"])
     predicted = model.predict(latent[:, :-1], batch["action"])
     target = latent[:, 1:]  # undetached, as in the reference
@@ -493,6 +510,9 @@ def world_model_from_config(
         "dropout": cfg.model.dropout,
         "obs_mean": observation_mean,
         "obs_std": observation_std,
+        # Absent from older checkpoint configs, which therefore rebuild unchanged.
+        "encoder_hidden_dim": cfg.model.get("encoder_hidden_dim"),
+        "encoder_depth": cfg.model.get("encoder_depth", 1),
     }
     if profile == "legacy_compact":
         model = MultiAgentWorldModel(frames=shapes["frames"], **common)
@@ -539,9 +559,15 @@ def run_training(cfg, output: Path):
 
     splits = loaders(cfg)
     train_loader, validation_loader = splits["train"], splits["validation"]
+    window = cfg.train.get("reference_window", "first")
+    if window not in ("first", "random"):
+        raise ValueError(f"train.reference_window must be first or random, not {window}")
+    # A random window trains on every frame, so it must be normalized on every
+    # frame; the first-window default keeps its historical statistics.
     reference_frames = (
         cfg.model.history_size + 1
         if cfg.model.get("profile", "legacy_compact") == "lewm_reference"
+        and window == "first"
         else None
     )
     mean, std = observation_statistics(train_loader, reference_frames)
@@ -549,7 +575,7 @@ def run_training(cfg, output: Path):
     if reference:
         action_mean, action_std = action_statistics(
             train_loader,
-            max_blocks=cfg.model.history_size,
+            max_blocks=cfg.model.history_size if window == "first" else None,
             action_block=cfg.data.action_block,
         )
     else:

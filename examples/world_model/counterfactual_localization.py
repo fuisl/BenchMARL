@@ -84,7 +84,43 @@ from examples.world_model.interaction_jacobian import (
 )
 from examples.world_model.physical_response import encoded, state_input_frames
 from examples.world_model.plan_ranking import select_anchor_states
-from examples.world_model.train import load_model
+from examples.world_model.train import load_model, world_model_from_config
+from omegaconf import OmegaConf
+
+
+def untrained_like(checkpoint_path, device, seed):
+    """The checkpoint's exact architecture and input normalization, random weights.
+
+    The control for "the encoder loses two thirds of what the observation has"
+    (job 1516). A deterministic 6 -> 192 map can only lose information by being
+    non-injective, so part of the observation-vs-latent gap may be the diagnostic
+    head's own difficulty with a 192-D input at ~700 anchors. If an UNTRAINED
+    encoder scores like the trained one, the gap is the head; if it scores like
+    the raw observation, JEPA training discarded the information.
+    """
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    torch.manual_seed(seed)
+    model = world_model_from_config(
+        OmegaConf.create(checkpoint["config"]),
+        checkpoint["shapes"],
+        checkpoint["observation_mean"],
+        checkpoint["observation_std"],
+        device,
+        action_mean=checkpoint.get("action_mean"),
+        action_std=checkpoint.get("action_std"),
+    )
+    model.eval()
+    return model
+
+
+def random_projection(obs_dim, width, seed):
+    """(obs_dim, width) Gaussian map: full column rank, so it loses nothing.
+
+    Applied per agent, it gives the raw observation the latent's width without
+    changing its information -- a pure input-dimensionality control.
+    """
+    generator = torch.Generator().manual_seed(seed)
+    return torch.randn(obs_dim, width, generator=generator, dtype=torch.float64)
 
 
 
@@ -235,15 +271,19 @@ def latent_features(model, branches, shaped, device):
     return features
 
 
-def build_rows(branches, block, step, agents, scale, episode_ids, latents, history=None):
+def build_rows(branches, block, step, agents, scale, episode_ids, latents, history=None,
+               projection=None, untrained=None):
     """Stack every (anchor, reference, cell) into one design matrix per input."""
     rows = {
         "actions_only": [],
         "observation_raw": [],
+        "observation_projected": [],
         "physical": [],
         "latent": [],
         "latent_plus_agentphys": [],
         "latent_plus_state": [],
+        "latent_plus_observation": [],
+        "latent_untrained": [],
         "history": [],
     }
     targets, episodes = [], []
@@ -285,6 +325,17 @@ def build_rows(branches, block, step, agents, scale, episode_ids, latents, histo
             torch.cat([observation, actions], dim=1)[mask]
         )
         rows["physical"].append(torch.cat([physical, actions], dim=1)[mask])
+        if projection is not None:
+            # (B, N, obs) @ (obs, width) -> (B, N*width): the observation at the
+            # latent's width, information unchanged.
+            per_agent = endpoints["low"]["observation"][:, 0].double() @ projection
+            rows["observation_projected"].append(
+                torch.cat([per_agent.reshape(actions.shape[0], -1), actions], dim=1)[mask]
+            )
+        if untrained is not None:
+            rows["latent_untrained"].append(
+                torch.cat([untrained[key], actions], dim=1)[mask]
+            )
         if history is not None:
             rows["history"].append(torch.cat([history, actions], dim=1)[mask])
         if latents is not None:
@@ -305,6 +356,12 @@ def build_rows(branches, block, step, agents, scale, episode_ids, latents, histo
             # required" from "any omitted physical state would do".
             rows["latent_plus_agentphys"].append(
                 torch.cat([latents[key], agent_physical, actions], dim=1)[mask]
+            )
+            # The encoder's own input handed back beside its output. If this
+            # scores BELOW `observation_raw`, the extra latent dimensions cost
+            # the head more than they add -- the head, not the encoder.
+            rows["latent_plus_observation"].append(
+                torch.cat([latents[key], observation, actions], dim=1)[mask]
             )
         targets.append(true_delta[mask])
         groups = column_groups(agents, 0, intervened)
@@ -468,6 +525,10 @@ def run(args):
     # so they are fitted once. Refitting them per checkpoint would invite
     # reading their seed noise as a model difference.
     shared, history = {}, {}
+    projection = None
+    if args.encoder_controls:
+        obs_dim = next(iter(branches["train"].values()))["low"]["observation"].shape[-1]
+        projection = random_projection(obs_dim, args.projection_width, args.seed)
     for name in ("train", "test"):
         if args.history_frames > 1:
             any_branch = next(iter(branches[name].values()))["low"]
@@ -479,11 +540,13 @@ def run(args):
                   f"({args.history_frames} frames, alignment verified)", flush=True)
         shared[name] = build_rows(
             branches[name], block, step, agents, scale, episode_ids[name], None,
-            history.get(name),
+            history.get(name), projection,
         )
     conditions = ["actions_only", "observation_raw", "physical"]
     if args.history_frames > 1:
         conditions.insert(2, "history")
+    if args.encoder_controls:
+        conditions.insert(2, "observation_projected")
     if args.conditions:
         # The A-vs-S admission gate needs only the blind floor and the
         # privileged reference. Fitting `observation_raw` and `history` as well
@@ -535,16 +598,30 @@ def run(args):
         )
         model = load_model(directory / "model.pt", args.device)
         model.eval()
+        random_model = (
+            untrained_like(directory / "model.pt", args.device, config["seed"])
+            if args.encoder_controls else None
+        )
 
         fitted = {}
         for name in ("train", "test"):
             latents = latent_features(model, branches[name], shaped, args.device)
+            untrained = (
+                latent_features(random_model, branches[name], shaped, args.device)
+                if random_model is not None else None
+            )
             fitted[name] = build_rows(
                 branches[name], block, step, agents, scale, episode_ids[name], latents,
-                history.get(name),
+                history.get(name), None, untrained,
             )
-        key = f"{config['data']['regime']}__{config['model']['kind']}__{config['seed']}"
-        for condition in ("latent", "latent_plus_agentphys", "latent_plus_state"):
+        kind = config["model"]["kind"]
+        if args.label_from_dir:
+            kind = directory.name.rsplit("_seed", 1)[0]
+        key = f"{config['data']['regime']}__{kind}__{config['seed']}"
+        per_checkpoint = ["latent", "latent_plus_agentphys", "latent_plus_state"]
+        if args.encoder_controls:
+            per_checkpoint += ["latent_plus_observation", "latent_untrained"]
+        for condition in per_checkpoint:
             train_design, train_target, _, train_episodes = fitted_view(
                 fitted["train"], condition
             )
@@ -690,6 +767,19 @@ def main():
         help="skip the per-checkpoint latent conditions. The state-blind floor, "
         "raw observation, history window and physical ceiling do not depend on "
         "any model, so a history-length sweep needs only these.",
+    )
+    parser.add_argument(
+        "--encoder-controls",
+        action="store_true",
+        help="add the head-dimensionality controls for K36: the observation "
+        "through a fixed random linear map to the latent width, the latent plus "
+        "the raw observation, and an untrained encoder of the same architecture.",
+    )
+    parser.add_argument("--projection-width", type=int, default=192)
+    parser.add_argument(
+        "--label-from-dir", action="store_true",
+        help="label each checkpoint by its run directory (minus `_seed<N>`) "
+        "instead of model.kind, for sweeps whose variants share a kind",
     )
     parser.add_argument("--device", default="cpu")
     run(parser.parse_args())

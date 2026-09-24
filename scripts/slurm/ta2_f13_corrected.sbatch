@@ -43,6 +43,9 @@ jacobian="${TA2F_JACOBIAN:?Set TA2F_JACOBIAN to the T-A1 interaction_jacobian.js
 data="${TA2F_DATA:-outputs/buzz_wire_1196/data}"
 horizons="${TA2F_HORIZONS:-1 2 3}"
 seed="${TA2F_SEED:-7301}"
+# Extra evaluator arguments, e.g. "--label-from-dir" for a scaling sweep or
+# "--references 3" for a bank whose T-A1 used three references.
+extra="${TA2F_EXTRA:-}"
 output="${SLURM_SUBMIT_DIR}/outputs/ta2_f13_corrected_${SLURM_JOB_ID}"
 mkdir -p "$output/source"
 exec > >(tee -a "$output/batch.log") 2>&1
@@ -71,7 +74,7 @@ for horizon in $horizons; do
             "$runs" --data "$data" --jacobian "$jacobian" \
             --out "$output/result_h${horizon}_${probe}" \
             --horizon "$horizon" --seed "$seed" --probe "$probe" \
-            --device cuda 2>&1 | tee "$output/run_h${horizon}_${probe}.log"
+            $extra --device cuda 2>&1 | tee "$output/run_h${horizon}_${probe}.log"
         test -s "$output/result_h${horizon}_${probe}/counterfactual_fidelity.json"
     done
 done

@@ -53,13 +53,18 @@ seeds="${TA2_SEEDS:-4100 4101 4102 4103 4104 4105 4106 4107}"
 kinds="${TA2_KINDS:-independent joint relational}"
 regimes="${TA2_REGIMES:-correlated independent}"
 max_concurrent="${TA2_MAX_CONCURRENT:-6}"
-output="${SLURM_SUBMIT_DIR}/outputs/ta2_reference_baselines_${SLURM_JOB_ID}"
+# Extra Hydra overrides shared by every run, e.g. "train.sigreg_weight=0.009",
+# and a tag naming the variant in the output directory. Empty reproduces 1498.
+overrides="${TA2_OVERRIDES:-}"
+tag="${TA2_TAG:+${TA2_TAG}_}"
+output="${SLURM_SUBMIT_DIR}/outputs/ta2_reference_baselines_${tag}${SLURM_JOB_ID}"
 mkdir -p "$output/source"
 exec > >(tee -a "$output/batch.log") 2>&1
 
 printf 'T-A2 stage 1: job=%s data=%s concurrent=%s\n' \
     "$SLURM_JOB_ID" "$data" "$max_concurrent"
 printf 'kinds=[%s] regimes=[%s] seeds=[%s]\n' "$kinds" "$regimes" "$seeds"
+printf 'overrides=[%s]\n' "$overrides"
 printf 'CUDA_VISIBLE_DEVICES=%s\n' "${CUDA_VISIBLE_DEVICES:?}"
 test -f "$data/manifest.json"
 
@@ -102,6 +107,7 @@ run_one() {
         "model.kind=$kind" \
         "data.root=$data" "data.regime=$regime" \
         "hydra.run.dir=$output/runs/$name" \
+        $overrides \
         > "$output/runs_$name.log" 2>&1
     printf 'DONE %s\n' "$name"
 }

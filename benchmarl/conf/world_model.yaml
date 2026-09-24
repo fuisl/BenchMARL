@@ -20,6 +20,9 @@ data:
   #   physical     recorded entity states appended outright, the upper bound
   state_input: observation
   history_frames: 3
+  # Component-scaling study: fraction of TRAIN root episodes kept (nested,
+  # fixed seed). 1.0 is the whole bank.
+  train_fraction: 1.0
 
 model:
   # Historical checkpoints omit this field and load as legacy_compact.
@@ -29,6 +32,10 @@ model:
   kind: relational  # independent | joint | relational
   dim: 192          # LeWM embed_dim
   hidden_dim: 512
+  # Observation encoder size. null width = hidden_dim, depth 1 = one hidden
+  # unit: together these are exactly the historical encoder.
+  encoder_hidden_dim: null
+  encoder_depth: 1
   # Shared conditioner capacity budget, so `independent`, `joint` and
   # `relational` have equal dynamics parameter counts and a difference between
   # them cannot be attributed to one model simply being larger. null = use

@@ -51,6 +51,7 @@ from examples.world_model.interaction_jacobian import (
     SPLITS,
     action_bounds,
     bootstrap_by_episode,
+    pooled_ratio_by_episode,
     constant_plan,
     cumulative_valid,
     load_bank,
@@ -399,6 +400,10 @@ def score_checkpoint(directory, args, samples, train_rows, branches, agents,
             true_block = true_delta[:, columns]
             denominator = true_block.norm(dim=1) + 1e-12
             cells[(reference, intervened, axis, name)] = {
+                # Undivided norms, so the frozen ratio-of-sums convention (note
+                # 33) can be pooled at any level: per cell, per block, per seed.
+                "residual": (predicted_delta[:, columns] - true_block).norm(dim=1)[mask],
+                "floor_residual": (floor_delta[:, columns] - true_block).norm(dim=1)[mask],
                 # ||dY_predicted|| / ||dY_true||. With E_CF and cosine this
                 # separates a response of the wrong SIZE from one pointing the
                 # wrong WAY -- two failures a single ratio cannot tell apart.
@@ -438,19 +443,29 @@ def summarize(scored, episode_ids, args):
     }
 
     def pooled(run_results, block_type):
-        keys = ("e_cf", "probe_floor", "true_size", "cosine", "magnitude_ratio")
+        keys = (
+            "e_cf", "probe_floor", "true_size", "cosine", "magnitude_ratio",
+            "residual", "floor_residual",
+        )
         parts = {key: [] for key in keys}
         parts["ids"] = []
+        parts["cell"] = []
         for run_result in run_results:
-            for (_, _, _, name), cell in run_result["cells"].items():
+            for (_, intervened, axis, name), cell in run_result["cells"].items():
                 if name != block_type:
                     continue
                 for key in keys:
                     parts[key].append(cell[key])
                 parts["ids"].append(episode_ids[cell["mask"]])
+                parts["cell"].append(
+                    torch.full_like(parts["ids"][-1], 10 * intervened + axis)
+                )
         if not parts["e_cf"]:
             return None
         return {key: torch.cat(value) for key, value in parts.items()}
+
+    def ratio_of_sums(residual, truth):
+        return float((residual.square().sum() / truth.square().sum()).sqrt())
 
     for regime in regimes:
         for kind in kinds:
@@ -485,6 +500,38 @@ def summarize(scored, episode_ids, args):
                         ),
                         "fraction_below_one": float((pool["e_cf"] < 1.0).double().mean()),
                         "usable_by_registered_rule": is_usable(floor_mean),
+                        # The frozen convention (note 33): ratio of sums, with
+                        # the episode bootstrap recomputing the ratio inside
+                        # each resample. `mean` above is the superseded
+                        # mean of per-anchor ratios, kept for comparison.
+                        "pooled": pooled_ratio_by_episode(
+                            pool["residual"], pool["true_size"], pool["ids"],
+                            seed=args.seed + 500,
+                        ),
+                        "pooled_probe_floor": ratio_of_sums(
+                            pool["floor_residual"], pool["true_size"]
+                        ),
+                        # One number per (intervened agent, axis) cell, since
+                        # T-A1's axis asymmetry (x 56% of self, y 12%) is hidden
+                        # by pooling the four cells.
+                        "pooled_per_cell": {
+                            f"{int(c) // 10}:{int(c) % 10}": {
+                                **pooled_ratio_by_episode(
+                                    pool["residual"][pool["cell"] == c],
+                                    pool["true_size"][pool["cell"] == c],
+                                    pool["ids"][pool["cell"] == c],
+                                    seed=args.seed + 500,
+                                ),
+                                "probe_floor": ratio_of_sums(
+                                    pool["floor_residual"][pool["cell"] == c],
+                                    pool["true_size"][pool["cell"] == c],
+                                ),
+                                "cosine_mean": float(
+                                    pool["cosine"][pool["cell"] == c].mean()
+                                ),
+                            }
+                            for c in torch.unique(pool["cell"]).tolist()
+                        },
                     }
                 )
                 results["per_arm"][f"{regime}__{kind}__{block_type}"] = summary
@@ -500,23 +547,55 @@ def summarize(scored, episode_ids, args):
         ]
         return float(torch.cat(values).mean()) if values else float("nan")
 
+    def cross_pooled(run_result, cell=None):
+        """Frozen convention: one ratio of sums over the seed's cross anchors."""
+        picked = [
+            c for (_, intervened, axis, name), c in run_result["cells"].items()
+            if name == "cross" and (cell is None or (intervened, axis) == cell)
+        ]
+        if not picked:
+            return float("nan")
+        return ratio_of_sums(
+            torch.cat([c["residual"] for c in picked]),
+            torch.cat([c["true_size"] for c in picked]),
+        )
+
+    cross_cells = sorted({
+        (intervened, axis)
+        for run_result in scored.values()
+        for (_, intervened, axis, name) in run_result["cells"]
+        if name == "cross"
+    })
+    # `mean_of_ratios` is the registered-at-the-time comparison; `pooled` and
+    # `pooled_<cell>` are the same comparison under the frozen convention.
+    statistics = {"mean_of_ratios": cross_mean, "pooled": cross_pooled}
+    for cell in cross_cells:
+        statistics[f"pooled_{cell[0]}:{cell[1]}"] = (
+            lambda run_result, cell=cell: cross_pooled(run_result, cell)
+        )
     for regime in regimes:
         for better, worse in (("joint", "independent"), ("relational", "joint")):
-            diffs, wins = [], 0
-            for seed in seeds:
-                a, b = (regime, better, seed), (regime, worse, seed)
-                if a not in scored or b not in scored:
-                    continue
-                delta = cross_mean(scored[a]) - cross_mean(scored[b])
-                diffs.append(delta)
-                wins += delta < 0
-            if diffs:
-                results["paired"][f"{regime}__{better}_vs_{worse}"] = {
-                    "seeds": len(diffs),
-                    f"wins_for_{better}": wins,
-                    "mean_delta_e_cf": sum(diffs) / len(diffs),
-                    "per_seed_delta": diffs,
-                }
+            for label, statistic in statistics.items():
+                diffs, wins = [], 0
+                for seed in seeds:
+                    a, b = (regime, better, seed), (regime, worse, seed)
+                    if a not in scored or b not in scored:
+                        continue
+                    delta = statistic(scored[a]) - statistic(scored[b])
+                    diffs.append(delta)
+                    wins += delta < 0
+                if diffs:
+                    suffix = "" if label == "mean_of_ratios" else f"__{label}"
+                    results["paired"][f"{regime}__{better}_vs_{worse}{suffix}"] = {
+                        "seeds": len(diffs),
+                        f"wins_for_{better}": wins,
+                        "mean_delta_e_cf": sum(diffs) / len(diffs),
+                        "per_seed_delta": diffs,
+                        "per_seed_better": [
+                            statistic(scored[(regime, better, s)])
+                            for s in seeds if (regime, better, s) in scored
+                        ],
+                    }
     return results
 
 
@@ -610,7 +689,12 @@ def run(args):
             agents, shared_bodies, block, scale, args.horizon,
             context, source_step,
         )
-        key = (config["data"]["regime"], config["model"]["kind"], config["seed"])
+        kind = config["model"]["kind"]
+        if args.label_from_dir:
+            # Scaling variants share regime, kind and seed; the run directory
+            # name (minus its seed) is what distinguishes them.
+            kind = directory.name.rsplit("_seed", 1)[0]
+        key = (config["data"]["regime"], kind, config["seed"])
         scored[key] = {"cells": cells, "probe_strengths": strengths}
         print(f"  scored {directory.name}", flush=True)
     if not scored:
@@ -621,6 +705,21 @@ def run(args):
     output = Path(args.out)
     output.mkdir(parents=True, exist_ok=True)
     (output / "counterfactual_fidelity.json").write_text(json.dumps(results, indent=2))
+    # Per-anchor tensors, so a future change of aggregation is a re-read of this
+    # file rather than a re-run of every checkpoint.
+    torch.save(
+        {
+            "episode_ids": episode_ids,
+            "cells": {
+                "__".join(map(str, key)): {
+                    "__".join(map(str, cell_key)): cell
+                    for cell_key, cell in value["cells"].items()
+                }
+                for key, value in scored.items()
+            },
+        },
+        output / "per_anchor.pt",
+    )
     print(f"\nWrote {output / 'counterfactual_fidelity.json'}")
     print_report(results)
     return results
@@ -635,6 +734,17 @@ def print_report(results):
             f"cos {arm['cosine_mean']:+.3f}  mag {arm['magnitude_ratio_mean']:.3f}  "
             f"oracle-gain {arm['oracle_per_anchor_gain_e_cf']:.3f}  "
             f"<1 in {arm['fraction_below_one']:.3f}  n={arm['anchors']}"
+        )
+        pooled = arm["pooled"]
+        cells = "  ".join(
+            f"{cell} {entry['mean']:.4f} [{entry['low']:.4f}, {entry['high']:.4f}]"
+            f" floor {entry['probe_floor']:.3f}"
+            for cell, entry in sorted(arm["pooled_per_cell"].items())
+        )
+        print(
+            f"  {'':<40} POOLED {pooled['mean']:.4f} "
+            f"[{pooled['low']:.4f}, {pooled['high']:.4f}]  "
+            f"floor {arm['pooled_probe_floor']:.4f}  | {cells}"
         )
     print("\nPaired seed comparisons (negative delta favours the first arm)\n")
     for name, pair in sorted(results["paired"].items()):
@@ -666,6 +776,11 @@ def main():
         help="reproduce the pre-F13 behaviour: repeated current frame and null "
         "past actions at every anchor. Retained only to regenerate the "
         "superseded numbers; it is wrong off an episode boundary.",
+    )
+    parser.add_argument(
+        "--label-from-dir", action="store_true",
+        help="label each checkpoint by its run directory (minus `_seed<N>`) "
+        "instead of model.kind, for sweeps whose variants share a kind",
     )
     parser.add_argument("--device", default="cpu")
     run(parser.parse_args())

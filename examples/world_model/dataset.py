@@ -40,6 +40,7 @@ class OfflineSequences(Dataset):
         action_block=1,
         state_input="observation",
         history_frames=3,
+        train_fraction=1.0,
     ):
         if regime not in ("independent", "correlated"):
             raise ValueError("regime must be independent or correlated")
@@ -71,6 +72,22 @@ class OfflineSequences(Dataset):
         self.indices = (
             anchors["split"][self.samples["anchor_id"]] == splits[split]
         ).nonzero(as_tuple=True)[0]
+        if train_fraction != 1.0:
+            self.indices = self._keep_root_fraction(train_fraction)
+
+    def _keep_root_fraction(self, fraction):
+        """Keep a fixed-seed subset of ROOT EPISODES, for the data-scaling axis.
+
+        Subsampling rows would keep every episode and only thin them, which is
+        not less data about the task's states. Nested: a smaller fraction's
+        episodes are a subset of every larger fraction's.
+        """
+        if self.split != "train" or not 0.0 < fraction < 1.0:
+            raise ValueError("train_fraction applies to the train split, in (0, 1)")
+        episodes = torch.unique(self.episode_id[self.indices])
+        order = torch.randperm(len(episodes), generator=torch.Generator().manual_seed(0))
+        keep = episodes[order[: max(1, round(fraction * len(episodes)))]]
+        return self.indices[torch.isin(self.episode_id[self.indices], keep)]
 
 
     def _apply_state_input(self):

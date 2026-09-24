@@ -208,6 +208,23 @@ def mlp(input_dim, hidden_dim, output_dim):
     )
 
 
+def encoder_mlp(input_dim, hidden_dim, output_dim, depth=1):
+    """The observation encoder, with `depth` hidden (Linear, LayerNorm, GELU) units.
+
+    depth=1 is exactly `mlp`, so every existing checkpoint keeps its module graph
+    and initialization order. Deeper encoders exist for the component-scaling
+    study: the audits localize the lost cross-agent information to the encoder,
+    which is 0.7% of the model's parameters.
+    """
+    if depth == 1:
+        return mlp(input_dim, hidden_dim, output_dim)
+    layers, width = [], input_dim
+    for _ in range(depth):
+        layers += [nn.Linear(width, hidden_dim), nn.LayerNorm(hidden_dim), nn.GELU()]
+        width = hidden_dim
+    return nn.Sequential(*layers, nn.Linear(hidden_dim, output_dim))
+
+
 class Conditioner(nn.Module):
     """Build agent i's conditioning vector. The ONLY structural difference
     between the three baselines.
@@ -344,13 +361,17 @@ class MultiAgentWorldModel(nn.Module):
         dropout=0.0,
         obs_mean=None,
         obs_std=None,
+        encoder_hidden_dim=None,
+        encoder_depth=1,
     ):
         super().__init__()
         self.profile = "legacy_compact"
         self.kind = kind
         self.agents = agents
         self.dim = dim
-        self.encoder = mlp(obs_dim, hidden_dim, dim)
+        self.encoder = encoder_mlp(
+            obs_dim, encoder_hidden_dim or hidden_dim, dim, encoder_depth
+        )
         self.action_encoder = Embedder(action_dim, dim)
         conditioner_hidden = (
             hidden_dim
@@ -460,6 +481,8 @@ class ReferenceMultiAgentWorldModel(MultiAgentWorldModel):
         obs_std=None,
         action_mean=None,
         action_std=None,
+        encoder_hidden_dim=None,
+        encoder_depth=1,
     ):
         if history_size < 1:
             raise ValueError("history_size must be positive")
@@ -479,6 +502,8 @@ class ReferenceMultiAgentWorldModel(MultiAgentWorldModel):
             dropout=dropout,
             obs_mean=obs_mean,
             obs_std=obs_std,
+            encoder_hidden_dim=encoder_hidden_dim,
+            encoder_depth=encoder_depth,
         )
         self.profile = "lewm_reference"
         self.history_size = history_size
