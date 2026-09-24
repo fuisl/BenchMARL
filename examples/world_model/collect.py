@@ -190,10 +190,13 @@ def action_coverage(data, low, high):
     ]
     return {
         "transitions": len(action),
+        # Defined only between two agents; a single-agent bank reports 0.
         "opposed_x_fraction": ((unit[:, 0, 0] * unit[:, 1, 0]) < 0)
         .float()
         .mean()
-        .item(),
+        .item()
+        if unit.shape[1] > 1
+        else 0.0,
         "marginal_mean": unit.mean(0).tolist(),
         "marginal_std": unit.std(0, unbiased=False).tolist(),
         "normalized_histograms_10_bins_agent_then_coordinate": bins,
@@ -275,8 +278,12 @@ def leakage_checks(initial, anchors, excluded=None):
     }
 
 
-def effect_summary(reference, counterfactual):
-    """Change only agent 1's x action; observe other agents' absolute physics.
+def effect_summary(reference, counterfactual, intervened=1):
+    """Change only one agent's x action; observe other agents' absolute physics.
+
+    ``intervened`` is agent 1 on every multi-agent bank. A single-agent bank
+    intervenes on agent 0 and reports that agent's own response under
+    ``other_agent`` -- the self block, the only counterfactual it has.
 
     Relative observation changes alone are not evidence of physical interaction.
     Comparisons stop once either branch has terminated.
@@ -288,7 +295,8 @@ def effect_summary(reference, counterfactual):
     under ``*_full_state``.
     """
     valid = reference["valid"] & counterfactual["valid"]
-    other = [i for i in range(reference["action"].shape[2]) if i != 1]
+    agents = reference["action"].shape[2]
+    other = [i for i in range(agents) if i != intervened] or [intervened]
     result = {}
     for name, key, indices in (
         ("other_agent", "next_agent_state", other),
@@ -333,6 +341,10 @@ def run_collection(cfg, output, task_name):
     # line, and has a shipped heuristic that lifts (see the return above).
     # `tracked_entities` needs no change: the package and line are both movable.
     supported = (
+        # Single-agent control bank: one agent, no cross-agent dynamics, used
+        # to check that the latent model can roll out an agent's OWN motion
+        # before any multi-agent claim is attempted.
+        "vmas/navigation",
         "vmas/transport",
         "vmas/dropout",
         "vmas/buzz_wire",
@@ -359,8 +371,21 @@ def run_collection(cfg, output, task_name):
         raise ValueError("Sequence steps must be divisible by a positive action block")
     # Not every task config carries n_agents (Buzz Wire's team size is fixed by
     # the scenario), so only check it where the field exists.
-    if getattr(cfg.task, "n_agents", 2) < 2:
+    agents = getattr(cfg.task, "n_agents", 2)
+    if agents < 1:
+        raise ValueError("A bank needs at least one agent")
+    if agents < 2 and task_name != "vmas/navigation":
         raise ValueError("The joint-action intervention requires at least two agents")
+    # Agent 1 on every multi-agent bank; a single-agent bank intervenes on
+    # itself, which makes the counterfactual file a self-response test.
+    intervened = 1 if agents > 1 else 0
+    # Steps before the intervention starts. 0 reproduces every existing bank.
+    # A positive value keeps the reference and counterfactual branches
+    # identical through a real pre-intervention context, so a context-rolled
+    # model sees the same history under both.
+    intervention_start = settings.get("intervention_start_step", 0)
+    if not 0 <= intervention_start < settings.sequence_steps:
+        raise ValueError("intervention_start_step must lie inside the snippet")
     if cfg.experiment.render:
         raise ValueError("Offline data collection does not render")
     # Only where the shipped heuristic has been measured to be worth including.
@@ -552,14 +577,24 @@ def run_collection(cfg, output, task_name):
             "correlated",
             settings.branch_seed,
         )[test_ids]
-        intervention[:, :, 1, 0] = low[1, 0] + high[1, 0] - intervention[:, :, 1, 0]
+        intervention = torch.where(
+            torch.arange(settings.sequence_steps).view(1, -1, 1, 1)
+            < intervention_start,
+            reference["action"].cpu(),
+            intervention,
+        )
+        intervention[:, intervention_start:, intervened, 0] = (
+            low[intervened, 0]
+            + high[intervened, 0]
+            - intervention[:, intervention_start:, intervened, 0]
+        )
         cf = branch_rollouts(
             task, test_anchors, intervention, settings.branch_batch_size, device
         )
         cf["anchor_id"] = test_ids
         torch.save(cf, output / "counterfactual_test.pt")
         report["counterfactual"] = action_coverage(cf, low, high)
-        report["intervention_effects"] = effect_summary(reference, cf)
+        report["intervention_effects"] = effect_summary(reference, cf, intervened)
         report["intervention_effects_by_source"] = {
             name: effect_summary(
                 {
@@ -570,6 +605,7 @@ def run_collection(cfg, output, task_name):
                     key: value[test_anchors["source_regime"] == i]
                     for key, value in cf.items()
                 },
+                intervened,
             )
             for i, name in enumerate(source_regimes)
         }
@@ -656,7 +692,11 @@ def run_collection(cfg, output, task_name):
             if excluded is not None
             else None,
             "control": "Identical source snapshots and first-step budgets; later branch states depend on actions.",
-            "heldout_region": "normalized a0_x*a1_x < 0; absent from correlated actions, supported by independent actions",
+            "heldout_region": "normalized a0_x*a1_x < 0; absent from correlated actions, supported by independent actions"
+            if agents > 1
+            else "none: one agent, so both regimes sample the same actions",
+            "intervened_agent": intervened,
+            "intervention_start_step": intervention_start,
             "files": {
                 p.name: hashlib.sha256(p.read_bytes()).hexdigest()
                 for p in sorted(output.iterdir())
